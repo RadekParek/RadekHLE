@@ -856,6 +856,17 @@ pub enum Event {
     /// OS has informed touchHLE it will soon become inactive.
     /// (iOS `applicationWillResignActive:`, Android `onPause()`)
     AppWillResignActive,
+    /// OS has informed touchHLE it has become inactive and entered the
+    /// background. (iOS `applicationDidEnterBackground:`, Android
+    /// `onPause()` completing / activity no longer visible)
+    AppDidEnterBackground,
+    /// OS has informed touchHLE it is about to leave the background and
+    /// re-enter the foreground. (iOS `applicationWillEnterForeground:`,
+    /// Android `onResume()` starting)
+    AppWillEnterForeground,
+    /// OS has informed touchHLE it has become active again after being
+    /// inactive/backgrounded. (iOS `applicationDidBecomeActive:`)
+    AppDidBecomeActive,
     /// OS has informed touchHLE it will soon terminate.
     /// (iOS `applicationWillTerminate:`, Android `onDestroy()`)
     AppWillTerminate,
@@ -1648,19 +1659,28 @@ impl Window {
                 }
                 E::AppWillEnterBackground { .. } => {
                     log!("Received app-will-resign-active event.");
-                    assert!(self.high_priority_event.is_none());
-                    self.high_priority_event = Some(Event::AppWillResignActive);
-                    // For some reason, if we don't pause event polling, we will
-                    // never finish handling the event.
-                    // TODO: Add a mechanism for re-enabling polling, if at some
-                    // point we support returning touchHLE to the foreground.
-                    self.enable_event_polling = false;
-                    continue;
+                    Event::AppWillResignActive
+                }
+                E::AppDidEnterBackground { .. } => {
+                    log!("Received app-did-enter-background event.");
+                    Event::AppDidEnterBackground
+                }
+                E::AppWillEnterForeground { .. } => {
+                    log!("Received app-will-enter-foreground event.");
+                    Event::AppWillEnterForeground
+                }
+                E::AppDidEnterForeground { .. } => {
+                    log!("Received app-did-become-active event.");
+                    Event::AppDidBecomeActive
                 }
                 E::AppTerminating { .. } => {
                     log!("Received app-will-terminate event.");
                     assert!(self.high_priority_event.is_none());
                     self.high_priority_event = Some(Event::AppWillTerminate);
+                    // App is about to be killed by the OS. Stop polling so we
+                    // can return to the run loop and dispatch the high
+                    // priority event quickly, before the process is
+                    // terminated.
                     self.enable_event_polling = false;
                     continue;
                 }
