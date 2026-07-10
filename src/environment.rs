@@ -1311,12 +1311,19 @@ impl Environment {
     /// execution of the current host thread (if the semaphore is
     /// currently at 0).
     pub fn sem_decrement(&mut self, sem: MutPtr<sem_t>, wait_on_lock: bool) -> bool {
-        let host_sem_rc: &mut _ = self
-            .libc_state
-            .semaphore
-            .open_semaphores
-            .get_mut(&sem)
-            .unwrap();
+        let Some(host_sem_rc) = self.libc_state.semaphore.open_semaphores.get_mut(&sem) else {
+            // The guest called sem_wait/sem_trywait on an uninitialised or
+            // already-destroyed semaphore. POSIX/Apple document this as an
+            // `EINVAL` failure of the wait, so we report failure to the caller
+            // (which sets errno) instead of aborting the whole process.
+            log!(
+                "Warning: sem_decrement called on unknown semaphore {:?}; \
+                 failing without blocking (guest likely waited on an \
+                 uninitialised or destroyed semaphore).",
+                sem
+            );
+            return false;
+        };
         let mut host_sem = (*host_sem_rc).borrow_mut();
 
         if host_sem.value > 0 {
@@ -1349,13 +1356,23 @@ impl Environment {
     }
 
     /// Unlock a semaphore (increments value of a semaphore).
-    pub fn sem_increment(&mut self, sem: MutPtr<sem_t>) {
-        let host_sem_rc: &mut _ = self
-            .libc_state
-            .semaphore
-            .open_semaphores
-            .get_mut(&sem)
-            .unwrap();
+    ///
+    /// Returns `true` if the semaphore was known and incremented, `false` if
+    /// the pointer does not refer to a semaphore this environment is tracking.
+    /// A guest may legitimately hit the latter case by calling `sem_post` on an
+    /// uninitialised or already-destroyed semaphore; POSIX/Apple document this
+    /// as an `EINVAL` failure of `sem_post`, not a reason to abort the whole
+    /// process, so callers translate the `false` return into that errno instead
+    /// of panicking.
+    pub fn sem_increment(&mut self, sem: MutPtr<sem_t>) -> bool {
+        let Some(host_sem_rc) = self.libc_state.semaphore.open_semaphores.get_mut(&sem) else {
+            log!(
+                "Warning: sem_increment called on unknown semaphore {:?}; \
+                 ignoring (guest likely posted an uninitialised or destroyed semaphore).",
+                sem
+            );
+            return false;
+        };
         let mut host_sem = (*host_sem_rc).borrow_mut();
 
         host_sem.value += 1;
@@ -1364,6 +1381,7 @@ impl Environment {
             sem,
             host_sem.value
         );
+        true
     }
 
     /// Blocks the current thread until the thread given finishes, writing its
@@ -2217,12 +2235,25 @@ impl Environment {
                         }
                     }
                     ThreadBlock::Semaphore(sem) => {
-                        let host_sem_rc: &mut _ = self
-                            .libc_state
-                            .semaphore
-                            .open_semaphores
-                            .get_mut(&sem)
-                            .unwrap();
+                        // The semaphore a thread is waiting on may have been
+                        // destroyed (e.g. sem_destroy / sem_close) while the
+                        // thread was still blocked. Rather than panicking, treat
+                        // a now-unknown semaphore as "the wait can no longer be
+                        // satisfied here" and wake the thread so it can return
+                        // from sem_wait (which fails with EINVAL) instead of
+                        // deadlocking or aborting the process.
+                        let Some(host_sem_rc) =
+                            self.libc_state.semaphore.open_semaphores.get_mut(&sem)
+                        else {
+                            log!(
+                                "Warning: thread {} was blocked on semaphore {:?} \
+                                 that no longer exists; waking it.",
+                                thread_id,
+                                sem
+                            );
+                            self.threads[thread_id].blocked_by = ThreadBlock::NotBlocked;
+                            return thread_id;
+                        };
                         let mut host_sem = (*host_sem_rc).borrow_mut();
                         if host_sem.value > 0 {
                             log_dbg!(
@@ -2232,7 +2263,7 @@ impl Environment {
                                 host_sem.value
                             );
                             host_sem.value -= 1;
-                            host_sem.waiting.remove(&self.current_thread);
+                            host_sem.waiting.remove(&thread_id);
                             self.threads[thread_id].blocked_by = ThreadBlock::NotBlocked;
                             return thread_id;
                         }
