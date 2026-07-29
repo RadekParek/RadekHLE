@@ -808,9 +808,8 @@ fn exit(env: &mut Environment, exit_code: i32) {
         let _: () = func.call_from_host(env, ());
     }
 
-    // Log the exit so it's clear in CI/run logs why the process stopped;
-    // previously this exited silently, which made the logs end abruptly with no
-    // explanation.
+    log!("Guest exit({}) on emulated thread {}", exit_code, env.current_thread);
+    env.stack_trace_current();
     echo!("App called exit({}); touchHLE will now quit.", exit_code);
     std::process::exit(exit_code);
 }
