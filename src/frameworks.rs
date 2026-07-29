@@ -57,8 +57,10 @@ pub mod libicucore;
 pub mod libsqlite3;
 pub mod libxml2;
 pub mod map_kit;
+pub mod media_toolbox;
 pub mod media_player;
 pub mod metal;
+pub mod web_kit;
 pub mod message_ui;
 pub mod mobile_core_services;
 pub mod openal;
@@ -82,6 +84,7 @@ pub struct State {
     pub game_kit: game_kit::State,
     pub store_kit: store_kit::State,
     media_player: media_player::State,
+    pub media_toolbox: media_toolbox::State,
     openal: openal::State,
     opengles: opengles::State,
     uikit: uikit::State,
