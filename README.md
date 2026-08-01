@@ -1,4 +1,4 @@
-# HyperHLE
+# RadekHLE
 
 **HyperHLE** is an independent fork of the touchHLE project. To avoid any confusion with the upstream repository, please review the key characteristics and context of this fork below.
 

@@ -5,7 +5,7 @@
 ### Overview
 
 This repo contains two products:
-1. **touchHLE emulator** (Rust) — an HLE iPhone OS app emulator
+1. **RadekHLE emulator** (Rust) — an HLE iPhone OS app emulator
 2. **AppDB** (Python/FastAPI) — a compatibility report web app at `appdb/`
 
 ### Building the Rust emulator
