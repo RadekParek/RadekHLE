@@ -570,8 +570,10 @@ void main() {
     if (u_lighting_enabled != 0) {
         vec4 material_diffuse = u_color_material_enabled != 0 ? base_color : u_material_diffuse;
         vec4 material_ambient = u_color_material_enabled != 0 ? base_color : u_material_ambient;
-        vec3 lit_rgb = u_model_ambient.rgb * material_ambient.rgb;
-        vec3 view_direction = normalize(-eye_position.xyz);
+        vec3 lit_rgb = u_model_ambient.rgb * material_ambient.rgb + u_material_emission.rgb;
+        vec3 view_direction = u_light_model_local_viewer != 0
+            ? normalize(-eye_position.xyz)
+            : normalize(vec3(0.0, 0.0, 1.0));
         for (int i = 0; i < 8; i++) {
             if (u_light_enabled[i] == 0) continue;
             vec3 light_direction = u_light_position[i].w == 0.0 ? normalize(u_light_position[i].xyz) : normalize(u_light_position[i].xyz - eye_position.xyz);
