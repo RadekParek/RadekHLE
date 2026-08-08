@@ -91,6 +91,30 @@ use gles3_native::GLES3NativeContext;
 use gles3_on_gl3::GLES3OnGL3Context;
 pub use gles_generic::GLESContext;
 pub use gles_generic::GLES;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+static TRANSLATOR_TRACE_ENABLED: AtomicBool = AtomicBool::new(false);
+static TRANSLATOR_TRACE_EVENTS: AtomicU32 = AtomicU32::new(0);
+
+pub(crate) fn configure_translator_tracing(enabled: bool) {
+    TRANSLATOR_TRACE_ENABLED.store(enabled, Ordering::Relaxed);
+}
+pub(crate) fn translator_tracing_enabled() -> bool {
+    TRANSLATOR_TRACE_ENABLED.load(Ordering::Relaxed)
+        || std::env::var_os("TOUCHHLE_TRACE_TRANSLATOR").is_some()
+}
+
+pub(crate) fn trace_translator_event(event: String) {
+    if !translator_tracing_enabled() {
+        return;
+    }
+    let number = TRANSLATOR_TRACE_EVENTS.fetch_add(1, Ordering::Relaxed);
+    if number < 512 {
+        log!("[translator] #{:03} {}", number + 1, event);
+    } else if number == 512 {
+        log!("[translator] further events suppressed after 512 entries");
+    }
+}
 
 pub fn configure_angle_driver(enabled: bool) {
     if !enabled {

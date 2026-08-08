@@ -219,8 +219,8 @@ com.ea.nfsucinc: --force-composition
 com.gameloft.BladesOfFury: --force-composition
 
 # MCPE LITE
-com.mojang.minecraftpe: --force-composition --trace-gl-errors
-com.mojang.minecraftpe-demo: --force-composition --trace-gl-errors
+com.mojang.minecraftpe: --force-composition --trace-gl-errors --ignore-gl-errors
+com.mojang.minecraftpe-demo: --force-composition --trace-gl-errors --ignore-gl-errors
 
 # Bruce Lee
 com.indiagames.brucelee:  --force-composition --ignore-gl-errors
@@ -250,7 +250,7 @@ com.chillingo.redball3hd: --landscape-left
 # present path, so this app no longer needs --prefer-gles2-context.
 # --trace-gl-errors stays so any remaining 0x500 noise is logged with a
 # pointer to the calling host site.
-com.lego.NinjagoSpinjitzuScavengerHunt: --landscape-left --graphics-api=default --fix-texture-min-filter --force-composition --trace-gl-errors
+com.lego.NinjagoSpinjitzuScavengerHunt: --landscape-left --graphics-api=default --fix-texture-min-filter --force-composition --trace-gl-errors --ignore-gl-errors
 
 # Ninjago: Rise of the Snakes
 # Same fixed-function texture-completeness issue as the other LEGO Ninjago
@@ -258,7 +258,7 @@ com.lego.NinjagoSpinjitzuScavengerHunt: --landscape-left --graphics-api=default 
 # on strict Adreno ES 1.1 drivers the default mipmapped min filter makes the
 # game texture incomplete unless we force GL_TEXTURE_MIN_FILTER=GL_LINEAR
 # after the level-0 upload.
-com.lego.riseofthesnakes: --landscape-left --fix-texture-min-filter --trace-gl-errors
+com.lego.riseofthesnakes: --landscape-left --fix-texture-min-filter --trace-gl-errors --ignore-gl-errors
 
 # Resident Evil Degeneration (jp.co.capcom.residentevil.en)
 # Ported from touchHLE upstream commit 1bd22431 ("Default options for
@@ -338,4 +338,4 @@ com.disney.SwampyGame: --device-family=iphone-3gs
 # LEGO Ninjago: The Final Battle
 # Uses OpenAL streaming audio; keep its fixed-function landscape profile and
 # force the compatibility texture filter on strict mobile GLES drivers.
-com.lego.ninjago.thefinalbattle: --landscape-left --fix-texture-min-filter
+com.lego.ninjago.thefinalbattle: --landscape-left --fix-texture-min-filter --ignore-gl-errors

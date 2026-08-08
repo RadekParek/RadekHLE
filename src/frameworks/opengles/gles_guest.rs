@@ -108,6 +108,9 @@ where
         return U::default();
     };
     let res = f(gles.as_mut(), &mut env.mem);
+    if crate::gles::translator_tracing_enabled() && gles.is_translator() {
+        crate::gles::trace_translator_event(format!("guest call at {}:{}", caller.file(), caller.line()));
+    }
     trace_gl_error(trace, unsafe { gles.GetError() }, caller);
     #[allow(clippy::let_and_return)]
     res

@@ -30,6 +30,7 @@ use super::GLESContext;
 use crate::window::{GLContext, GLVersion, Window};
 use std::collections::HashSet;
 use std::ffi::CStr;
+use std::sync::{Mutex, OnceLock};
 
 /// List of capabilities shared by OpenGL ES 1.1 and OpenGL 2.1.
 ///
@@ -1166,12 +1167,6 @@ impl GLES for GLES1OnGL2<'_> {
         if ARRAYS.iter().any(|&ArrayInfo { name, .. }| name == cap) {
             log_dbg!("Tolerating glEnable({:#x}) of client state", cap);
         } else if cap == gles11::MATRIX_PALETTE_OES {
-            // GL_OES_matrix_palette: enable CPU-side palette skinning. Desktop
-            // GL 2.1 has no fixed-function palette skinning and Mesa does not
-            // expose GL_ARB_matrix_palette, so we emulate it ourselves at draw
-            // time (see draw_with_matrix_palette). Track the flag here and do
-            // NOT forward to gl21::Enable (0x8840 is not a valid desktop cap
-            // and would raise GL_INVALID_ENUM).
             self.state.matrix_palette_enabled = true;
             return;
         } else if cap == gl21::PERSPECTIVE_CORRECTION_HINT
@@ -1181,8 +1176,6 @@ impl GLES for GLES1OnGL2<'_> {
             || cap == gl21::TEXTURE
         {
             log_dbg!("Tolerating glEnable({:#x})", cap);
-            // Don't forward shading-model / hint enums to gl21::Enable —
-            // they're not valid capabilities and would set GL_INVALID_ENUM.
             return;
         } else if !CAPABILITIES.contains(&cap) {
             // Per the GLES 1.1 spec, invalid caps set GL_INVALID_ENUM but
@@ -1231,7 +1224,6 @@ impl GLES for GLES1OnGL2<'_> {
     }
     unsafe fn Disable(&mut self, cap: GLenum) {
         if cap == gles11::MATRIX_PALETTE_OES {
-            // See Enable: emulated, never forwarded to the desktop driver.
             self.state.matrix_palette_enabled = false;
             return;
         } else if CAPABILITIES.contains(&cap) {
@@ -1243,10 +1235,18 @@ impl GLES for GLES1OnGL2<'_> {
         } else if GET_PARAMS.contains(cap) || UNSUPPORTED_GET_PARAMS.contains(cap) {
             log_dbg!("Tolerating glDisable({:#x}) of parameter", cap);
         } else {
-            log!(
-                "Warning: Tolerating glDisable({:#x}) of unrecognized capability",
-                cap
-            );
+            static UNKNOWN_DISABLES: OnceLock<Mutex<HashSet<GLenum>>> = OnceLock::new();
+            let first = UNKNOWN_DISABLES
+                .get_or_init(|| std::sync::Mutex::new(HashSet::new()))
+                .lock()
+                .map(|mut seen| seen.insert(cap))
+                .unwrap_or(true);
+            if first {
+                log!(
+                    "Warning: Tolerating glDisable({:#x}) of unrecognized capability [first occurrence only]",
+                    cap
+                );
+            }
             return;
         }
         gl21::Disable(cap);
