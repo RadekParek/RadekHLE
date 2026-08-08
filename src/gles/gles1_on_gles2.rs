@@ -165,8 +165,11 @@ struct TranslatorState {
     material_ambient: [GLfloat; 4],
     material_diffuse: [GLfloat; 4],
     material_specular: [GLfloat; 4],
+    material_emission: [GLfloat; 4],
     material_shininess: GLfloat,
     model_ambient: [GLfloat; 4],
+    light_model_local_viewer: bool,
+    light_model_two_side: bool,
     shade_model: GLenum,
     hints: [GLenum; 4],
     clip_planes: [[GLfloat; 4]; 6],
@@ -241,8 +244,11 @@ impl TranslatorState {
             material_ambient: [0.2, 0.2, 0.2, 1.0],
             material_diffuse: [0.8, 0.8, 0.8, 1.0],
             material_specular: [0.0, 0.0, 0.0, 1.0],
+            material_emission: [0.0, 0.0, 0.0, 1.0],
             material_shininess: 0.0,
             model_ambient: [0.2, 0.2, 0.2, 1.0],
+            light_model_local_viewer: false,
+            light_model_two_side: false,
             shade_model: es1::SMOOTH,
             hints: [es1::DONT_CARE; 4],
             clip_planes: [[0.0, 0.0, 0.0, 0.0]; 6],
@@ -523,6 +529,7 @@ uniform vec4 u_material_diffuse;
 uniform vec4 u_material_specular;
 uniform float u_material_shininess;
 uniform vec4 u_model_ambient;
+uniform vec4 u_material_emission;
 uniform vec4 u_clip_planes[6];
 uniform int u_clip_enabled[6];
 uniform vec3 u_point_distance_attenuation;
@@ -1864,26 +1871,38 @@ impl GLES for GLES1OnGLES2<'_> {
         self.Lightfv(light, pname, values.as_ptr());
     }
     unsafe fn LightModelf(&mut self, pname: GLenum, param: GLfloat) {
-        if pname == es1::LIGHT_MODEL_TWO_SIDE {
-            return;
+        match pname {
+            es1::LIGHT_MODEL_LOCAL_VIEWER => self.state.light_model_local_viewer = param != 0.0,
+            es1::LIGHT_MODEL_TWO_SIDE => self.state.light_model_two_side = param != 0.0,
+            _ => {}
         }
     }
     unsafe fn LightModelx(&mut self, pname: GLenum, param: GLfixed) {
         self.LightModelf(pname, fixed_to_float(param));
     }
     unsafe fn LightModelfv(&mut self, pname: GLenum, params: *const GLfloat) {
-        if pname == es1::LIGHT_MODEL_AMBIENT && !params.is_null() {
+        if params.is_null() {
+            return;
+        }
+        if pname == es1::LIGHT_MODEL_AMBIENT {
             self.state.model_ambient = std::slice::from_raw_parts(params, 4).try_into().unwrap();
+        } else {
+            self.LightModelf(pname, *params);
         }
     }
     unsafe fn LightModelxv(&mut self, pname: GLenum, params: *const GLfixed) {
-        if pname == es1::LIGHT_MODEL_AMBIENT && !params.is_null() {
+        if params.is_null() {
+            return;
+        }
+        if pname == es1::LIGHT_MODEL_AMBIENT {
             self.state.model_ambient = std::slice::from_raw_parts(params, 4)
                 .iter()
                 .map(|v| fixed_to_float(*v))
                 .collect::<Vec<_>>()
                 .try_into()
                 .unwrap();
+        } else {
+            self.LightModelf(pname, fixed_to_float(*params));
         }
     }
     unsafe fn Materialf(&mut self, face: GLenum, pname: GLenum, param: GLfloat) {
@@ -1906,6 +1925,7 @@ impl GLES for GLES1OnGLES2<'_> {
             es1::AMBIENT => self.state.material_ambient = values,
             es1::DIFFUSE | es1::AMBIENT_AND_DIFFUSE => self.state.material_diffuse = values,
             es1::SPECULAR => self.state.material_specular = values,
+            es1::EMISSION => self.state.material_emission = values,
             _ => {}
         }
     }
@@ -3276,6 +3296,19 @@ impl GLES for GLES1OnGLES2<'_> {
             1,
             self.state.material_specular.as_ptr(),
         );
+        gl::Uniform4fv(
+            gl::GetUniformLocation(program, b"u_material_emission\0".as_ptr() as *const _),
+            1,
+            self.state.material_emission.as_ptr(),
+        );
+        gl::Uniform1i(
+            gl::GetUniformLocation(program, b"u_light_model_local_viewer\0".as_ptr() as *const _),
+            self.state.light_model_local_viewer as GLint,
+        );
+        gl::Uniform1i(
+            gl::GetUniformLocation(program, b"u_light_model_two_side\0".as_ptr() as *const _),
+            self.state.light_model_two_side as GLint,
+        );
         gl::Uniform1f(
             gl::GetUniformLocation(program, b"u_material_shininess\0".as_ptr() as *const _),
             self.state.material_shininess,
@@ -3641,6 +3674,19 @@ impl GLES for GLES1OnGLES2<'_> {
             gl::GetUniformLocation(program, b"u_material_specular\0".as_ptr() as *const _),
             1,
             self.state.material_specular.as_ptr(),
+        );
+        gl::Uniform4fv(
+            gl::GetUniformLocation(program, b"u_material_emission\0".as_ptr() as *const _),
+            1,
+            self.state.material_emission.as_ptr(),
+        );
+        gl::Uniform1i(
+            gl::GetUniformLocation(program, b"u_light_model_local_viewer\0".as_ptr() as *const _),
+            self.state.light_model_local_viewer as GLint,
+        );
+        gl::Uniform1i(
+            gl::GetUniformLocation(program, b"u_light_model_two_side\0".as_ptr() as *const _),
+            self.state.light_model_two_side as GLint,
         );
         gl::Uniform1f(
             gl::GetUniformLocation(program, b"u_material_shininess\0".as_ptr() as *const _),
