@@ -1872,7 +1872,7 @@ impl GLES for GLES1OnGLES2<'_> {
     }
     unsafe fn LightModelf(&mut self, pname: GLenum, param: GLfloat) {
         match pname {
-            es1::LIGHT_MODEL_LOCAL_VIEWER => self.state.light_model_local_viewer = param != 0.0,
+            0x0B51 => self.state.light_model_local_viewer = param != 0.0,
             es1::LIGHT_MODEL_TWO_SIDE => self.state.light_model_two_side = param != 0.0,
             _ => {}
         }
