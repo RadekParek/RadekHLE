@@ -1783,14 +1783,8 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
     // shader-based presenter instead.
     if gles.is_es2() {
         if gles.is_translator() {
-            present_renderbuffer_es2_translator(
-                gles,
-                viewport,
-                rotation_matrix,
-                virtual_cursor_visible_at,
-            );
             std::mem::drop(gles_boxed);
-            env.window.as_mut().unwrap().swap_window();
+            present_renderbuffer_readback(env, drawable);
         } else {
             present_renderbuffer_es2(gles, viewport, rotation_matrix, virtual_cursor_visible_at);
             std::mem::drop(gles_boxed);
