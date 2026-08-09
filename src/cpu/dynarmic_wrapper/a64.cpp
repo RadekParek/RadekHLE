@@ -299,7 +299,7 @@ public:
               static_cast<unsigned long long>(env.code_fetches),
               static_cast<unsigned long long>(env.memory_faults),
               register_dump(*cpu).c_str());
-    std::int32_t result = (!ticks && reason == Dynarmic::HaltReason::Step) || (ticks && !reason) ? -1 : -5;
+    std::int32_t result = ((!ticks && Dynarmic::Has(reason, Dynarmic::HaltReason::Step)) || (ticks && !reason)) ? -1 : -5;
     if (Dynarmic::Has(reason, Dynarmic::HaltReason::MemoryAbort)) result = -2;
     else if (Dynarmic::Has(reason, HaltReasonUndefinedInstruction)) result = -3;
     else if (Dynarmic::Has(reason, HaltReasonBreakpoint)) result = -4;
