@@ -106,7 +106,8 @@ pub fn can_dispatch(symbol: &str) -> bool {
         "malloc" | "calloc" | "valloc" | "posix_memalign" | "free"
         | "malloc_zone_free" | "realloc" | "malloc_zone_realloc" | "memcpy"
         | "memmove" | "memcpy_chk" | "memmove_chk" | "memset" | "bzero"
-        | "memset_chk" | "strlen" | "strcmp" | "strncmp" | "memcmp"
+        | "memset_chk" | "strlen" | "strnlen" | "strcmp" | "strncmp" | "memcmp"
+        | "strcpy" | "strncpy" | "strcat" | "strncat" | "strdup" | "strndup"
         | "objc_release" | "objc_storeStrong" | "objc_retain"
         | "objc_retainAutoreleasedReturnValue" | "objc_retainAutoreleaseReturnValue"
         | "objc_autorelease" | "objc_autoreleaseReturnValue"
@@ -125,6 +126,8 @@ pub fn can_dispatch(symbol: &str) -> bool {
         | "memset_pattern4" | "memset_pattern8" | "memset_pattern16"
         | "cxa_atexit" | "atexit" | "pthread_mutex_lock"
         | "pthread_mutex_unlock" | "pthread_mutex_init" | "pthread_mutex_destroy"
+        | "pthread_once" | "pthread_key_create" | "pthread_getspecific" | "pthread_setspecific"
+        | "pthread_self" | "sched_yield" | "abort" | "exit" | "_exit"
         | "NSLog" | "NSLogv" | "os_log" | "os_logv" | "dyld_stub_binder"
         | "CFConstantStringClassReference" | "__CFConstantStringClassReference"
         | "MTLCreateSystemDefaultDevice" | "vkEnumerateInstanceVersion"
@@ -684,6 +687,35 @@ pub fn dispatch(
             return_value(context, length);
             Ok(true)
         }
+        "strcpy" | "strncpy" => {
+            let source = c_string(mem, context.regs[1]).ok_or("ARM64 source string is not readable")?;
+            let limit = if symbol == "strncpy" { usize::try_from(context.regs[2]).map_err(|_| "ARM64 strncpy length is too large")? } else { source.len() + 1 };
+            let mut bytes = vec![0; limit];
+            let copy_len = source.len().min(limit);
+            bytes[..copy_len].copy_from_slice(&source[..copy_len]);
+            mem.write_bytes(context.regs[0], &bytes).map_err(str::to_owned)?;
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "strcat" | "strncat" => {
+            let destination_len = mem.cstr_len(context.regs[0], MAX_CSTRING).map_err(str::to_owned)?;
+            let source = c_string(mem, context.regs[1]).ok_or("ARM64 source string is not readable")?;
+            let source_len = if symbol == "strncat" { source.len().min(usize::try_from(context.regs[2]).map_err(|_| "ARM64 strncat length is too large")?) } else { source.len() };
+            let destination = context.regs[0].checked_add(destination_len).ok_or("ARM64 strcat address overflows")?;
+            mem.write_bytes(destination, &source[..source_len]).map_err(str::to_owned)?;
+            mem.write_u8(destination + source_len as u64, 0).map_err(str::to_owned)?;
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "strdup" | "strndup" => {
+            let source = c_string(mem, context.regs[0]).ok_or("ARM64 source string is not readable")?;
+            let length = if symbol == "strndup" { source.len().min(usize::try_from(context.regs[1]).map_err(|_| "ARM64 strndup length is too large")?) } else { source.len() };
+            let address = mem.alloc_zeroed(length as u64 + 1).map_err(str::to_owned)?;
+            mem.write_bytes(address, &source[..length]).map_err(str::to_owned)?;
+            mem.write_u8(address + length as u64, 0).map_err(str::to_owned)?;
+            return_value(context, address);
+            Ok(true)
+        }
         "strchr" | "strrchr" => {
             let text = c_string(mem, context.regs[0]).unwrap_or_default();
             let needle = context.regs[1] as u8;
@@ -736,8 +768,9 @@ pub fn dispatch(
             Ok(true)
         }
         "bcmp" => {
-            let left = mem.read_bytes(context.regs[0], context.regs[1]).map_err(str::to_owned)?;
-            let right = mem.read_bytes(context.regs[2], context.regs[1]).map_err(str::to_owned)?;
+            let size = context.regs[2];
+            let left = mem.read_bytes(context.regs[0], size).map_err(str::to_owned)?;
+            let right = mem.read_bytes(context.regs[1], size).map_err(str::to_owned)?;
             return_value(context, u64::from(left != right));
             Ok(true)
         }
@@ -805,7 +838,23 @@ pub fn dispatch(
             return_value(context, 0);
             Ok(true)
         }
-        "cxa_atexit" | "atexit" | "pthread_mutex_lock" | "pthread_mutex_unlock" | "pthread_mutex_init" | "pthread_mutex_destroy" => {
+        "cxa_atexit" | "atexit" | "pthread_mutex_lock" | "pthread_mutex_unlock" | "pthread_mutex_init" | "pthread_mutex_destroy" | "pthread_once" | "pthread_key_create" | "pthread_setspecific" | "sched_yield" => {
+            if symbol == "pthread_once" && context.regs[0] != 0 && mem.read_u32(context.regs[0]).map_err(str::to_owned)? == 0 {
+                mem.write_u32(context.regs[0], 1).map_err(str::to_owned)?;
+            }
+            return_value(context, 0);
+            Ok(true)
+        }
+        "pthread_getspecific" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "pthread_self" => {
+            return_value(context, 1);
+            Ok(true)
+        }
+        "abort" | "exit" | "_exit" => {
+            log!("Warning: ARM64 app requested {}; returning to emulator", symbol);
             return_value(context, 0);
             Ok(true)
         }

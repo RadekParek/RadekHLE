@@ -170,6 +170,9 @@ fn prepare_stack(
     for value in apple.iter().rev() {
         apple_strings.push(put_string(mem, &mut string_cursor, value)?);
     }
+    argv_strings.reverse();
+    envp_strings.reverse();
+    apple_strings.reverse();
     let pointer_count = argv.len() + envp.len() + apple.len() + 4;
     let pointer_bytes = (pointer_count as u64)
         .checked_mul(8)
@@ -351,8 +354,8 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             unresolved.push(binding.symbol.clone());
         }
         let binding_key = binding.symbol.clone();
-        let (svc, stub) = if let Some(&(svc, stub)) = stub_by_symbol.get(&binding_key) {
-            (svc, stub)
+        let (_svc, stub) = if let Some(&(_svc, stub)) = stub_by_symbol.get(&binding_key) {
+            (_svc, stub)
         } else {
             let svc = SVC_HOST_BASE + host_stubs.len() as u32;
             let stub = write_svc_stub(&mut memory, svc)?;
@@ -366,6 +369,9 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
         memory.write_u64(binding.address, target).map_err(str::to_owned)?;
     }
 
+    if !unresolved.is_empty() {
+        runtime_state.unimplemented_symbols.extend(unresolved.iter().cloned());
+    }
     echo!(
         "ARM64 runtime: entry point {:#x}, image_end {:#x}, {} unique host stubs for {} bindings, {} materialized imports, {} unresolved, stack {:#x}, argv {:#x}, envp {:#x}, apple {:#x}",
         entry,
@@ -620,7 +626,10 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                     window.poll_for_events(&options);
                 }
                 if !handled {
-                    echo!("Warning: ARM64 host function {} is not implemented; returning zero", symbol);
+                    let first = runtime_state.unimplemented_symbols.insert(symbol.to_owned());
+                    if first {
+                        echo!("Warning: ARM64 host function {} is not implemented; returning zero", symbol);
+                    }
                 }
                 if host_dispatches > MAX_HOST_DISPATCHES {
                     return Err(format!("ARM64 runtime made too many host calls; last binding was {}", symbol));
