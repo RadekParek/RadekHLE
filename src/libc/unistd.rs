@@ -9,7 +9,7 @@ use crate::abi::DotDotDot;
 use crate::dyld::{export_c_func, FunctionExports};
 use crate::fs::{FsError, GuestPath};
 use crate::libc::errno::{
-    set_errno, EACCES, EEXIST, EINVAL, ENOENT, ENOSYS, ENOTDIR, ENOTEMPTY, ENOTSUP, EPERM, EROFS,
+    set_errno, EACCES, EEXIST, EFAULT, EINVAL, ENOENT, ENOSYS, ENOTDIR, ENOTEMPTY, ENOTSUP, EPERM, EROFS,
 };
 use crate::libc::posix_io::{FileDescriptor, STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};
 use crate::mem::{ConstPtr, GuestISize, GuestUSize, MutPtr, PAGE_SIZE};
@@ -548,10 +548,20 @@ fn sysconf(_env: &mut Environment, name: SysConfName) -> i32 {
     }
 }
 
-fn pipe(env: &mut Environment, _fds: MutPtr<FileDescriptor>) -> i32 {
-    log!("pipe(): stubbed, returning -1");
-    set_errno(env, ENOSYS);
-    -1
+fn pipe(env: &mut Environment, fds: MutPtr<FileDescriptor>) -> i32 {
+    if fds.is_null() {
+        set_errno(env, EFAULT);
+        return -1;
+    }
+
+    let buffer = std::rc::Rc::new(std::cell::RefCell::new(crate::fs::PipeBuffer::new()));
+    let read_fd = crate::libc::posix_io::find_or_create_pipe_read_fd(env, buffer.clone());
+    let write_fd = crate::libc::posix_io::find_or_create_pipe_write_fd(env, buffer);
+    env.mem.write(fds, read_fd);
+    env.mem.write(fds + 1, write_fd);
+    set_errno(env, 0);
+    log_dbg!("pipe({:?}) => [{}, {}]", fds, read_fd, write_fd);
+    0
 }
 
 fn sbrk(env: &mut Environment, increment: GuestISize) -> GuestISize {
