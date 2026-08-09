@@ -427,3 +427,58 @@ impl A64Cpu {
         unsafe { touchHLE_DynarmicA64Wrapper_set_trace(self.dynarmic_wrapper, enabled) }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::A64Cpu;
+    use crate::mem64::Mem64;
+    use touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context;
+
+    #[test]
+    fn a64_synthetic_cpu_executes_instructions_and_stack_writes() {
+        const CODE: u64 = 0x1_0000_1000;
+        const STACK: u64 = 0x2_0000_0000;
+        let instructions = [
+            0xd503201f,
+            0xd2800540,
+            0x91001401,
+            0xd1000822,
+            0xa9bf07e0,
+            0xa8c107e3,
+            0xd65f03c0,
+        ];
+        let mut memory = Mem64::new();
+        memory.map_zeroed(CODE, 0x1000).unwrap();
+        memory.map_zeroed(STACK, 0x1000).unwrap();
+        for (index, instruction) in instructions.iter().enumerate() {
+            memory.write_u32(CODE + index as u64 * 4, *instruction).unwrap();
+        }
+        let mut context = touchHLE_DynarmicA64Context::default();
+        context.pc = CODE;
+        context.sp = STACK + 0x800;
+        context.regs[30] = CODE + 0x100;
+        let original_sp = context.sp;
+        let mut cpu = A64Cpu::new();
+        cpu.load_context(&context);
+
+        for (index, instruction) in instructions.iter().take(6).enumerate() {
+            assert_eq!(cpu.run_or_step(&mut memory, None), -1, "instruction {} {instruction:#010x}", index + 1);
+            cpu.save_context(&mut context);
+            assert_eq!(context.pc, CODE + (index as u64 + 1) * 4);
+        }
+
+        cpu.save_context(&mut context);
+        assert_eq!(context.regs[0], 42);
+        assert_eq!(context.regs[1], 47);
+        assert_eq!(context.regs[2], 45);
+        assert_eq!(context.regs[3], 42);
+        assert_eq!(context.regs[4], 47);
+        assert_eq!(context.sp, original_sp);
+        assert_eq!(memory.read_u64(original_sp - 16).unwrap(), 42);
+        assert_eq!(memory.read_u64(original_sp - 8).unwrap(), 47);
+
+        assert_eq!(cpu.run_or_step(&mut memory, None), -1);
+        cpu.save_context(&mut context);
+        assert_eq!(context.pc, CODE + 0x100);
+    }
+}
