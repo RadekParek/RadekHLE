@@ -546,7 +546,7 @@ impl GLES for GLES3OnGL3<'_> {
         &mut self,
         target: GLenum,
         level: GLint,
-        internalformat: GLint,
+        mut internalformat: GLint,
         width: GLsizei,
         height: GLsizei,
         border: GLint,
@@ -554,6 +554,9 @@ impl GLES for GLES3OnGL3<'_> {
         type_: GLenum,
         pixels: *const GLvoid,
     ) {
+        if format == gles11::BGRA_EXT {
+            internalformat = gles11::BGRA_EXT as GLint;
+        }
         gl33::TexImage2D(
             target,
             level,

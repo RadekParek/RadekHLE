@@ -219,8 +219,8 @@ com.ea.nfsucinc: --force-composition
 com.gameloft.BladesOfFury: --force-composition
 
 # MCPE LITE
-com.mojang.minecraftpe: --force-composition --trace-gl-errors
-com.mojang.minecraftpe-demo: --force-composition --trace-gl-errors
+com.mojang.minecraftpe: --force-composition --trace-gl-errors --fix-texture-min-filter
+com.mojang.minecraftpe-demo: --force-composition --trace-gl-errors --fix-texture-min-filter
 
 # Bruce Lee
 com.indiagames.brucelee:  --force-composition --ignore-gl-errors

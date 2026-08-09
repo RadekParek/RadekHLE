@@ -2438,7 +2438,7 @@ impl GLES for GLES1OnGLES2<'_> {
         &mut self,
         target: GLenum,
         level: GLint,
-        internalformat: GLint,
+        mut internalformat: GLint,
         width: GLsizei,
         height: GLsizei,
         border: GLint,
@@ -2446,6 +2446,9 @@ impl GLES for GLES1OnGLES2<'_> {
         type_: GLenum,
         pixels: *const GLvoid,
     ) {
+        if format == es1::BGRA_EXT {
+            internalformat = es1::BGRA_EXT as GLint;
+        }
         gl::TexImage2D(
             target,
             level,

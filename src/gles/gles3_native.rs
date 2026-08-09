@@ -480,7 +480,7 @@ impl GLES for GLES3Native<'_> {
         &mut self,
         target: GLenum,
         level: GLint,
-        internalformat: GLint,
+        mut internalformat: GLint,
         width: GLsizei,
         height: GLsizei,
         border: GLint,
@@ -488,6 +488,9 @@ impl GLES for GLES3Native<'_> {
         type_: GLenum,
         pixels: *const GLvoid,
     ) {
+        if format == gles11::BGRA_EXT {
+            internalformat = gles11::BGRA_EXT as GLint;
+        }
         gles30::TexImage2D(
             target,
             level,

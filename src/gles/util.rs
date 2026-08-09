@@ -269,6 +269,104 @@ pub fn try_decode_pvrtc(
     true
 }
 
+/// Convert an uncompressed guest texture to RGBA8888 so GLES backends do not
+/// depend on optional BGRA or packed-pixel upload support.
+#[allow(clippy::too_many_arguments)]
+pub unsafe fn decode_texture_to_rgba8(
+    width: GLsizei,
+    height: GLsizei,
+    format: GLenum,
+    type_: GLenum,
+    pixels: *const std::ffi::c_void,
+    unpack_alignment: GLint,
+) -> Option<Vec<u8>> {
+    if pixels.is_null() || width < 0 || height < 0 {
+        return None;
+    }
+    let width = width as usize;
+    let height = height as usize;
+    let bytes_per_pixel = match type_ {
+        gles11::UNSIGNED_BYTE => match format {
+            gles11::ALPHA | gles11::LUMINANCE => 1,
+            gles11::LUMINANCE_ALPHA => 2,
+            gles11::RGB => 3,
+            gles11::RGBA | gles11::BGRA_EXT => 4,
+            _ => return None,
+        },
+        gles11::UNSIGNED_SHORT_5_6_5
+        | gles11::UNSIGNED_SHORT_4_4_4_4
+        | gles11::UNSIGNED_SHORT_5_5_5_1 => 2,
+        _ => return None,
+    };
+    let alignment = unpack_alignment.max(1) as usize;
+    let row_bytes = width.checked_mul(bytes_per_pixel)?;
+    let row_stride = row_bytes.checked_add(alignment - 1)? / alignment * alignment;
+    let output_len = width.checked_mul(height)?.checked_mul(4)?;
+    let mut output = vec![0u8; output_len];
+    for y in 0..height {
+        let row = (pixels as *const u8).add(y * row_stride);
+        for x in 0..width {
+            let src = row.add(x * bytes_per_pixel);
+            let dst = output.as_mut_ptr().add((y * width + x) * 4);
+            let (r, g, b, a) = match type_ {
+                gles11::UNSIGNED_BYTE => match format {
+                    gles11::ALPHA => (255, 255, 255, src.read()),
+                    gles11::LUMINANCE => {
+                        let l = src.read();
+                        (l, l, l, 255)
+                    }
+                    gles11::LUMINANCE_ALPHA => {
+                        let l = src.read();
+                        (l, l, l, src.add(1).read())
+                    }
+                    gles11::RGB => (src.read(), src.add(1).read(), src.add(2).read(), 255),
+                    gles11::RGBA => (
+                        src.read(),
+                        src.add(1).read(),
+                        src.add(2).read(),
+                        src.add(3).read(),
+                    ),
+                    gles11::BGRA_EXT => (
+                        src.add(2).read(),
+                        src.add(1).read(),
+                        src.read(),
+                        src.add(3).read(),
+                    ),
+                    _ => return None,
+                },
+                gles11::UNSIGNED_SHORT_5_6_5
+                | gles11::UNSIGNED_SHORT_4_4_4_4
+                | gles11::UNSIGNED_SHORT_5_5_5_1 => {
+                    let value = (src as *const u16).read_unaligned();
+                    match type_ {
+                        gles11::UNSIGNED_SHORT_5_6_5 => (
+                            ((((value >> 11) & 0x1f) as u32 * 255 / 31) as u8),
+                            ((((value >> 5) & 0x3f) as u32 * 255 / 63) as u8),
+                            (((value & 0x1f) as u32 * 255 / 31) as u8),
+                            255,
+                        ),
+                        gles11::UNSIGNED_SHORT_4_4_4_4 => (
+                            ((((value >> 12) & 0xf) as u8) * 17),
+                            ((((value >> 8) & 0xf) as u8) * 17),
+                            ((((value >> 4) & 0xf) as u8) * 17),
+                            (((value & 0xf) as u8) * 17),
+                        ),
+                        _ => (
+                            ((((value >> 11) & 0x1f) as u32 * 255 / 31) as u8),
+                            ((((value >> 6) & 0x1f) as u32 * 255 / 31) as u8),
+                            ((((value >> 1) & 0x1f) as u32 * 255 / 31) as u8),
+                            if value & 1 == 0 { 0 } else { 255 },
+                        ),
+                    }
+                }
+                _ => return None,
+            };
+            std::slice::from_raw_parts_mut(dst, 4).copy_from_slice(&[r, g, b, a]);
+        }
+    }
+    Some(output)
+}
+
 pub struct PalettedTextureFormat {
     /// * `true` for 4-bit (nibble) index, 16-color palette.
     /// * `false` for 8-bit (byte) index, 256-color palette.

@@ -2458,6 +2458,11 @@ impl GLES for GLES1OnGL2<'_> {
     ) {
         assert!(target == gl21::TEXTURE_2D);
         assert!(level >= 0);
+        let internalformat = if format == gl21::BGRA {
+            gl21::BGRA as GLint
+        } else {
+            internalformat
+        };
         assert!(
             internalformat as GLenum == gl21::ALPHA
                 || internalformat as GLenum == gl21::RGB

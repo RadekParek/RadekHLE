@@ -2032,25 +2032,48 @@ fn glTexImage2D(
     }
     let fix_filter = env.options.fix_texture_min_filter && level == 0;
     with_ctx_and_mem(env, |gles, mem| unsafe {
+        let mut alignment = 4;
+        gles.GetIntegerv(gles11::UNPACK_ALIGNMENT, &mut alignment);
         let pixels = if pixels.is_null() {
             std::ptr::null()
         } else {
-            let mut alignment = 4;
-            gles.GetIntegerv(gles11::UNPACK_ALIGNMENT, &mut alignment);
             let size = image_size_estimate(width, height, format, type_, alignment.max(1) as GuestUSize);
             mem.ptr_at(pixels.cast::<u8>(), size).cast::<GLvoid>()
         };
-        gles.TexImage2D(
-            target,
-            level,
-            internalformat,
+        if let Some(decoded) = crate::gles::util::decode_texture_to_rgba8(
             width,
             height,
-            border,
             format,
             type_,
             pixels,
-        );
+            alignment,
+        ) {
+            gles.PixelStorei(gles11::UNPACK_ALIGNMENT, 1);
+            gles.TexImage2D(
+                target,
+                level,
+                gles11::RGBA as GLint,
+                width,
+                height,
+                border,
+                gles11::RGBA,
+                gles11::UNSIGNED_BYTE,
+                decoded.as_ptr().cast(),
+            );
+            gles.PixelStorei(gles11::UNPACK_ALIGNMENT, alignment);
+        } else {
+            gles.TexImage2D(
+                target,
+                level,
+                internalformat,
+                width,
+                height,
+                border,
+                format,
+                type_,
+                pixels,
+            );
+        }
         if fix_filter {
             static SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
             if !SEEN.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -2077,9 +2100,32 @@ fn glTexSubImage2D(
         gles.GetIntegerv(gles11::UNPACK_ALIGNMENT, &mut alignment);
         let size = image_size_estimate(width, height, format, type_, alignment.max(1) as GuestUSize);
         let pixels = mem.ptr_at(pixels.cast::<u8>(), size).cast::<GLvoid>();
-        gles.TexSubImage2D(
-            target, level, xoffset, yoffset, width, height, format, type_, pixels,
-        )
+        if let Some(decoded) = crate::gles::util::decode_texture_to_rgba8(
+            width,
+            height,
+            format,
+            type_,
+            pixels,
+            alignment,
+        ) {
+            gles.PixelStorei(gles11::UNPACK_ALIGNMENT, 1);
+            gles.TexSubImage2D(
+                target,
+                level,
+                xoffset,
+                yoffset,
+                width,
+                height,
+                gles11::RGBA,
+                gles11::UNSIGNED_BYTE,
+                decoded.as_ptr().cast(),
+            );
+            gles.PixelStorei(gles11::UNPACK_ALIGNMENT, alignment);
+        } else {
+            gles.TexSubImage2D(
+                target, level, xoffset, yoffset, width, height, format, type_, pixels,
+            );
+        }
     })
 }
 fn glCompressedTexImage2D(
