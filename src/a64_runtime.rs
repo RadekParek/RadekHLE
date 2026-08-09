@@ -2,6 +2,7 @@ use crate::a64_abi::A64Abi;
 use crate::mem64::Mem64;
 use crate::window::DeviceFamily;
 use touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context;
+use std::collections::HashSet;
 
 const MAX_CSTRING: u64 = 1024 * 1024;
 const A64_OBJECT_SIZE: u64 = 96;
@@ -62,6 +63,7 @@ pub struct RuntimeState {
     pub bundle_identifier: String,
     pub bundle_path: String,
     pub bundle_name: String,
+    pub unimplemented_symbols: HashSet<String>,
 }
 
 impl RuntimeState {
@@ -87,6 +89,7 @@ impl RuntimeState {
             bundle_identifier: "org.touchhle.app".to_owned(),
             bundle_path: "/".to_owned(),
             bundle_name: "Application".to_owned(),
+            unimplemented_symbols: HashSet::new(),
         }
     }
 
@@ -102,8 +105,8 @@ pub fn can_dispatch(symbol: &str) -> bool {
     match name(symbol) {
         "malloc" | "calloc" | "valloc" | "posix_memalign" | "free"
         | "malloc_zone_free" | "realloc" | "malloc_zone_realloc" | "memcpy"
-        | "memmove" | "__memcpy_chk" | "__memmove_chk" | "memset" | "bzero"
-        | "__memset_chk" | "strlen" | "strcmp" | "strncmp" | "memcmp"
+        | "memmove" | "memcpy_chk" | "memmove_chk" | "memset" | "bzero"
+        | "memset_chk" | "strlen" | "strcmp" | "strncmp" | "memcmp"
         | "objc_release" | "objc_storeStrong" | "objc_retain"
         | "objc_retainAutoreleasedReturnValue" | "objc_retainAutoreleaseReturnValue"
         | "objc_autorelease" | "objc_autoreleaseReturnValue"
@@ -115,7 +118,12 @@ pub fn can_dispatch(symbol: &str) -> bool {
         | "sel_registerName" | "sel_getUid" | "strcpy" | "strncpy" | "strcat"
         | "objc_autoreleasePoolPush" | "objc_autoreleasePoolPop"
         | "objc_exception_throw" | "objc_begin_catch" | "objc_end_catch"
-        | "__cxa_atexit" | "atexit" | "pthread_mutex_lock"
+        | "cxa_guard_acquire" | "cxa_guard_release" | "cxa_guard_abort"
+        | "cxa_pure_virtual" | "stack_chk_fail" | "stack_chk_fail_local"
+        | "memchr" | "strnlen" | "strchr" | "strrchr" | "strstr"
+        | "strcasecmp" | "strncasecmp" | "bcopy" | "bcmp"
+        | "memset_pattern4" | "memset_pattern8" | "memset_pattern16"
+        | "cxa_atexit" | "atexit" | "pthread_mutex_lock"
         | "pthread_mutex_unlock" | "pthread_mutex_init" | "pthread_mutex_destroy"
         | "NSLog" | "NSLogv" | "os_log" | "os_logv" | "dyld_stub_binder"
         | "CFConstantStringClassReference" | "__CFConstantStringClassReference"
@@ -537,6 +545,11 @@ pub fn materialize_import(mem: &mut Mem64, symbol: &str) -> Result<Option<u64>, 
         mem.write_u8(pointer + bytes.len() as u64, 0).map_err(str::to_owned)?;
         return Ok(Some(objc_class(mem, pointer)?));
     }
+    if symbol == "stack_chk_guard" {
+        let guard = mem.alloc_zeroed(8).map_err(str::to_owned)?;
+        mem.write_u64(guard, 0x9e37_79b9_7f4a_7c15).map_err(str::to_owned)?;
+        return Ok(Some(guard));
+    }
     Ok(None)
 }
 
@@ -610,13 +623,48 @@ pub fn dispatch(
             return_value(context, address);
             Ok(true)
         }
-        "memcpy" | "memmove" | "__memcpy_chk" | "__memmove_chk" => {
-            let size = if symbol.starts_with("__") { context.regs[2] } else { context.regs[2] };
+        "memcpy" | "memmove" | "memcpy_chk" | "memmove_chk" => {
+            let size = context.regs[2];
             mem.copy_bytes(context.regs[0], context.regs[1], size).map_err(str::to_owned)?;
             return_value(context, context.regs[0]);
             Ok(true)
         }
-        "memset" | "bzero" | "__memset_chk" => {
+        "bcopy" => {
+            mem.copy_bytes(context.regs[1], context.regs[0], context.regs[2]).map_err(str::to_owned)?;
+            return_value(context, context.regs[1]);
+            Ok(true)
+        }
+        "memchr" => {
+            let base = context.regs[0];
+            let value = context.regs[1] as u8;
+            let length = context.regs[2];
+            let mut result = 0;
+            for offset in 0..length {
+                if mem.read_u8(base + offset).map_err(str::to_owned)? == value {
+                    result = base + offset;
+                    break;
+                }
+            }
+            return_value(context, result);
+            Ok(true)
+        }
+        "memset_pattern4" | "memset_pattern8" | "memset_pattern16" => {
+            let pattern_size = match symbol {
+                "memset_pattern4" => 4,
+                "memset_pattern8" => 8,
+                _ => 16,
+            };
+            let pattern = mem.read_bytes(context.regs[1], pattern_size).map_err(str::to_owned)?;
+            let length = usize::try_from(context.regs[2]).map_err(|_| "ARM64 pattern fill is too large")?;
+            let mut bytes = Vec::with_capacity(length);
+            while bytes.len() < length {
+                bytes.extend(pattern.iter().copied().take(length - bytes.len()));
+            }
+            mem.write_bytes(context.regs[0], &bytes).map_err(str::to_owned)?;
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "memset" | "bzero" | "memset_chk" => {
             let size = if symbol == "bzero" { context.regs[1] } else { context.regs[2] };
             let value = if symbol == "bzero" { 0 } else { context.regs[1] as u8 };
             mem.fill_bytes(context.regs[0], value, size).map_err(str::to_owned)?;
@@ -627,22 +675,44 @@ pub fn dispatch(
             return_value(context, mem.cstr_len(context.regs[0], 1024 * 1024).map_err(str::to_owned)?);
             Ok(true)
         }
-        "strcpy" | "strncpy" => {
-            let source = c_string(mem, context.regs[1]).unwrap_or_default();
-            let limit = if symbol == "strncpy" { context.regs[2] as usize } else { source.len() + 1 };
-            let mut bytes = vec![0u8; limit];
-            let copy_len = source.len().min(limit);
-            bytes[..copy_len].copy_from_slice(&source[..copy_len]);
-            mem.write_bytes(context.regs[0], &bytes).map_err(str::to_owned)?;
-            return_value(context, context.regs[0]);
+        "strnlen" => {
+            let limit = context.regs[1];
+            let mut length = 0;
+            while length < limit && mem.read_u8(context.regs[0] + length).map_err(str::to_owned)? != 0 {
+                length += 1;
+            }
+            return_value(context, length);
             Ok(true)
         }
-        "strcat" => {
-            let destination_len = mem.cstr_len(context.regs[0], MAX_CSTRING).map_err(str::to_owned)?;
-            let source = c_string(mem, context.regs[1]).unwrap_or_default();
-            mem.write_bytes(context.regs[0] + destination_len, &source).map_err(str::to_owned)?;
-            mem.write_u8(context.regs[0] + destination_len + source.len() as u64, 0).map_err(str::to_owned)?;
-            return_value(context, context.regs[0]);
+        "strchr" | "strrchr" => {
+            let text = c_string(mem, context.regs[0]).unwrap_or_default();
+            let needle = context.regs[1] as u8;
+            let index = if symbol == "strchr" {
+                text.iter().position(|&byte| byte == needle)
+            } else {
+                text.iter().rposition(|&byte| byte == needle)
+            };
+            let index = index.or_else(|| (needle == 0).then_some(text.len()));
+            return_value(context, index.map_or(0, |index| context.regs[0] + index as u64));
+            Ok(true)
+        }
+        "strstr" => {
+            let haystack = c_string(mem, context.regs[0]).unwrap_or_default();
+            let needle = c_string(mem, context.regs[1]).unwrap_or_default();
+            let index = if needle.is_empty() {
+                Some(0)
+            } else {
+                haystack.windows(needle.len()).position(|window| window == needle)
+            };
+            return_value(context, index.map_or(0, |index| context.regs[0] + index as u64));
+            Ok(true)
+        }
+        "strcasecmp" | "strncasecmp" => {
+            let left = c_string(mem, context.regs[0]).unwrap_or_default();
+            let right = c_string(mem, context.regs[1]).unwrap_or_default();
+            let limit = if symbol == "strncasecmp" { context.regs[2] as usize } else { usize::MAX };
+            let result = left.iter().map(u8::to_ascii_lowercase).take(limit).zip(right.iter().map(u8::to_ascii_lowercase).take(limit)).find_map(|(a, b)| (a != b).then_some((a as i32) - (b as i32))).unwrap_or_else(|| (left.len().min(limit) as i32) - (right.len().min(limit) as i32));
+            return_value(context, result as i64 as u64);
             Ok(true)
         }
         "strcmp" | "strncmp" => {
@@ -663,6 +733,12 @@ pub fn dispatch(
             let right = mem.read_bytes(context.regs[1], size).map_err(str::to_owned)?;
             let result = left.iter().zip(right.iter()).find_map(|(a, b)| (a != b).then_some((*a as i32) - (*b as i32))).unwrap_or(0);
             return_value(context, result as i64 as u64);
+            Ok(true)
+        }
+        "bcmp" => {
+            let left = mem.read_bytes(context.regs[0], context.regs[1]).map_err(str::to_owned)?;
+            let right = mem.read_bytes(context.regs[2], context.regs[1]).map_err(str::to_owned)?;
+            return_value(context, u64::from(left != right));
             Ok(true)
         }
         "objc_retain" | "objc_retainAutoreleasedReturnValue" | "objc_retainAutoreleaseReturnValue" | "objc_autorelease" | "objc_autoreleaseReturnValue" | "objc_unsafeClaimAutoreleasedReturnValue" | "objc_retainAutorelease" | "objc_retainBlock" => {
@@ -705,7 +781,31 @@ pub fn dispatch(
             return_value(context, 0);
             Ok(true)
         }
-        "__cxa_atexit" | "atexit" | "pthread_mutex_lock" | "pthread_mutex_unlock" | "pthread_mutex_init" | "pthread_mutex_destroy" => {
+        "cxa_guard_acquire" => {
+            let guard = context.regs[0];
+            let initialized = mem.read_u64(guard).map_err(str::to_owned)? != 0;
+            if !initialized {
+                mem.write_u64(guard, 1).map_err(str::to_owned)?;
+            }
+            return_value(context, u64::from(!initialized));
+            Ok(true)
+        }
+        "cxa_guard_release" => {
+            mem.write_u64(context.regs[0], 2).map_err(str::to_owned)?;
+            return_value(context, 0);
+            Ok(true)
+        }
+        "cxa_guard_abort" => {
+            mem.write_u64(context.regs[0], 0).map_err(str::to_owned)?;
+            return_value(context, 0);
+            Ok(true)
+        }
+        "cxa_pure_virtual" | "stack_chk_fail" | "stack_chk_fail_local" => {
+            log!("Warning: ARM64 runtime bypassed {}", symbol);
+            return_value(context, 0);
+            Ok(true)
+        }
+        "cxa_atexit" | "atexit" | "pthread_mutex_lock" | "pthread_mutex_unlock" | "pthread_mutex_init" | "pthread_mutex_destroy" => {
             return_value(context, 0);
             Ok(true)
         }

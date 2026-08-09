@@ -239,20 +239,39 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
         .collect::<Vec<_>>();
     let apple = vec![format!("executable_path={}", executable_path.as_str())];
     let ios_version = options.ios_version.unwrap_or(crate::options::LATEST_IOS_VERSION);
-    let device_family = options.device_family.unwrap_or_else(|| {
-        let declared = bundle.device_family_array();
-        let supports_ipad = declared.iter().any(DeviceFamily::is_ipad);
-        let supports_phone = declared.iter().any(|family| !family.is_ipad());
-        let family = if supports_phone {
-            DeviceFamily::oldest_arm64_for_class(false)
-        } else if supports_ipad {
-            DeviceFamily::oldest_arm64_for_class(true)
-        } else {
-            DeviceFamily::iPhone5s
-        };
-        log!("ARM64 device family defaulted to oldest compatible model: {} ({})", family, family.machine_name());
-        family
-    });
+    let declared = bundle.device_family_array();
+    let supports_ipad = declared.iter().any(DeviceFamily::is_ipad);
+    let supports_phone = declared.iter().any(|family| !family.is_ipad());
+    let oldest_compatible = if supports_phone {
+        DeviceFamily::oldest_arm64_for_class(false)
+    } else if supports_ipad {
+        DeviceFamily::oldest_arm64_for_class(true)
+    } else {
+        DeviceFamily::iPhone5s
+    };
+    let device_family = match options.device_family {
+        Some(requested)
+            if requested.supports_arm64()
+                && ((requested.is_ipad() && supports_ipad)
+                    || (!requested.is_ipad() && supports_phone)) => requested,
+        Some(requested) => {
+            log!(
+                "ARM64 device override {} is unavailable for this app; using oldest compatible model {} ({})",
+                requested,
+                oldest_compatible,
+                oldest_compatible.machine_name()
+            );
+            oldest_compatible
+        }
+        None => {
+            log!(
+                "ARM64 device family defaulted to oldest compatible model: {} ({})",
+                oldest_compatible,
+                oldest_compatible.machine_name()
+            );
+            oldest_compatible
+        }
+    };
     if !device_family.supports_arm64() {
         return Err(format!(
             "ARM64 app requires an ARM64-capable device model; {} is 32-bit-only",
