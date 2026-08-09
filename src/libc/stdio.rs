@@ -745,7 +745,9 @@ fn remove(env: &mut Environment, path: ConstPtr<u8>) -> i32 {
                 FsError::AccessDenied | FsError::ReadonlyParentDir => EACCES,
                 FsError::AlreadyExist => EINVAL,
             };
-            log!("Warning: remove('{}') failed: {:?}", path_owned, e);
+            if !matches!(e, FsError::DoesNotExist | FsError::NonexistentParentDir) {
+                log!("Warning: remove('{}') failed: {:?}", path_owned, e);
+            }
             set_errno(env, errno);
             -1
         }

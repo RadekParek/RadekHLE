@@ -538,13 +538,7 @@ fn glScissor(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height: 
         use std::sync::atomic::{AtomicBool, Ordering};
         static SEEN: AtomicBool = AtomicBool::new(false);
         if !SEEN.swap(true, Ordering::Relaxed) {
-            log!(
-                "First glScissor({}, {}, {}, {}) [this log will only be shown once]",
-                x,
-                y,
-                width,
-                height
-            );
+            log_dbg!("First glScissor({}, {}, {}, {})", x, y, width, height);
         }
     }
     let factor = env.options.scale_hack.get() as GLsizei;
@@ -610,13 +604,7 @@ fn glViewport(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height:
         use std::sync::atomic::{AtomicBool, Ordering};
         static SEEN: AtomicBool = AtomicBool::new(false);
         if !SEEN.swap(true, Ordering::Relaxed) {
-            log!(
-                "First glViewport({}, {}, {}, {}) [this log will only be shown once]",
-                x,
-                y,
-                width,
-                height
-            );
+            log_dbg!("First glViewport({}, {}, {}, {})", x, y, width, height);
         }
     }
     let factor = env.options.scale_hack.get() as GLsizei;
@@ -1365,10 +1353,7 @@ fn glDrawArrays(env: &mut Environment, mode: GLenum, first: GLint, count: GLsize
         use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
         static SEEN: AtomicBool = AtomicBool::new(false);
         if !SEEN.swap(true, Ordering::Relaxed) {
-            log!(
-                "First glDrawArrays(mode=0x{:x}, first={}, count={}) (app submitting first draw) [this log will only be shown once]",
-                mode, first, count
-            );
+            log_dbg!("First glDrawArrays(mode=0x{:x}, first={}, count={})", mode, first, count);
         }
 
         if trace_potatogold_render() {
@@ -1421,10 +1406,7 @@ fn glDrawElements(
         use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
         static SEEN: AtomicBool = AtomicBool::new(false);
         if !SEEN.swap(true, Ordering::Relaxed) {
-            log!(
-                "First glDrawElements(mode=0x{:x}, count={}, type=0x{:x}) (app submitting first indexed draw) [this log will only be shown once]",
-                mode, count, type_
-            );
+            log_dbg!("First glDrawElements(mode=0x{:x}, count={}, type=0x{:x})", mode, count, type_);
         }
 
         if trace_potatogold_render() {
@@ -1479,10 +1461,7 @@ fn glClear(env: &mut Environment, mask: GLbitfield) {
         use std::sync::atomic::{AtomicBool, Ordering};
         static SEEN: AtomicBool = AtomicBool::new(false);
         if !SEEN.swap(true, Ordering::Relaxed) {
-            log!(
-                "First glClear(mask=0x{:x}) [this log will only be shown once]",
-                mask
-            );
+            log_dbg!("First glClear(mask=0x{:x})", mask);
         }
     }
     with_ctx_and_mem(env, |gles, _mem| unsafe { gles.Clear(mask) });
@@ -1498,13 +1477,7 @@ fn glClearColor(
         use std::sync::atomic::{AtomicBool, Ordering};
         static SEEN: AtomicBool = AtomicBool::new(false);
         if !SEEN.swap(true, Ordering::Relaxed) {
-            log!(
-                "First glClearColor({}, {}, {}, {}) [this log will only be shown once]",
-                red,
-                green,
-                blue,
-                alpha
-            );
+            log_dbg!("First glClearColor({}, {}, {}, {})", red, green, blue, alpha);
         }
     }
     with_ctx_and_mem(env, |gles, _mem| unsafe {
@@ -1817,10 +1790,7 @@ fn glTexParameteri(env: &mut Environment, target: GLenum, pname: GLenum, param: 
         use std::sync::atomic::{AtomicBool, Ordering};
         static SEEN: AtomicBool = AtomicBool::new(false);
         if !SEEN.swap(true, Ordering::Relaxed) {
-            log!(
-                "First glTexParameteri(target=0x{:x}, pname=0x{:x}, param=0x{:x}) [this log will only be shown once]",
-                target, pname, param as u32
-            );
+            log_dbg!("First glTexParameteri(target=0x{:x}, pname=0x{:x}, param=0x{:x})", target, pname, param as u32);
         }
     }
     if pname == gles11::TEXTURE_CROP_RECT_OES {
@@ -2038,10 +2008,7 @@ fn glTexImage2D(
         use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
         static SEEN: AtomicBool = AtomicBool::new(false);
         if !SEEN.swap(true, Ordering::Relaxed) {
-            log!(
-                "First glTexImage2D({}x{}, internalformat=0x{:x}, format=0x{:x}, type=0x{:x}) (app uploading texture data) [this log will only be shown once]",
-                width, height, internalformat as u32, format, type_
-            );
+            log_dbg!("First glTexImage2D({}x{}, internalformat=0x{:x}, format=0x{:x}, type=0x{:x})", width, height, internalformat as u32, format, type_);
         }
 
         if trace_potatogold_render() {
@@ -2085,18 +2052,9 @@ fn glTexImage2D(
             pixels,
         );
         if fix_filter {
-            // Set GL_TEXTURE_MIN_FILTER to GL_LINEAR for the bound
-            // texture so it isn't sampled as opaque black on strict
-            // ES 1.1 drivers (notably Qualcomm Adreno) just because
-            // the guest never bothered to override the default
-            // GL_NEAREST_MIPMAP_LINEAR. The guest's own
-            // glTexParameteri(GL_TEXTURE_MIN_FILTER, …) will override
-            // this on subsequent calls — see Options::fix_texture_min_filter.
             static SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
             if !SEEN.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                log!(
-                    "First fix_texture_min_filter override: forcing GL_TEXTURE_MIN_FILTER=GL_LINEAR after glTexImage2D(level=0) [this log will only be shown once]"
-                );
+                log_dbg!("fix_texture_min_filter: forcing GL_TEXTURE_MIN_FILTER=GL_LINEAR after level-0 texture upload");
             }
             gles.TexParameteri(target, gles11::TEXTURE_MIN_FILTER, gles11::LINEAR as GLint);
         }
@@ -2139,10 +2097,7 @@ fn glCompressedTexImage2D(
         use std::sync::atomic::{AtomicBool, Ordering};
         static SEEN: AtomicBool = AtomicBool::new(false);
         if !SEEN.swap(true, Ordering::Relaxed) {
-            log!(
-                "First glCompressedTexImage2D({}x{}, internalformat=0x{:x}, image_size={}) (app uploading PVRTC/compressed texture) [this log will only be shown once]",
-                width, height, internalformat, image_size
-            );
+            log_dbg!("First glCompressedTexImage2D({}x{}, internalformat=0x{:x}, image_size={})", width, height, internalformat, image_size);
         }
     }
     let fix_filter = env.options.fix_texture_min_filter && level == 0;

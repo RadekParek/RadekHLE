@@ -2172,16 +2172,43 @@ impl GLES for GLES1OnGLES2<'_> {
         gl::DeleteTextures(n, textures);
     }
     unsafe fn TexParameteri(&mut self, target: GLenum, pname: GLenum, param: GLint) {
+        if pname == es1::GENERATE_MIPMAP {
+            if param != 0 {
+                gl::GenerateMipmap(target);
+            }
+            return;
+        }
         gl::TexParameteri(target, pname, param);
     }
     unsafe fn TexParameterf(&mut self, target: GLenum, pname: GLenum, param: GLfloat) {
+        if pname == es1::GENERATE_MIPMAP {
+            if param != 0.0 {
+                gl::GenerateMipmap(target);
+            }
+            return;
+        }
         gl::TexParameterf(target, pname, param);
     }
     unsafe fn TexParameterx(&mut self, target: GLenum, pname: GLenum, param: GLfixed) {
+        if pname == es1::GENERATE_MIPMAP {
+            if param != 0 {
+                gl::GenerateMipmap(target);
+            }
+            return;
+        }
         gl::TexParameterf(target, pname, fixed_to_float(param));
     }
     unsafe fn TexParameteriv(&mut self, target: GLenum, pname: GLenum, params: *const GLint) {
-        if pname == es1::TEXTURE_CROP_RECT_OES && !params.is_null() {
+        if params.is_null() {
+            return;
+        }
+        if pname == es1::GENERATE_MIPMAP {
+            if *params != 0 {
+                gl::GenerateMipmap(target);
+            }
+            return;
+        }
+        if pname == es1::TEXTURE_CROP_RECT_OES {
             self.state.texture_crop_rect =
                 std::slice::from_raw_parts(params, 4).try_into().unwrap();
             return;
@@ -2189,7 +2216,16 @@ impl GLES for GLES1OnGLES2<'_> {
         gl::TexParameteriv(target, pname, params);
     }
     unsafe fn TexParameterfv(&mut self, target: GLenum, pname: GLenum, params: *const GLfloat) {
-        if pname == es1::TEXTURE_CROP_RECT_OES && !params.is_null() {
+        if params.is_null() {
+            return;
+        }
+        if pname == es1::GENERATE_MIPMAP {
+            if *params != 0.0 {
+                gl::GenerateMipmap(target);
+            }
+            return;
+        }
+        if pname == es1::TEXTURE_CROP_RECT_OES {
             self.state.texture_crop_rect = std::slice::from_raw_parts(params, 4)
                 .iter()
                 .map(|v| *v as GLint)
@@ -2202,6 +2238,12 @@ impl GLES for GLES1OnGLES2<'_> {
     }
     unsafe fn TexParameterxv(&mut self, target: GLenum, pname: GLenum, params: *const GLfixed) {
         if params.is_null() {
+            return;
+        }
+        if pname == es1::GENERATE_MIPMAP {
+            if *params != 0 {
+                gl::GenerateMipmap(target);
+            }
             return;
         }
         if pname == es1::TEXTURE_CROP_RECT_OES {
@@ -3147,15 +3189,6 @@ impl GLES for GLES1OnGLES2<'_> {
             Some(program) => program,
             None => return,
         };
-        crate::gles::trace_translator_event(format!(
-            "DrawArrays program={} mvp={:?} modelview={:?} projection={:?} color={:?} normal={:?}",
-            program,
-            self.state.mvp(),
-            self.state.modelview.current,
-            self.state.projection.current,
-            self.state.color,
-            self.state.normal
-        ));
         gl::UseProgram(program);
         let mvp = unsafe { self.state.mvp() };
         let mvp_loc = gl::GetUniformLocation(program, b"u_mvp\0".as_ptr() as *const _);
@@ -3535,15 +3568,6 @@ impl GLES for GLES1OnGLES2<'_> {
             Some(program) => program,
             None => return,
         };
-        crate::gles::trace_translator_event(format!(
-            "DrawElements program={} mvp={:?} modelview={:?} projection={:?} color={:?} normal={:?}",
-            program,
-            self.state.mvp(),
-            self.state.modelview.current,
-            self.state.projection.current,
-            self.state.color,
-            self.state.normal
-        ));
         gl::UseProgram(program);
         let mvp = self.state.mvp();
         let mvp_loc = gl::GetUniformLocation(program, b"u_mvp\0".as_ptr() as *const _);

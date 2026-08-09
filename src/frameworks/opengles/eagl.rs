@@ -967,6 +967,14 @@ unsafe fn read_renderbuffer(gles: &mut dyn GLES, mut pixel_buffer: Vec<u8>) -> (
             renderbuffer,
         );
     }
+    let framebuffer_status = gles.CheckFramebufferStatusOES(gles11::FRAMEBUFFER_OES);
+    if framebuffer_status != gles11::FRAMEBUFFER_COMPLETE_OES {
+        log_once_fmt!(
+            "EAGL readback source framebuffer {} is incomplete ({:#x}); frame may be black.",
+            if use_bound_framebuffer { old_framebuffer } else { src_framebuffer },
+            framebuffer_status,
+        );
+    }
 
     // On tile-based GPUs (Mali, Adreno, PowerVR) the per-tile color buffer
     // isn't guaranteed to be resolved to the renderbuffer's main memory

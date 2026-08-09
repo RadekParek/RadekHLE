@@ -91,17 +91,14 @@ use gles3_native::GLES3NativeContext;
 use gles3_on_gl3::GLES3OnGL3Context;
 pub use gles_generic::GLESContext;
 pub use gles_generic::GLES;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 
-static TRANSLATOR_TRACE_ENABLED: AtomicBool = AtomicBool::new(false);
 static TRANSLATOR_TRACE_EVENTS: AtomicU32 = AtomicU32::new(0);
 
-pub(crate) fn configure_translator_tracing(enabled: bool) {
-    TRANSLATOR_TRACE_ENABLED.store(enabled, Ordering::Relaxed);
-}
+pub(crate) fn configure_translator_tracing(_enabled: bool) {}
+
 pub(crate) fn translator_tracing_enabled() -> bool {
-    TRANSLATOR_TRACE_ENABLED.load(Ordering::Relaxed)
-        || std::env::var_os("TOUCHHLE_TRACE_TRANSLATOR").is_some()
+    std::env::var_os("TOUCHHLE_TRACE_TRANSLATOR").is_some()
 }
 
 pub(crate) fn trace_translator_event(event: String) {

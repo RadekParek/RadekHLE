@@ -1282,13 +1282,13 @@ fn sendto(
     let type_ = match State::get(env).sockets.get(&socket) {
         Some(s) => s.type_,
         None => {
-            log!("sendto: unknown socket fd={}, returning EBADF", socket);
+            log_dbg!("sendto: unknown socket fd={}, returning EBADF", socket);
             set_errno(env, EBADF);
             return -1;
         }
     };
     if type_ != SOCK_DGRAM {
-        log!(
+        log_dbg!(
             "sendto: socket fd={} is not SOCK_DGRAM, returning ESOCKTNOSUPPORT",
             socket
         );

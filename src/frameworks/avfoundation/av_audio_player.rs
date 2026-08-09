@@ -101,7 +101,7 @@ pub const CLASSES: ClassExports = objc_classes! {
                       error:(MutPtr<id>)outError {
     let path: id = msg![env; url path];
     let path_str = ns_string::to_rust_string(env, path);
-    log!("[(AVAudioPlayer*){:?} initWithContentsOfURL:{:?} {} outError:{:?}]", this, url, path_str, outError);
+    log_dbg!("[(AVAudioPlayer*){:?} initWithContentsOfURL:{:?} {} outError:{:?}]", this, url, path_str, outError);
 
     retain(env, url);
     env.objc.borrow_mut::<AVAudioPlayerHostObject>(this).audio_file_url = url;
@@ -310,7 +310,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (bool)play {
-    log!("[(AVAudioPlayer*){:?} play]", this);
+    log_dbg!("[(AVAudioPlayer*){:?} play]", this);
     () = msg![env; this prepareToPlay];
     // If `prepareToPlay` couldn't set up an audio queue (e.g. because the
     // player was already deallocated and the host object is now missing,
