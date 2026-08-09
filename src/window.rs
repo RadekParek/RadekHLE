@@ -23,7 +23,7 @@ use crate::matrix::Matrix;
 use crate::options::Options;
 use crate::Environment;
 use sdl2::mouse::MouseButton;
-use sdl2::pixels::PixelFormatEnum;
+use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::surface::Surface;
 use sdl2_sys::SDL_PowerState;
 use std::collections::{HashMap, VecDeque};
@@ -887,6 +887,7 @@ pub struct Window {
     fullscreen: bool,
     scale_hack: NonZeroU32,
     host_screen_size: Option<(u32, u32)>,
+    software_presentation: bool,
     internal_gl_ins: Option<Box<dyn GLESContext>>,
     splash_image: Option<Image>,
     /// Whether the selected image already targets the startup orientation.
@@ -957,6 +958,7 @@ impl Window {
         options: &Options,
     ) -> Window {
         crate::gles::configure_angle_driver(options.angle_driver);
+        let software_presentation = options.software_presentation;
         let sdl_ctx = sdl2::init().unwrap();
         let video_ctx = sdl_ctx.video().unwrap();
 
@@ -967,7 +969,7 @@ impl Window {
         // remove this (https://github.com/touchHLE/touchHLE/issues/85).
         sdl2::hint::set("SDL_JOYSTICK_HIDAPI", "0");
 
-        if env::consts::OS == "android" {
+        if env::consts::OS == "android" && !software_presentation {
             // SDL needs the host context profile before creating the window.
             // A GLES1 window cannot later create the GLES2 context required by
             // the fixed-function translator on Android.
@@ -980,7 +982,7 @@ impl Window {
                     | crate::options::GraphicsApi::GLES30
             ) || (matches!(
                 options.graphics_api,
-                crate::options::GraphicsApi::Default | crate::options::GraphicsApi::Metal
+                crate::options::GraphicsApi::Default
             ) && (options.prefer_gles2_context || options.angle_driver));
             if use_gles2 {
                 let version = if matches!(
@@ -1108,6 +1110,7 @@ impl Window {
             fullscreen,
             scale_hack,
             host_screen_size,
+            software_presentation,
             internal_gl_ins: None,
             splash_image,
             splash_image_is_orientation_specific,
@@ -1141,6 +1144,10 @@ impl Window {
         // (see src/frameworks/core_animation/composition.rs). OpenGL ES is used
         // because SDL2 won't let us use more than one graphics API in the same
         // window, and we also need OpenGL ES for the app's own rendering.
+        if software_presentation {
+            return window;
+        }
+
         let mut gl_ins = match options.graphics_api {
             crate::options::GraphicsApi::Translator => {
                 create_gles1_translator_ctx_no_parent_stack(&mut window)
@@ -1154,7 +1161,7 @@ impl Window {
             crate::options::GraphicsApi::GLES10 | crate::options::GraphicsApi::GLES11 => {
                 create_gles1_ctx_no_parent_stack(&mut window, options)
             }
-            crate::options::GraphicsApi::Metal | crate::options::GraphicsApi::Default => {
+            crate::options::GraphicsApi::Default => {
                 if options.prefer_gles2_context || options.angle_driver {
                     create_gles2_ctx_no_parent_stack(&mut window)
                 } else {
@@ -2217,6 +2224,18 @@ impl Window {
     }
 
     pub fn present_compatibility_frame(&mut self, clear_color: [f32; 4]) {
+        if self.software_presentation {
+            let color = Color::RGBA(
+                (clear_color[0].clamp(0.0, 1.0) * 255.0) as u8,
+                (clear_color[1].clamp(0.0, 1.0) * 255.0) as u8,
+                (clear_color[2].clamp(0.0, 1.0) * 255.0) as u8,
+                (clear_color[3].clamp(0.0, 1.0) * 255.0) as u8,
+            );
+            let mut surface = self.window.surface(&self.event_pump).unwrap();
+            surface.fill_rect(None, color).unwrap();
+            surface.update_window().unwrap();
+            return;
+        }
         let (x, y, width, height) = self.viewport();
         let mut gl = self.make_internal_gl_ctx_current();
         unsafe {

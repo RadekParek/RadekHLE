@@ -14,7 +14,7 @@ use super::gles11_raw as es1;
 use super::gles2_raw as gl;
 use super::gles2_raw::types::*;
 use super::gles_generic::{GLchar, GLES};
-use super::util::{fixed_to_float, float_to_fixed, try_decode_pvrtc};
+use super::util::{fixed_to_float, float_to_fixed, try_decode_pvrtc, PalettedTextureFormat};
 use super::GLESContext;
 use crate::window::{GLContext, GLVersion, Window};
 use std::collections::HashMap;
@@ -2564,20 +2564,15 @@ impl GLES for GLES1OnGLES2<'_> {
         image_size: GLsizei,
         data: *const GLvoid,
     ) {
-        if !data.is_null()
-            && image_size > 0
-            && try_decode_pvrtc(
-                self,
-                target,
-                level,
-                internalformat,
-                width,
-                height,
-                border,
-                std::slice::from_raw_parts(data.cast::<u8>(), image_size as usize),
-            )
-        {
-            return;
+        if !data.is_null() && image_size > 0 {
+            let payload = std::slice::from_raw_parts(data.cast::<u8>(), image_size as usize);
+            if try_decode_pvrtc(self, target, level, internalformat, width, height, border, payload) {
+                return;
+            }
+            if let Some(decoded) = PalettedTextureFormat::decode_rgba8(internalformat, width, height, payload) {
+                gl::TexImage2D(target, level, es1::RGBA as GLint, width, height, border, es1::RGBA, es1::UNSIGNED_BYTE, decoded.as_ptr().cast());
+                return;
+            }
         }
         gl::CompressedTexImage2D(
             target,

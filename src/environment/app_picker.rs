@@ -119,7 +119,7 @@ fn enumerate_apps(apps_dir: &Path) -> Result<Vec<AppInfo>, std::io::Error> {
 }
 
 const IOS_VERSION_ENTRIES: &[(&str, i32)] = &[
-    ("Latest (iOS 12.4.1)", 0),
+    ("Latest (iOS 13.7)", 0),
     ("iOS 2.0", 1),
     ("iOS 3.0", 2),
     ("iOS 4.3", 3),
@@ -131,6 +131,7 @@ const IOS_VERSION_ENTRIES: &[(&str, i32)] = &[
     ("iOS 10.3", 9),
     ("iOS 11.4", 10),
     ("iOS 12.4.1", 11),
+    ("iOS 13.7", 12),
 ];
 
 fn ios_version_for_tag(tag: i32) -> Option<(i32, i32, i32)> {
@@ -147,6 +148,7 @@ fn ios_version_for_tag(tag: i32) -> Option<(i32, i32, i32)> {
         9 => Some((10, 3, 0)),
         10 => Some((11, 4, 0)),
         11 => Some((12, 4, 1)),
+        12 => Some((13, 7, 0)),
         _ => None,
     }
 }
@@ -165,6 +167,7 @@ fn ios_version_tag(value: Option<(i32, i32, i32)>) -> i32 {
         Some((10, 3, 0)) => 9,
         Some((11, 4, 0)) => 10,
         Some((12, 4, 1)) => 11,
+        Some((13, 7, 0)) => 12,
         _ => 0,
     }
 }
@@ -175,7 +178,7 @@ fn ios_version_label(value: Option<(i32, i32, i32)>) -> String {
         .iter()
         .find(|(_, entry_tag)| *entry_tag == tag)
         .map(|(label, _)| (*label).to_string())
-        .unwrap_or_else(|| "Latest (iOS 12.4.1)".to_string())
+        .unwrap_or_else(|| "Latest (iOS 13.7)".to_string())
 }
 
 #[derive(Default)]
@@ -365,7 +368,6 @@ const CLASSES: ClassExports = objc_classes! {
         0 => crate::options::GraphicsApi::Default,
         1 => crate::options::GraphicsApi::Translator,
         2 => crate::options::GraphicsApi::TranslatorGLES30,
-        3 => crate::options::GraphicsApi::Metal,
         _ => crate::options::GraphicsApi::Default,
     };
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).graphics_api = Some(api);
@@ -1077,7 +1079,6 @@ fn app_picker_inner(
             crate::options::GraphicsApi::GLES11 => "gles1.1",
             crate::options::GraphicsApi::GLES20 => "gles2.0",
             crate::options::GraphicsApi::GLES30 => "gles3.0",
-            crate::options::GraphicsApi::Metal => "metal",
             crate::options::GraphicsApi::Default => unreachable!(),
         };
         option_args.push(format!("--graphics-api={value}"));
@@ -2240,7 +2241,6 @@ const GRAPHICS_API_ENTRIES: &[(&str, crate::options::GraphicsApi)] = &[
         "OpenGL ES 1.1 → OpenGL ES 3.0 translator",
         crate::options::GraphicsApi::TranslatorGLES30,
     ),
-    ("Metal", crate::options::GraphicsApi::Metal),
 ];
 
 fn update_graphics_api_dropdown(env: &mut Environment, button: id, items: &[id], value: crate::options::GraphicsApi) {

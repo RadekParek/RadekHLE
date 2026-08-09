@@ -89,7 +89,7 @@ fn effective_eagl_api(
         GraphicsApi::TranslatorGLES30 => kEAGLRenderingAPIOpenGLES3,
         GraphicsApi::GLES20 => kEAGLRenderingAPIOpenGLES2,
         GraphicsApi::GLES30 => kEAGLRenderingAPIOpenGLES3,
-        GraphicsApi::Metal | GraphicsApi::Default => {
+        GraphicsApi::Default => {
             if (prefer_gles2_context || angle_driver) && requested == kEAGLRenderingAPIOpenGLES1 {
                 log!(
                     "EAGL: upgrading initWithAPI:{} to OpenGL ES 2.0 (prefer_gles2_context={}, angle_driver={})",

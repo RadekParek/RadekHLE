@@ -32,7 +32,7 @@ pub enum Button {
 }
 
 /// Highest iOS version currently exposed by the emulator compatibility layer.
-pub const LATEST_IOS_VERSION: (i32, i32, i32) = (12, 4, 1);
+pub const LATEST_IOS_VERSION: (i32, i32, i32) = (13, 7, 0);
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum GraphicsApi {
@@ -43,7 +43,6 @@ pub enum GraphicsApi {
     GLES11,
     GLES20,
     GLES30,
-    Metal,
 }
 
 impl Default for GraphicsApi {
@@ -62,7 +61,7 @@ impl GraphicsApi {
             "gles1.1" | "gles11" => Ok(Self::GLES11),
             "gles2.0" | "gles20" => Ok(Self::GLES20),
             "gles3.0" | "gles30" => Ok(Self::GLES30),
-            "metal" => Ok(Self::Metal),
+            "metal" => Ok(Self::Default),
             _ => Err(()),
         }
     }
@@ -76,7 +75,6 @@ impl GraphicsApi {
             Self::GLES11 => "OpenGL ES 1.1",
             Self::GLES20 => "OpenGL ES 2.0",
             Self::GLES30 => "OpenGL ES 3.0",
-            Self::Metal => "Metal",
         }
     }
 }
@@ -167,6 +165,7 @@ pub struct Options {
     /// (`level > 0`) do not trigger the fix-up so games that actually use
     /// mipmaps are unaffected.
     pub fix_texture_min_filter: bool,
+    pub software_presentation: bool,
     pub zero_stack_after_guest_to_host_call: Option<u32>,
 }
 
@@ -212,6 +211,7 @@ impl Default for Options {
             ignore_gl_errors: false,
             trace_gl_errors: false,
             fix_texture_min_filter: cfg!(target_os = "android"),
+            software_presentation: false,
             zero_stack_after_guest_to_host_call: None,
         }
     }
