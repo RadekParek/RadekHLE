@@ -44,6 +44,7 @@ pub enum DeviceFamily {
     iPhone4s,
     iPhone5,
     iPhone5c,
+    iPhone5s,
     iPhone6,
     iPhone6Plus,
     iPhone6s,
@@ -88,6 +89,7 @@ pub enum DeviceFamily {
     iPad3,
     iPad4,
     iPad5,
+    iPadAir,
     iPadMini,
     iPadMini2,
     iPadMini3,
@@ -112,6 +114,7 @@ impl DeviceFamily {
             DeviceFamily::iPhone4s => "iPhone 4s",
             DeviceFamily::iPhone5 => "iPhone 5",
             DeviceFamily::iPhone5c => "iPhone 5c",
+            DeviceFamily::iPhone5s => "iPhone 5s",
             DeviceFamily::iPhone6 => "iPhone 6",
             DeviceFamily::iPhone6Plus => "iPhone 6 Plus",
             DeviceFamily::iPhone6s => "iPhone 6s",
@@ -156,6 +159,7 @@ impl DeviceFamily {
             DeviceFamily::iPad3 => "iPad 3",
             DeviceFamily::iPad4 => "iPad 4",
             DeviceFamily::iPad5 => "iPad 5",
+            DeviceFamily::iPadAir => "iPad Air",
             DeviceFamily::iPadMini => "iPad mini",
             DeviceFamily::iPadMini2 => "iPad mini 2",
             DeviceFamily::iPadMini3 => "iPad mini 3",
@@ -175,10 +179,65 @@ impl DeviceFamily {
                 | DeviceFamily::iPad3
                 | DeviceFamily::iPad4
                 | DeviceFamily::iPad5
+                | DeviceFamily::iPadAir
                 | DeviceFamily::iPadMini
                 | DeviceFamily::iPadMini2
                 | DeviceFamily::iPadMini3
         )
+    }
+
+    pub fn supports_arm64(&self) -> bool {
+        matches!(
+            self,
+            DeviceFamily::iPhone5s
+                | DeviceFamily::iPhone6
+                | DeviceFamily::iPhone6Plus
+                | DeviceFamily::iPhone6s
+                | DeviceFamily::iPhone6sPlus
+                | DeviceFamily::iPhoneSE
+                | DeviceFamily::iPhone7
+                | DeviceFamily::iPhone7Plus
+                | DeviceFamily::iPhone8
+                | DeviceFamily::iPhone8Plus
+                | DeviceFamily::iPhoneX
+                | DeviceFamily::iPhoneSE2
+                | DeviceFamily::iPhoneSE3
+                | DeviceFamily::iPhone11
+                | DeviceFamily::iPhone11Pro
+                | DeviceFamily::iPhone11ProMax
+                | DeviceFamily::iPhone12Mini
+                | DeviceFamily::iPhone12
+                | DeviceFamily::iPhone12Pro
+                | DeviceFamily::iPhone12ProMax
+                | DeviceFamily::iPhone13Mini
+                | DeviceFamily::iPhone13
+                | DeviceFamily::iPhone13Pro
+                | DeviceFamily::iPhone13ProMax
+                | DeviceFamily::iPhone14
+                | DeviceFamily::iPhone14Plus
+                | DeviceFamily::iPhone14Pro
+                | DeviceFamily::iPhone14ProMax
+                | DeviceFamily::iPhone15
+                | DeviceFamily::iPhone15Plus
+                | DeviceFamily::iPhone15Pro
+                | DeviceFamily::iPhone15ProMax
+                | DeviceFamily::iPhone16
+                | DeviceFamily::iPhone16Plus
+                | DeviceFamily::iPhone16Pro
+                | DeviceFamily::iPhone16ProMax
+                | DeviceFamily::iPhone16e
+                | DeviceFamily::iPhone17
+                | DeviceFamily::iPhone17Pro
+                | DeviceFamily::iPhone17ProMax
+                | DeviceFamily::iPadAir
+                | DeviceFamily::iPad5
+                | DeviceFamily::iPadMini2
+                | DeviceFamily::iPadMini3
+        )
+    }
+
+    pub fn oldest_arm64_for_class(is_ipad: bool) -> Self {
+        if is_ipad { Self::iPadAir } else { Self::iPhone5s }
     }
 
     pub fn is_ipod_touch(&self) -> bool {
@@ -193,7 +252,7 @@ impl DeviceFamily {
     }
 
     pub fn is_phone_568(&self) -> bool {
-        matches!(self, DeviceFamily::iPhone5 | DeviceFamily::iPhone5c | DeviceFamily::iPodTouch5)
+        matches!(self, DeviceFamily::iPhone5 | DeviceFamily::iPhone5c | DeviceFamily::iPhone5s | DeviceFamily::iPodTouch5)
     }
 
     pub fn is_retina(&self) -> bool {
@@ -247,6 +306,7 @@ impl DeviceFamily {
                 | DeviceFamily::iPad3
                 | DeviceFamily::iPad4
                 | DeviceFamily::iPad5
+                | DeviceFamily::iPadAir
                 | DeviceFamily::iPadMini2
                 | DeviceFamily::iPadMini3
         )
@@ -301,6 +361,7 @@ impl DeviceFamily {
             DeviceFamily::iPhone4s => "iPhone4,1",
             DeviceFamily::iPhone5 => "iPhone5,1",
             DeviceFamily::iPhone5c => "iPhone5,3",
+            DeviceFamily::iPhone5s => "iPhone6,1",
             DeviceFamily::iPhone6 => "iPhone7,2",
             DeviceFamily::iPhone6Plus => "iPhone7,1",
             DeviceFamily::iPhone6s => "iPhone8,1",
@@ -345,6 +406,7 @@ impl DeviceFamily {
             DeviceFamily::iPad3 => "iPad3,1",
             DeviceFamily::iPad4 => "iPad3,4",
             DeviceFamily::iPad5 => "iPad6,11",
+            DeviceFamily::iPadAir => "iPad4,1",
             DeviceFamily::iPadMini => "iPad2,5",
             DeviceFamily::iPadMini2 => "iPad4,4",
             DeviceFamily::iPadMini3 => "iPad4,7",
@@ -387,6 +449,7 @@ impl DeviceFamily {
             DeviceFamily::iPhone4s
             | DeviceFamily::iPhone5
             | DeviceFamily::iPhone5c
+            | DeviceFamily::iPhone5s
             | DeviceFamily::iPad2
             | DeviceFamily::iPad3
             | DeviceFamily::iPad4
@@ -414,6 +477,7 @@ impl DeviceFamily {
             | DeviceFamily::iPhone8Plus
             | DeviceFamily::iPhoneX
             | DeviceFamily::iPad5
+            | DeviceFamily::iPadAir
             | DeviceFamily::iPadMini2
             | DeviceFamily::iPadMini3 => 1024 * MIB,
             // iPhone 11 Pro / 11 Pro Max / 12 Pro / 12 Pro Max / 13 Pro / 13 Pro Max
@@ -487,6 +551,7 @@ impl DeviceFamily {
             DeviceFamily::iPhone4s => "iphone-4s",
             DeviceFamily::iPhone5 => "iphone-5",
             DeviceFamily::iPhone5c => "iphone-5c",
+            DeviceFamily::iPhone5s => "iphone-5s",
             DeviceFamily::iPhone6 => "iphone-6",
             DeviceFamily::iPhone6Plus => "iphone-6-plus",
             DeviceFamily::iPhone6s => "iphone-6s",
@@ -531,6 +596,7 @@ impl DeviceFamily {
             DeviceFamily::iPad3 => "ipad-3",
             DeviceFamily::iPad4 => "ipad-4",
             DeviceFamily::iPad5 => "ipad-5",
+            DeviceFamily::iPadAir => "ipad-air",
             DeviceFamily::iPadMini => "ipad-mini",
             DeviceFamily::iPadMini2 => "ipad-mini-2",
             DeviceFamily::iPadMini3 => "ipad-mini-3",
@@ -552,6 +618,7 @@ impl DeviceFamily {
         DeviceFamily::iPhone4s,
         DeviceFamily::iPhone5,
         DeviceFamily::iPhone5c,
+        DeviceFamily::iPhone5s,
         DeviceFamily::iPhone6,
         DeviceFamily::iPhone6Plus,
         DeviceFamily::iPhone6s,
@@ -596,6 +663,7 @@ impl DeviceFamily {
         DeviceFamily::iPad3,
         DeviceFamily::iPad4,
         DeviceFamily::iPad5,
+        DeviceFamily::iPadAir,
         DeviceFamily::iPadMini,
         DeviceFamily::iPadMini2,
         DeviceFamily::iPadMini3,
@@ -628,6 +696,7 @@ impl TryFrom<&str> for DeviceFamily {
             "iphone-4s" | "iphone4,1" => Ok(DeviceFamily::iPhone4s),
             "iphone-5" | "iphone5,1" => Ok(DeviceFamily::iPhone5),
             "iphone-5c" | "iphone5,3" => Ok(DeviceFamily::iPhone5c),
+            "iphone-5s" | "iphone6,1" => Ok(DeviceFamily::iPhone5s),
             "iphone-6" | "iphone7,2" => Ok(DeviceFamily::iPhone6),
             "iphone-6-plus" | "iphone7,1" => Ok(DeviceFamily::iPhone6Plus),
             "iphone-6s" | "iphone8,1" => Ok(DeviceFamily::iPhone6s),
@@ -673,6 +742,7 @@ impl TryFrom<&str> for DeviceFamily {
             "ipad-3" | "ipad3,1" => Ok(DeviceFamily::iPad3),
             "ipad-4" | "ipad3,4" => Ok(DeviceFamily::iPad4),
             "ipad-5" | "ipad6,11" => Ok(DeviceFamily::iPad5),
+            "ipad-air" | "ipad4,1" => Ok(DeviceFamily::iPadAir),
             "ipad-mini" | "ipad2,5" => Ok(DeviceFamily::iPadMini),
             "ipad-mini-2" | "ipad4,4" => Ok(DeviceFamily::iPadMini2),
             "ipad-mini-3" | "ipad4,7" => Ok(DeviceFamily::iPadMini3),
@@ -2350,6 +2420,10 @@ impl Window {
             DeviceOrientation::Portrait,
             NonZeroU32::new(1).unwrap(),
         )
+    }
+
+    pub fn framebuffer_size(&self) -> (u32, u32) {
+        size_for_orientation_from_size(self.screen_size(), self.device_orientation, self.scale_hack)
     }
 
     /// Get the region of the on-screen window (x, y, width, height) used to

@@ -5,6 +5,7 @@ use crate::fs::Fs;
 use crate::mach_o64::MachO64;
 use crate::mem64::Mem64;
 use crate::options::Options;
+use crate::window::DeviceFamily;
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 use touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context;
@@ -238,6 +239,26 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
         .collect::<Vec<_>>();
     let apple = vec![format!("executable_path={}", executable_path.as_str())];
     let ios_version = options.ios_version.unwrap_or(crate::options::LATEST_IOS_VERSION);
+    let device_family = options.device_family.unwrap_or_else(|| {
+        let declared = bundle.device_family_array();
+        let supports_ipad = declared.iter().any(DeviceFamily::is_ipad);
+        let supports_phone = declared.iter().any(|family| !family.is_ipad());
+        let family = if supports_phone {
+            DeviceFamily::oldest_arm64_for_class(false)
+        } else if supports_ipad {
+            DeviceFamily::oldest_arm64_for_class(true)
+        } else {
+            DeviceFamily::iPhone5s
+        };
+        log!("ARM64 device family defaulted to oldest compatible model: {} ({})", family, family.machine_name());
+        family
+    });
+    if !device_family.supports_arm64() {
+        return Err(format!(
+            "ARM64 app requires an ARM64-capable device model; {} is 32-bit-only",
+            device_family
+        ));
+    }
     let graphics_backend = match options.graphics_api {
         crate::options::GraphicsApi::GLES10
         | crate::options::GraphicsApi::GLES11
@@ -249,12 +270,17 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             A64GraphicsBackend::MetalCompatibility
         }
     };
-    let mut runtime_state = RuntimeState::new(ios_version, graphics_backend);
+    let mut runtime_state = RuntimeState::new(ios_version, graphics_backend, device_family);
     runtime_state.current_module = Some(executable.name.clone());
+    runtime_state.bundle_identifier = bundle.bundle_identifier().to_owned();
+    runtime_state.bundle_path = bundle.bundle_path().as_str().to_owned();
+    runtime_state.bundle_name = bundle.bundle_name().to_owned();
     let mut window = if options.headless {
         None
     } else {
         let mut window_options = options.clone();
+        window_options.device_family = Some(device_family);
+        window_options.host_screen_size = Some(device_family.portrait_size());
         if graphics_backend == A64GraphicsBackend::MetalCompatibility {
             window_options.graphics_api = crate::options::GraphicsApi::GLES20;
             window_options.prefer_gles2_context = true;
@@ -268,7 +294,12 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
         )))
     };
     echo!(
-        "ARM64 graphics backend selected: {} (64-bit apps always use Metal; OpenGL ES settings are ignored)",
+        "ARM64 device selected: {} ({})",
+        device_family,
+        device_family.machine_name()
+    );
+    echo!(
+        "ARM64 graphics backend selected: {} (64-bit apps use native Metal compatibility routing)",
         graphics_backend.label()
     );
     log_dbg!(

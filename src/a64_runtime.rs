@@ -1,5 +1,6 @@
 use crate::a64_abi::A64Abi;
 use crate::mem64::Mem64;
+use crate::window::DeviceFamily;
 use touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context;
 
 const MAX_CSTRING: u64 = 1024 * 1024;
@@ -23,6 +24,8 @@ const A64_KIND_ATTACHMENT_ARRAY: u64 = 16;
 const A64_KIND_ATTACHMENT: u64 = 17;
 const A64_KIND_SAMPLER: u64 = 18;
 const A64_KIND_DEPTH_STENCIL: u64 = 19;
+const A64_KIND_UI_DEVICE: u64 = 20;
+const A64_KIND_UI_SCREEN: u64 = 21;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum A64GraphicsBackend {
@@ -45,6 +48,7 @@ impl A64GraphicsBackend {
 pub struct RuntimeState {
     pub ios_version: (i32, i32, i32),
     pub graphics_backend: A64GraphicsBackend,
+    pub device_family: DeviceFamily,
     pub host_dispatches: u64,
     pub objc_messages: u64,
     pub metal_commands: u64,
@@ -55,13 +59,21 @@ pub struct RuntimeState {
     pub last_symbol: Option<String>,
     pub last_successful_symbol: Option<String>,
     pub current_module: Option<String>,
+    pub bundle_identifier: String,
+    pub bundle_path: String,
+    pub bundle_name: String,
 }
 
 impl RuntimeState {
-    pub fn new(ios_version: (i32, i32, i32), graphics_backend: A64GraphicsBackend) -> Self {
+    pub fn new(
+        ios_version: (i32, i32, i32),
+        graphics_backend: A64GraphicsBackend,
+        device_family: DeviceFamily,
+    ) -> Self {
         Self {
             ios_version,
             graphics_backend,
+            device_family,
             host_dispatches: 0,
             objc_messages: 0,
             metal_commands: 0,
@@ -72,6 +84,9 @@ impl RuntimeState {
             last_symbol: None,
             last_successful_symbol: None,
             current_module: None,
+            bundle_identifier: "org.touchhle.app".to_owned(),
+            bundle_path: "/".to_owned(),
+            bundle_name: "Application".to_owned(),
         }
     }
 
@@ -177,15 +192,58 @@ fn objc_string(mem: &mut Mem64, value: &str) -> Result<u64, String> {
     Ok(object)
 }
 
-fn objc_bundle(mem: &mut Mem64) -> Result<u64, String> {
+fn objc_bundle(mem: &mut Mem64, state: &RuntimeState) -> Result<u64, String> {
     let object = objc_object(mem, A64_KIND_BUNDLE)?;
-    let path = objc_string(mem, "/")?;
-    let identifier = objc_string(mem, "com.snowman.altos-odyssey")?;
-    let name = objc_string(mem, "Odyssey")?;
+    let path = objc_string(mem, &state.bundle_path)?;
+    let identifier = objc_string(mem, &state.bundle_identifier)?;
+    let name = objc_string(mem, &state.bundle_name)?;
     set_objc_field(mem, object, 56, path);
     set_objc_field(mem, object, 64, identifier);
     set_objc_field(mem, object, 72, name);
     Ok(object)
+}
+
+fn objc_ui_device(mem: &mut Mem64, family: DeviceFamily) -> Result<u64, String> {
+    let object = objc_object(mem, A64_KIND_UI_DEVICE)?;
+    let machine = objc_string(mem, family.machine_name())?;
+    set_objc_field(mem, object, 56, machine);
+    Ok(object)
+}
+
+fn objc_ui_screen(mem: &mut Mem64, family: DeviceFamily) -> Result<u64, String> {
+    let object = objc_object(mem, A64_KIND_UI_SCREEN)?;
+    let (width, height) = family.portrait_size();
+    set_objc_field(mem, object, 56, width as u64);
+    set_objc_field(mem, object, 64, height as u64);
+    set_objc_field(mem, object, 72, family.scale_factor().to_bits() as u64);
+    Ok(object)
+}
+
+fn set_float_return(context: &mut touchHLE_DynarmicA64Context, value: f64) {
+    context.vectors[0][0] = value.to_bits();
+    context.regs[0] = value.to_bits();
+}
+
+fn write_screen_rect(
+    mem: &mut Mem64,
+    context: &mut touchHLE_DynarmicA64Context,
+    family: DeviceFamily,
+    scale: f64,
+) -> Result<(), String> {
+    let result = context.regs[8];
+    if result == 0 || mem.allocation_size(result).is_none() {
+        return Ok(());
+    }
+    let (width, height) = family.portrait_size();
+    for (offset, value) in [
+        (0, 0.0),
+        (8, 0.0),
+        (16, width as f64 / scale),
+        (24, height as f64 / scale),
+    ] {
+        mem.write_u64(result + offset, value.to_bits()).map_err(str::to_owned)?;
+    }
+    Ok(())
 }
 
 fn objc_class_kind(mem: &Mem64, class_name: u64) -> u64 {
@@ -207,6 +265,8 @@ fn objc_class_kind(mem: &Mem64, class_name: u64) -> u64 {
         | Some(b"MTLRenderPassStencilAttachmentDescriptor") => A64_KIND_ATTACHMENT,
         Some(b"MTLSamplerState") => A64_KIND_SAMPLER,
         Some(b"MTLDepthStencilState") => A64_KIND_DEPTH_STENCIL,
+        Some(b"UIDevice") => A64_KIND_UI_DEVICE,
+        Some(b"UIScreen") => A64_KIND_UI_SCREEN,
         Some(b"NSBundle") => A64_KIND_BUNDLE,
         _ => A64_KIND_GENERIC,
     }
@@ -252,10 +312,16 @@ fn objc_send(
         "status" if kind == A64_KIND_COMMAND_BUFFER => 4,
         "error" if kind == A64_KIND_COMMAND_BUFFER => 0,
         "newFence" | "newEvent" | "newHeapWithDescriptor:" | "newArgumentEncoderWithArguments:" => objc_object(mem, A64_KIND_GENERIC)?,
-        "mainBundle" if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSBundle") => objc_bundle(mem)?,
+        "mainBundle" if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSBundle") => objc_bundle(mem, state)?,
+        "currentDevice" if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"UIDevice") => {
+            objc_ui_device(mem, state.device_family)?
+        }
+        "mainScreen" if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"UIScreen") => {
+            objc_ui_screen(mem, state.device_family)?
+        }
         "bundleIdentifier" if kind == A64_KIND_BUNDLE => objc_field(mem, receiver, 64),
         "bundlePath" | "resourcePath" if kind == A64_KIND_BUNDLE => objc_field(mem, receiver, 56),
-        "executablePath" if kind == A64_KIND_BUNDLE => objc_string(mem, "/Odyssey")?,
+        "executablePath" if kind == A64_KIND_BUNDLE => objc_string(mem, &state.bundle_path)?,
         "objectForInfoDictionaryKey:" if kind == A64_KIND_BUNDLE => {
             match objc_text(mem, context.regs[2]).as_deref() {
                 Some(b"CFBundleIdentifier") => objc_field(mem, receiver, 64),
@@ -273,6 +339,25 @@ fn objc_send(
             mem,
             &format!("{}.{}.{}", state.ios_version.0, state.ios_version.1, state.ios_version.2),
         )?,
+        "model" | "localizedModel" | "name" if kind == A64_KIND_UI_DEVICE => {
+            objc_string(mem, if state.device_family.is_ipad() { "iPad" } else { "iPhone" })?
+        }
+        "systemName" if kind == A64_KIND_UI_DEVICE => objc_string(mem, "iPhone OS")?,
+        "userInterfaceIdiom" if kind == A64_KIND_UI_DEVICE => {
+            u64::from(state.device_family.is_ipad())
+        }
+        "bounds" | "applicationFrame" if kind == A64_KIND_UI_SCREEN => {
+            write_screen_rect(mem, context, state.device_family, 1.0)?;
+            0
+        }
+        "nativeBounds" if kind == A64_KIND_UI_SCREEN => {
+            write_screen_rect(mem, context, state.device_family, state.device_family.scale_factor() as f64)?;
+            0
+        }
+        "scale" | "nativeScale" if kind == A64_KIND_UI_SCREEN => {
+            set_float_return(context, state.device_family.scale_factor() as f64);
+            0
+        },
         "operatingSystemVersion" => {
             context.regs[0] = (state.ios_version.0 as u32 as u64)
                 | ((state.ios_version.1 as u32 as u64) << 32);

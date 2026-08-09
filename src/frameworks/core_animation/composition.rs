@@ -156,9 +156,7 @@ pub fn recomposite_if_necessary(env: &mut Environment, force: bool) -> Option<In
         let screen: id = msg_class![env; UIScreen mainScreen];
         msg![env; screen bounds]
     };
-    let scale_hack: u32 = env.options.scale_hack.get();
-    let fb_width = screen_bounds.size.width as u32 * scale_hack;
-    let fb_height = screen_bounds.size.height as u32 * scale_hack;
+    let (fb_width, fb_height) = env.window().framebuffer_size();
     let present_frame_args = (
         env.window().viewport(),
         env.window().rotation_matrix(),
