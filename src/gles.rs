@@ -73,7 +73,7 @@ pub mod gles3_native;
 pub mod gles3_on_gl3;
 mod gles_generic;
 pub mod present;
-mod util;
+pub mod util;
 use touchHLE_gl_bindings::gl21compat as gl21compat_raw;
 use touchHLE_gl_bindings::gl33core as gl33core_raw;
 pub use touchHLE_gl_bindings::gles11 as gles11_raw;
