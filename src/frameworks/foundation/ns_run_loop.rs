@@ -407,6 +407,8 @@ pub fn run_run_loop(
                 .borrow::<NSRunLoopHostObject>(run_loop)
                 .audio_queues,
         );
+        let has_audio_sources = !audio_queues_tmp.is_empty()
+            || !env.objc.borrow::<NSRunLoopHostObject>(run_loop).audio_units.is_empty();
 
         for audio_queue in audio_queues_tmp.drain(..) {
             handle_audio_queue(env, audio_queue);
@@ -446,7 +448,11 @@ pub fn run_run_loop(
         // The compromise used here is that we will wait for a 60th of a second,
         // or until the next scheduled event, whichever is sooner. iPhone OS
         // apps can't do more than 60fps so this should be fine.
-        let limit = Duration::from_millis(1000 / 60);
+        let limit = if has_audio_sources {
+            Duration::from_millis(8)
+        } else {
+            Duration::from_millis(1000 / 60)
+        };
         env.sleep(sleep_until.map_or(limit, |i| i.duration_since(Instant::now()).min(limit)));
 
         if single_iteration {

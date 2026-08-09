@@ -89,6 +89,10 @@ fn effective_eagl_api(
         GraphicsApi::TranslatorGLES30 => kEAGLRenderingAPIOpenGLES3,
         GraphicsApi::GLES20 => kEAGLRenderingAPIOpenGLES2,
         GraphicsApi::GLES30 => kEAGLRenderingAPIOpenGLES3,
+        GraphicsApi::Metal => {
+            log!("EAGL: Metal mode requested; using the GLES2 presentation surface for legacy EAGL calls");
+            kEAGLRenderingAPIOpenGLES2
+        }
         GraphicsApi::Default => {
             if (prefer_gles2_context || angle_driver) && requested == kEAGLRenderingAPIOpenGLES1 {
                 log!(

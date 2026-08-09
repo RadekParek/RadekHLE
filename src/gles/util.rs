@@ -387,7 +387,7 @@ impl PalettedTextureFormat {
             gles11::UNSIGNED_SHORT_5_6_5 | gles11::UNSIGNED_SHORT_4_4_4_4 | gles11::UNSIGNED_SHORT_5_5_5_1 => 2,
             _ => return None,
         };
-        let palette_count: usize = if info.index_is_nibble { 16 } else { 256 };
+        let palette_count: usize = if info.index_is_nibble { 16usize } else { 256usize };
         let palette_size = palette_count.checked_mul(entry_size)?;
         let pixel_count = width.checked_mul(height)?;
         let index_size = if info.index_is_nibble { pixel_count.checked_add(1)? / 2 } else { pixel_count };

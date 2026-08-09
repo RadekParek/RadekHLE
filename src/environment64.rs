@@ -238,16 +238,28 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
         .collect::<Vec<_>>();
     let apple = vec![format!("executable_path={}", executable_path.as_str())];
     let ios_version = options.ios_version.unwrap_or(crate::options::LATEST_IOS_VERSION);
-    let graphics_backend = A64GraphicsBackend::MetalCompatibility;
+    let graphics_backend = match options.graphics_api {
+        crate::options::GraphicsApi::GLES10
+        | crate::options::GraphicsApi::GLES11
+        | crate::options::GraphicsApi::GLES20
+        | crate::options::GraphicsApi::GLES30
+        | crate::options::GraphicsApi::Translator
+        | crate::options::GraphicsApi::TranslatorGLES30 => A64GraphicsBackend::OpenGLESCompatibility,
+        crate::options::GraphicsApi::Default | crate::options::GraphicsApi::Metal => {
+            A64GraphicsBackend::MetalCompatibility
+        }
+    };
     let mut runtime_state = RuntimeState::new(ios_version, graphics_backend);
     runtime_state.current_module = Some(executable.name.clone());
     let mut window = if options.headless {
         None
     } else {
         let mut window_options = options.clone();
-        window_options.graphics_api = crate::options::GraphicsApi::GLES20;
-        window_options.prefer_gles2_context = true;
-        log!("ARM64 Metal backend: guest rendering uses Metal routing; the host window uses the shared presentation surface");
+        if graphics_backend == A64GraphicsBackend::MetalCompatibility {
+            window_options.graphics_api = crate::options::GraphicsApi::GLES20;
+            window_options.prefer_gles2_context = true;
+            log!("ARM64 Metal compatibility: using a host GLES2 display surface for the Metal presenter");
+        }
         Some(Box::new(crate::window::Window::new(
             "RadekHLE ARM64",
             None,

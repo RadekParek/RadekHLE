@@ -173,7 +173,12 @@ const CLASSES: ClassExports = objc_classes! {
 + (id)allocWithZone:(NSZonePtr)_zone {
     env.objc.alloc_object(this, Box::new(MetalObjectHostObject::default()), &mut env.mem)
 }
-- (id)colorAttachments { msg_class![env; MTLRenderPassColorAttachmentDescriptorArray new] }
+- (id)colorAttachments {
+    let array = msg_class![env; MTLRenderPassColorAttachmentDescriptorArray new];
+    let attachment = msg_class![env; MTLRenderPassColorAttachmentDescriptor new];
+    env.objc.borrow_mut::<MetalObjectHostObject>(array).device = attachment;
+    array
+}
 - (id)depthAttachment { msg_class![env; MTLRenderPassDepthAttachmentDescriptor new] }
 - (id)stencilAttachment { msg_class![env; MTLRenderPassStencilAttachmentDescriptor new] }
 @end
@@ -182,7 +187,10 @@ const CLASSES: ClassExports = objc_classes! {
 + (id)allocWithZone:(NSZonePtr)_zone {
     env.objc.alloc_object(this, Box::new(MetalObjectHostObject::default()), &mut env.mem)
 }
-- (id)objectAtIndexedSubscript:(NSUInteger)_index { msg_class![env; MTLRenderPassColorAttachmentDescriptor new] }
+- (id)objectAtIndexedSubscript:(NSUInteger)_index {
+    let existing = env.objc.borrow::<MetalObjectHostObject>(this).device;
+    if existing != nil { existing } else { msg_class![env; MTLRenderPassColorAttachmentDescriptor new] }
+}
 - (id)objectAtIndex:(NSUInteger)_index { msg![env; this objectAtIndexedSubscript:_index] }
 @end
 
@@ -197,6 +205,30 @@ const CLASSES: ClassExports = objc_classes! {
 - (())setStoreAction:(NSUInteger)action { env.objc.borrow_mut::<MetalObjectHostObject>(this).store_action = action }
 - (NSUInteger)storeAction { env.objc.borrow::<MetalObjectHostObject>(this).store_action }
 - (())setClearColor:(f64)color { env.objc.borrow_mut::<MetalObjectHostObject>(this).clear_color[0] = color }
+@end
+
+@implementation MTLRenderPassDepthAttachmentDescriptor: NSObject
++ (id)allocWithZone:(NSZonePtr)_zone {
+    env.objc.alloc_object(this, Box::new(MetalObjectHostObject::default()), &mut env.mem)
+}
+- (id)texture { env.objc.borrow::<MetalObjectHostObject>(this).device }
+- (())setTexture:(id)texture { env.objc.borrow_mut::<MetalObjectHostObject>(this).device = texture }
+- (NSUInteger)loadAction { env.objc.borrow::<MetalObjectHostObject>(this).load_action }
+- (())setLoadAction:(NSUInteger)action { env.objc.borrow_mut::<MetalObjectHostObject>(this).load_action = action }
+- (NSUInteger)storeAction { env.objc.borrow::<MetalObjectHostObject>(this).store_action }
+- (())setStoreAction:(NSUInteger)action { env.objc.borrow_mut::<MetalObjectHostObject>(this).store_action = action }
+@end
+
+@implementation MTLRenderPassStencilAttachmentDescriptor: NSObject
++ (id)allocWithZone:(NSZonePtr)_zone {
+    env.objc.alloc_object(this, Box::new(MetalObjectHostObject::default()), &mut env.mem)
+}
+- (id)texture { env.objc.borrow::<MetalObjectHostObject>(this).device }
+- (())setTexture:(id)texture { env.objc.borrow_mut::<MetalObjectHostObject>(this).device = texture }
+- (NSUInteger)loadAction { env.objc.borrow::<MetalObjectHostObject>(this).load_action }
+- (())setLoadAction:(NSUInteger)action { env.objc.borrow_mut::<MetalObjectHostObject>(this).load_action = action }
+- (NSUInteger)storeAction { env.objc.borrow::<MetalObjectHostObject>(this).store_action }
+- (())setStoreAction:(NSUInteger)action { env.objc.borrow_mut::<MetalObjectHostObject>(this).store_action = action }
 @end
 
 @implementation MTLTexture: NSObject

@@ -32,7 +32,7 @@ pub enum Button {
 }
 
 /// Highest iOS version currently exposed by the emulator compatibility layer.
-pub const LATEST_IOS_VERSION: (i32, i32, i32) = (13, 7, 0);
+pub const LATEST_IOS_VERSION: (i32, i32, i32) = (26, 6, 0);
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum GraphicsApi {
@@ -43,6 +43,7 @@ pub enum GraphicsApi {
     GLES11,
     GLES20,
     GLES30,
+    Metal,
 }
 
 impl Default for GraphicsApi {
@@ -61,7 +62,7 @@ impl GraphicsApi {
             "gles1.1" | "gles11" => Ok(Self::GLES11),
             "gles2.0" | "gles20" => Ok(Self::GLES20),
             "gles3.0" | "gles30" => Ok(Self::GLES30),
-            "metal" => Ok(Self::Default),
+            "metal" => Ok(Self::Metal),
             _ => Err(()),
         }
     }
@@ -75,6 +76,7 @@ impl GraphicsApi {
             Self::GLES11 => "OpenGL ES 1.1",
             Self::GLES20 => "OpenGL ES 2.0",
             Self::GLES30 => "OpenGL ES 3.0",
+            Self::Metal => "Metal compatibility",
         }
     }
 }

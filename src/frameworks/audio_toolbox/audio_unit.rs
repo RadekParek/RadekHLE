@@ -10,14 +10,8 @@ use std::time::Instant;
 
 use crate::audio::openal::al_types::{ALuint, ALvoid};
 use crate::audio::openal::{
-    AL_BUFFERS_PROCESSED, AL_BUFFERS_QUEUED, AL_PLAYING, AL_SOURCE_STATE,
+    AL_BUFFERS_PROCESSED, AL_BUFFERS_QUEUED, AL_PLAYING, AL_SOURCE_STATE, OpenAL,
 };
-
-const AL_POSITION: i32 = 0x1004;
-const AL_REFERENCE_DISTANCE: i32 = 0x1020;
-const AL_ROLLOFF_FACTOR: i32 = 0x1021;
-const AL_MAX_DISTANCE: i32 = 0x1023;
-
 use crate::abi::CallFromHost;
 use crate::dyld::FunctionExports;
 use crate::environment::Environment;
@@ -33,6 +27,37 @@ use crate::objc::nil;
 
 use super::audio_components::{AURenderCallbackStruct, AudioComponentInstance};
 use super::audio_queue::decode_buffer;
+
+const AL_POSITION: i32 = 0x1004;
+const AL_REFERENCE_DISTANCE: i32 = 0x1020;
+const AL_ROLLOFF_FACTOR: i32 = 0x1021;
+const AL_MAX_DISTANCE: i32 = 0x1023;
+
+fn create_audio_source(context: &OpenAL<'_>) -> Option<ALuint> {
+    let mut source = 0;
+    unsafe {
+        let _ = context.GetError();
+        context.GenSources(1, &mut source);
+        let error = context.GetError();
+        if error != 0 || source == 0 {
+            log!("Warning: could not allocate an AudioUnit OpenAL source: {:#x}", error);
+            if source != 0 {
+                context.DeleteSources(1, &source);
+                let _ = context.GetError();
+            }
+            return None;
+        }
+        context.SourcePlay(source);
+        let error = context.GetError();
+        if error != 0 {
+            log!("Warning: could not start an AudioUnit OpenAL source: {:#x}", error);
+            context.DeleteSources(1, &source);
+            let _ = context.GetError();
+            return None;
+        }
+    }
+    Some(source)
+}
 
 pub type AudioUnit = AudioComponentInstance;
 
@@ -732,25 +757,17 @@ pub fn setup_audio_unit_for_render(env: &mut Environment, ci: AudioUnit) {
         .al_context
         .make_al_context_current(&mut env.openal_manager);
 
-    let unit_source: Option<ALuint> = if need_unit_source {
-        let mut s: ALuint = 0;
-        unsafe {
-            context.GenSources(1, &mut s);
-            context.SourcePlay(s);
-        }
-        Some(s)
+    let unit_source = if need_unit_source {
+        create_audio_source(&context)
     } else {
         None
     };
 
     let mut bus_sources: Vec<(u32, ALuint)> = Vec::with_capacity(bus_ids_needing_source.len());
     for bus_id in &bus_ids_needing_source {
-        let mut s: ALuint = 0;
-        unsafe {
-            context.GenSources(1, &mut s);
-            context.SourcePlay(s);
+        if let Some(source) = create_audio_source(&context) {
+            bus_sources.push((*bus_id, source));
         }
-        bus_sources.push((*bus_id, s));
     }
     drop(context);
 
@@ -791,9 +808,20 @@ fn AudioOutputUnitStop(env: &mut Environment, ci: AudioUnit) -> OSStatus {
         if let Some(al_source) = audio_unit_state.al_source {
             unsafe {
                 context.DeleteSources(1, &al_source);
+                let _ = context.GetError();
             }
         }
         audio_unit_state.al_source = None;
+        for bus in audio_unit_state.mixer_buses.values_mut() {
+            if let Some(source) = bus.al_source {
+                unsafe {
+                    context.DeleteSources(1, &source);
+                    let _ = context.GetError();
+                }
+            }
+            bus.al_source = None;
+            bus.last_render_time = None;
+        }
         0
     } else {
         -1

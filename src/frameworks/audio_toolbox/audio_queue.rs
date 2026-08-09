@@ -164,6 +164,7 @@ const kAudioQueueErr_InvalidProperty: OSStatus = -66684;
 /// `kAudioQueueErr_QueueNotStopped` from Apple's `AudioQueue.h`. Returned by
 /// `AudioQueueSetOfflineRenderFormat` when the queue is currently running.
 const kAudioQueueErr_QueueNotStopped: OSStatus = -66677;
+const AUDIO_QUEUE_TARGET_UNPROCESSED_BUFFERS: usize = 3;
 
 pub fn AudioQueueNewOutput(
     env: &mut Environment,
@@ -1310,7 +1311,9 @@ fn prime_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
         }
         let unprocessed_buffers = al_buffers_queued - al_buffers_processed;
 
-        if unprocessed_buffers > 1 || al_buffers_queued == host_object.buffer_queue.len() {
+        if unprocessed_buffers >= AUDIO_QUEUE_TARGET_UNPROCESSED_BUFFERS
+            || al_buffers_queued == host_object.buffer_queue.len()
+        {
             break;
         }
 
@@ -1335,12 +1338,22 @@ fn prime_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
             al_buffer
         });
 
+        if next_al_buffer == 0 {
+            break;
+        }
+
         let (al_format, al_frequency, data) = decode_buffer(
             &env.mem,
             &host_object.format,
             next_buffer.audio_data.cast(),
             next_buffer.audio_data_byte_size,
         );
+
+        if data.is_empty() {
+            host_object.al_unused_buffers.push(next_al_buffer);
+            log!("Warning: audio queue {:?}: decoder returned no PCM data; stopping refill for this tick.", in_aq);
+            break;
+        }
 
         unsafe {
             context.BufferData(
@@ -1352,8 +1365,19 @@ fn prime_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
             )
         };
 
-        unsafe { context.SourceQueueBuffers(al_source, 1, &next_al_buffer) };
-        assert!(unsafe { context.GetError() } == 0);
+        let error = unsafe {
+            context.SourceQueueBuffers(al_source, 1, &next_al_buffer);
+            context.GetError()
+        };
+        if error != 0 {
+            log!(
+                "Warning: audio queue {:?} could not queue OpenAL buffer: {:#x}; retrying later.",
+                in_aq,
+                error
+            );
+            host_object.al_unused_buffers.push(next_al_buffer);
+            break;
+        }
     }
 }
 
@@ -1367,7 +1391,10 @@ fn unqueue_buffers<F: FnMut(ALuint)>(al_source: ALuint, context: &OpenAL<'_>, mu
                 al::AL_BUFFERS_PROCESSED,
                 &mut al_buffers_processed,
             );
-            assert!(context.GetError() == 0);
+            if context.GetError() != 0 {
+                log!("Warning: audio queue OpenAL processed-buffer query failed; stopping this tick.");
+                break;
+            }
         }
         if al_buffers_processed == 0 {
             break;
@@ -1377,7 +1404,10 @@ fn unqueue_buffers<F: FnMut(ALuint)>(al_source: ALuint, context: &OpenAL<'_>, mu
 
         unsafe {
             context.SourceUnqueueBuffers(al_source, 1, &mut al_buffer);
-            assert!(context.GetError() == 0);
+            if context.GetError() != 0 || al_buffer == 0 {
+                log!("Warning: audio queue OpenAL buffer dequeue failed; stopping this tick.");
+                break;
+            }
         }
 
         callback(al_buffer);
@@ -1468,10 +1498,13 @@ pub fn handle_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
             let mut al_source_state = 0;
 
             context.GetSourcei(al_source, al::AL_SOURCE_STATE, &mut al_source_state);
-            assert!(context.GetError() == 0);
-            if al_source_state == al::AL_STOPPED {
+            if context.GetError() == 0 && al_source_state == al::AL_STOPPED {
                 context.SourcePlay(al_source);
-                log_dbg!("Restarted OpenAL source for queue {:?}", in_aq);
+                if context.GetError() != 0 {
+                    log!("Warning: audio queue {:?} could not restart OpenAL source.", in_aq);
+                } else {
+                    log_dbg!("Restarted OpenAL source for queue {:?}", in_aq);
+                }
             }
         }
     }
@@ -1481,7 +1514,10 @@ pub fn handle_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
 
         unsafe {
             context.GetSourcei(al_source, al::AL_SOURCE_STATE, &mut al_source_state);
-            assert!(context.GetError() == 0);
+            if context.GetError() != 0 {
+                log!("Warning: audio queue {:?} could not query stop state.", in_aq);
+                return;
+            }
         }
 
         if al_source_state == al::AL_STOPPED {
@@ -1599,8 +1635,12 @@ pub fn AudioQueueStart(
             );
             return 0;
         };
-        unsafe { context.SourcePlay(al_source) };
-        assert!(unsafe { context.GetError() } == 0);
+        unsafe {
+            context.SourcePlay(al_source);
+            if context.GetError() != 0 {
+                log!("Warning: AudioQueueStart({:?}) could not start OpenAL source.", in_aq);
+            }
+        }
     } else {
         log!(
             "AudioQueueStart: Unsupported format {:?}, not starting",
@@ -1627,8 +1667,12 @@ pub fn AudioQueuePause(env: &mut Environment, in_aq: AudioQueueRef) -> OSStatus 
     host_object.is_running = AudioQueueIsRunning::Stopped;
 
     if let Some(al_source) = host_object.al_source {
-        unsafe { context.SourcePause(al_source) };
-        assert!(unsafe { context.GetError() } == 0);
+        unsafe {
+            context.SourcePause(al_source);
+            if context.GetError() != 0 {
+                log!("Warning: AudioQueuePause({:?}) could not pause OpenAL source.", in_aq);
+            }
+        }
     }
 
     0 // success
@@ -1659,8 +1703,12 @@ pub fn AudioQueueStop(env: &mut Environment, in_aq: AudioQueueRef, in_immediate:
             return 0;
         };
         if let Some(al_source) = host_object.al_source {
-            unsafe { context.SourceStop(al_source) };
-            assert!(unsafe { context.GetError() } == 0);
+            unsafe {
+                context.SourceStop(al_source);
+                if context.GetError() != 0 {
+                    log!("Warning: AudioQueueStop({:?}) could not stop OpenAL source.", in_aq);
+                }
+            }
         };
 
         finish_stopping_audio_queue(env, in_aq);
@@ -1702,16 +1750,23 @@ fn AudioQueueReset(env: &mut Environment, in_aq: AudioQueueRef) -> OSStatus {
             let mut al_source_state = 0;
 
             context.GetSourcei(al_source, al::AL_SOURCE_STATE, &mut al_source_state);
-            assert!(context.GetError() == 0);
-            if al_source_state != al::AL_STOPPED {
+            let error = context.GetError();
+            if error != 0 {
+                log!("Warning: audio queue {:?} reset state query failed: {:#x}; continuing cleanup.", in_aq, error);
+            } else if al_source_state != al::AL_STOPPED {
                 context.SourceStop(al_source);
-                assert!(context.GetError() == 0);
+                let error = context.GetError();
+                if error != 0 {
+                    log!("Warning: audio queue {:?} reset stop failed: {:#x}; continuing cleanup.", in_aq, error);
+                }
             }
         }
 
         unqueue_buffers(al_source, &context, |al_buffer| {
             host_object.al_unused_buffers.push(al_buffer);
-            host_object.buffer_queue.pop_front().unwrap();
+            if host_object.buffer_queue.pop_front().is_none() {
+                log!("Warning: audio queue {:?} reset found an untracked OpenAL buffer.", in_aq);
+            }
         });
     }
 
@@ -1792,7 +1847,10 @@ pub fn AudioQueueDispose(
     if let Some(al_source) = host_object.al_source {
         unsafe {
             context.SourceStop(al_source);
-            assert!(context.GetError() == 0);
+            let error = context.GetError();
+            if error != 0 {
+                log!("Warning: audio queue {:?} dispose stop failed: {:#x}; continuing cleanup.", in_aq, error);
+            }
         }
 
         unqueue_buffers(al_source, &context, |al_buffer| {
@@ -1804,7 +1862,10 @@ pub fn AudioQueueDispose(
                 host_object.al_unused_buffers.len().try_into().unwrap(),
                 host_object.al_unused_buffers.as_ptr(),
             );
-            assert!(context.GetError() == 0);
+            let error = context.GetError();
+            if error != 0 {
+                log!("Warning: audio queue {:?} dispose buffer cleanup failed: {:#x}.", in_aq, error);
+            }
         }
 
         // Free the OpenAL source back to the (finite) source pool. OpenAL Soft
@@ -1823,7 +1884,10 @@ pub fn AudioQueueDispose(
         // so releasing the source here matches the documented behaviour.
         unsafe {
             context.DeleteSources(1, &al_source);
-            assert!(context.GetError() == 0);
+            let error = context.GetError();
+            if error != 0 {
+                log!("Warning: audio queue {:?} dispose source cleanup failed: {:#x}.", in_aq, error);
+            }
         }
         host_object.al_source = None;
     }
@@ -1845,7 +1909,9 @@ pub fn AudioQueueNewInput(
 ) -> OSStatus {
     log!("TODO: AudioQueueNewInput(...) stubbed");
 
-    assert!(in_flags == 0);
+    if in_flags != 0 {
+        log!("Warning: AudioQueueNewInput ignoring unexpected flags {:#x}.", in_flags);
+    }
 
     let in_callback_run_loop = if in_callback_run_loop.is_null() {
         CFRunLoopGetMain(env)

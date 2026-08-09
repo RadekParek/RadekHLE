@@ -980,6 +980,7 @@ impl Window {
                     | crate::options::GraphicsApi::TranslatorGLES30
                     | crate::options::GraphicsApi::GLES20
                     | crate::options::GraphicsApi::GLES30
+                    | crate::options::GraphicsApi::Metal
             ) || (matches!(
                 options.graphics_api,
                 crate::options::GraphicsApi::Default
@@ -1160,6 +1161,9 @@ impl Window {
             }
             crate::options::GraphicsApi::GLES10 | crate::options::GraphicsApi::GLES11 => {
                 create_gles1_ctx_no_parent_stack(&mut window, options)
+            }
+            crate::options::GraphicsApi::Metal => {
+                create_gles2_ctx_no_parent_stack(&mut window)
             }
             crate::options::GraphicsApi::Default => {
                 if options.prefer_gles2_context || options.angle_driver {

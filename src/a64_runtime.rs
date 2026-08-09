@@ -18,6 +18,11 @@ const A64_KIND_STRING: u64 = 11;
 const A64_KIND_PIPELINE: u64 = 12;
 const A64_KIND_GENERIC: u64 = 13;
 const A64_KIND_BUNDLE: u64 = 14;
+const A64_KIND_RENDER_PASS_DESCRIPTOR: u64 = 15;
+const A64_KIND_ATTACHMENT_ARRAY: u64 = 16;
+const A64_KIND_ATTACHMENT: u64 = 17;
+const A64_KIND_SAMPLER: u64 = 18;
+const A64_KIND_DEPTH_STENCIL: u64 = 19;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum A64GraphicsBackend {
@@ -195,6 +200,13 @@ fn objc_class_kind(mem: &Mem64, class_name: u64) -> u64 {
         Some(b"MTLTexture") => A64_KIND_TEXTURE,
         Some(b"MTLTextureDescriptor") => A64_KIND_TEXTURE_DESCRIPTOR,
         Some(b"MTLRenderPipelineState") => A64_KIND_PIPELINE,
+        Some(b"MTLRenderPassDescriptor") => A64_KIND_RENDER_PASS_DESCRIPTOR,
+        Some(b"MTLRenderPassColorAttachmentDescriptorArray") => A64_KIND_ATTACHMENT_ARRAY,
+        Some(b"MTLRenderPassColorAttachmentDescriptor")
+        | Some(b"MTLRenderPassDepthAttachmentDescriptor")
+        | Some(b"MTLRenderPassStencilAttachmentDescriptor") => A64_KIND_ATTACHMENT,
+        Some(b"MTLSamplerState") => A64_KIND_SAMPLER,
+        Some(b"MTLDepthStencilState") => A64_KIND_DEPTH_STENCIL,
         Some(b"NSBundle") => A64_KIND_BUNDLE,
         _ => A64_KIND_GENERIC,
     }
@@ -276,8 +288,43 @@ fn objc_send(
                     >= (requested_major, requested_minor, requested_patch),
             )
         }
-        "supportsFamily:" | "supportsFeatureSet:" => 1,
-        "supportsTextureSampleCount:" => u64::from(matches!(context.regs[2], 1 | 2 | 4)),
+        "supportsFamily:" | "supportsFeatureSet:" | "supportsTextureSampleCount:" => 1,
+        "renderPassDescriptor" if kind == A64_KIND_CLASS => {
+            objc_object(mem, A64_KIND_RENDER_PASS_DESCRIPTOR)?
+        }
+        "colorAttachments" if kind == A64_KIND_RENDER_PASS_DESCRIPTOR => {
+            objc_object(mem, A64_KIND_ATTACHMENT_ARRAY)?
+        }
+        "depthAttachment" | "stencilAttachment" if kind == A64_KIND_RENDER_PASS_DESCRIPTOR => {
+            objc_object(mem, A64_KIND_ATTACHMENT)?
+        }
+        "objectAtIndexedSubscript:" | "objectAtIndex:" if kind == A64_KIND_ATTACHMENT_ARRAY => {
+            objc_object(mem, A64_KIND_ATTACHMENT)?
+        }
+        "texture" | "loadAction" | "storeAction" if kind == A64_KIND_ATTACHMENT => {
+            match selector.as_str() {
+                "texture" => objc_field(mem, receiver, 80),
+                "loadAction" => objc_field(mem, receiver, 72),
+                _ => objc_field(mem, receiver, 88),
+            }
+        }
+        "clearColor" if kind == A64_KIND_ATTACHMENT => objc_field(mem, receiver, 56),
+        "setClearColor:" if kind == A64_KIND_ATTACHMENT => {
+            set_objc_field(mem, receiver, 56, context.regs[2]);
+            0
+        }
+        "setTexture:" if kind == A64_KIND_ATTACHMENT => {
+            set_objc_field(mem, receiver, 80, context.regs[2]);
+            0
+        }
+        "setLoadAction:" if kind == A64_KIND_ATTACHMENT => {
+            set_objc_field(mem, receiver, 72, context.regs[2]);
+            0
+        }
+        "setStoreAction:" if kind == A64_KIND_ATTACHMENT => {
+            set_objc_field(mem, receiver, 88, context.regs[2]);
+            0
+        }
         "setClearColor:" => {
             state.clear_color = metal_clear_color(context);
             0
@@ -302,7 +349,8 @@ fn objc_send(
         "computeCommandEncoder" => objc_object(mem, A64_KIND_COMPUTE_ENCODER)?,
         "blitCommandEncoder" => objc_object(mem, A64_KIND_BLIT_ENCODER)?,
         "newRenderPipelineStateWithDescriptor:error:" => objc_object(mem, A64_KIND_PIPELINE)?,
-        "newDepthStencilStateWithDescriptor:" | "newSamplerStateWithDescriptor:" => objc_object(mem, A64_KIND_GENERIC)?,
+        "newDepthStencilStateWithDescriptor:" => objc_object(mem, A64_KIND_DEPTH_STENCIL)?,
+        "newSamplerStateWithDescriptor:" => objc_object(mem, A64_KIND_SAMPLER)?,
         "newTextureViewWithPixelFormat:" => objc_object(mem, A64_KIND_TEXTURE)?,
         "newBufferWithLength:options:" => {
             let object = objc_object(mem, A64_KIND_BUFFER)?;
