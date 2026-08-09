@@ -38,8 +38,17 @@ struct UIApplicationHostObject {
     /// defaults to 0; we honour both the getter and the setter even
     /// though touchHLE has no springboard to actually render the badge.
     application_icon_badge_number: NSInteger,
+    remote_notifications_registered: bool,
+    user_notification_settings: id,
 }
 impl HostObject for UIApplicationHostObject {}
+
+#[derive(Default)]
+struct UIUserNotificationSettingsHostObject {
+    types: NSUInteger,
+    categories: id,
+}
+impl HostObject for UIUserNotificationSettingsHostObject {}
 
 pub type UIInterfaceOrientation = UIDeviceOrientation;
 #[allow(unused)]
@@ -73,6 +82,8 @@ pub const CLASSES: ClassExports = objc_classes! {
         delegate_is_retained: false,
         status_bar_style: 0,
         application_icon_badge_number: 0,
+        remote_notifications_registered: false,
+        user_notification_settings: nil,
     });
     env.objc.alloc_static_object(this, host_object, &mut env.mem)
 }
@@ -413,23 +424,81 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (())registerForRemoteNotifications {
-    log!("UIApplication registerForRemoteNotifications: stubbed");
+    let delegate = msg![env; this delegate];
+    env.objc
+        .borrow_mut::<UIApplicationHostObject>(this)
+        .remote_notifications_registered = true;
+
+    if delegate != nil
+        && env.objc.object_has_method_named(
+            &env.mem,
+            delegate,
+            "application:didRegisterForRemoteNotificationsWithDeviceToken:",
+        )
+    {
+        let token_bytes = [
+            0x48, 0x79, 0x70, 0x65, 0x72, 0x48, 0x4c, 0x45,
+            0x00, 0x00, 0x00, 0x01, 0x52, 0x45, 0x47, 0x49,
+        ];
+        let token_length: u32 = token_bytes.len().try_into().unwrap();
+        let token_buffer = env.mem.alloc(token_length);
+        env.mem
+            .bytes_at_mut(token_buffer.cast(), token_length)
+            .copy_from_slice(&token_bytes);
+        let token_ptr = token_buffer.cast_const().cast_void();
+        let token_data: id = msg_class![env; NSData dataWithBytes:token_ptr length:token_length];
+        env.mem.free(token_buffer.cast());
+        let _: () = msg![env;
+            delegate application:this didRegisterForRemoteNotificationsWithDeviceToken:token_data
+        ];
+    }
 }
 
 - (())unregisterForRemoteNotifications {
-    log!("UIApplication unregisterForRemoteNotifications: stubbed");
+    env.objc
+        .borrow_mut::<UIApplicationHostObject>(this)
+        .remote_notifications_registered = false;
 }
 
 - (bool)isRegisteredForRemoteNotifications {
-    false
+    env.objc
+        .borrow::<UIApplicationHostObject>(this)
+        .remote_notifications_registered
 }
 
-- (())registerUserNotificationSettings:(id)_settings {
-    log!("UIApplication registerUserNotificationSettings: stubbed");
+- (())registerUserNotificationSettings:(id)settings {
+    let old_settings = {
+        let host = env.objc.borrow_mut::<UIApplicationHostObject>(this);
+        let old = host.user_notification_settings;
+        host.user_notification_settings = settings;
+        old
+    };
+    retain(env, settings);
+    release(env, old_settings);
+
+    let delegate = msg![env; this delegate];
+    if delegate != nil
+        && env.objc.object_has_method_named(
+            &env.mem,
+            delegate,
+            "application:didRegisterUserNotificationSettings:",
+        )
+    {
+        let _: () = msg![env; delegate application:this didRegisterUserNotificationSettings:settings];
+    }
 }
 
 - (id)currentUserNotificationSettings {
-    nil
+    let settings = env
+        .objc
+        .borrow::<UIApplicationHostObject>(this)
+        .user_notification_settings;
+    if settings == nil {
+        nil
+    } else {
+        retain(env, settings);
+        autorelease(env, settings)
+    }
 }
 
 - (())cancelAllLocalNotifications {
@@ -566,15 +635,56 @@ pub const CLASSES: ClassExports = objc_classes! {
 // we expose a minimal stub that satisfies alloc/init and settingsForTypes:categories:.
 @implementation UIUserNotificationSettings: NSObject
 
-+ (id)settingsForTypes:(NSUInteger)_types categories:(id)_categories {
-    // Return a shared dummy instance. Apps only inspect -types on the object
-    // returned by -[UIApplication currentUserNotificationSettings], which
-    // returns nil, so this object does not need to store anything.
-    msg_class![env; UIUserNotificationSettings new]
++ (id)allocWithZone:(NSZonePtr)_zone {
+    env.objc.alloc_object(
+        this,
+        Box::new(UIUserNotificationSettingsHostObject {
+            types: 0,
+            categories: nil,
+        }),
+        &mut env.mem,
+    )
+}
+
++ (id)settingsForTypes:(NSUInteger)types categories:(id)categories {
+    let settings: id = msg![env; this alloc];
+    let host = env.objc.borrow_mut::<UIUserNotificationSettingsHostObject>(settings);
+    host.types = types;
+    host.categories = categories;
+    retain(env, categories);
+    autorelease(env, settings)
+}
+
+- (id)init {
+    this
+}
+
+- (())dealloc {
+    let categories = env
+        .objc
+        .borrow::<UIUserNotificationSettingsHostObject>(this)
+        .categories;
+    release(env, categories);
+    env.objc.dealloc_object(this, &mut env.mem)
 }
 
 - (NSUInteger)types {
-    0 // UIUserNotificationTypeNone
+    env.objc
+        .borrow::<UIUserNotificationSettingsHostObject>(this)
+        .types
+}
+
+- (id)categories {
+    let categories = env
+        .objc
+        .borrow::<UIUserNotificationSettingsHostObject>(this)
+        .categories;
+    if categories == nil {
+        nil
+    } else {
+        retain(env, categories);
+        autorelease(env, categories)
+    }
 }
 
 @end
