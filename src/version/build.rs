@@ -18,6 +18,15 @@ pub fn main() {
     // Try to get the version using `git describe`, otherwise fall back to the
     // Cargo.toml version. This is used in main.rs
 
+    println!("cargo:rerun-if-env-changed=GITHUB_SHA");
+    if let Ok(sha) = std::env::var("GITHUB_SHA") {
+        std::fs::write(out_dir.join("git_sha.txt"), sha.trim()).unwrap();
+    } else {
+        let sha = Command::new("git").args(["rev-parse", "HEAD"]).output().unwrap();
+        let sha = std::str::from_utf8(&sha.stdout).unwrap().trim();
+        std::fs::write(out_dir.join("git_sha.txt"), sha).unwrap();
+    }
+
     let toml_version = std::env::var("CARGO_PKG_VERSION").unwrap();
     let version = Command::new("git").arg("describe").arg("--always").output();
     let version = match version.as_ref() {

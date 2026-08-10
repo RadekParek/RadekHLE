@@ -117,10 +117,11 @@ Special options:
 ";
 pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
     echo!(
-        "RadekHLE 2.0 {}{}{}",
+        "RadekHLE 2.0 {}{}{} git_sha={}",
         branding(),
         if branding().is_empty() { "" } else { " " },
         VERSION,
+        touchHLE_version::GIT_SHA,
     );
     if GITHUB_RUN_ID.is_some() && !branding().is_empty() {
         echo!(

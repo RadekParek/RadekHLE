@@ -146,8 +146,8 @@ private:
     bool error = false;
     auto value = touchHLE_cpu_read_u32_64(mem, a, &error);
     ++code_fetches;
-    if (trace_enabled && (code_fetches <= 64 || error)) {
-      trace("code fetch #%llu: address=%#llx instruction=%#010x result=%s current_pc=%#llx",
+    if (trace_enabled && (code_fetches <= 128 || error)) {
+      trace("DYNARMIC_TRANSLATION_FETCH #%llu: address=%#llx instruction=%#010x result=%s current_pc=%#llx",
             static_cast<unsigned long long>(code_fetches),
             static_cast<unsigned long long>(a),
             value,
@@ -168,7 +168,11 @@ private:
   void MemoryWrite8(VAddr a, std::uint8_t v) override { write(a, v, touchHLE_cpu_write_u8_64, "write8"); }
   void MemoryWrite16(VAddr a, std::uint16_t v) override { write(a, v, touchHLE_cpu_write_u16_64, "write16"); }
   void MemoryWrite32(VAddr a, std::uint32_t v) override { write(a, v, touchHLE_cpu_write_u32_64, "write32"); }
-  void MemoryWrite64(VAddr a, std::uint64_t v) override { write(a, v, touchHLE_cpu_write_u64_64, "write64"); }
+  void MemoryWrite64(VAddr a, std::uint64_t v) override {
+    trace("JIT memory write64: address=%#llx value=%#llx pc=%#llx sp=%#llx", static_cast<unsigned long long>(a), static_cast<unsigned long long>(v), static_cast<unsigned long long>(cpu ? cpu->GetPC() : 0), static_cast<unsigned long long>(cpu ? cpu->GetSP() : 0));
+    write(a, v, touchHLE_cpu_write_u64_64, "write64");
+    trace("JIT memory write64 complete: address=%#llx pc=%#llx sp=%#llx", static_cast<unsigned long long>(a), static_cast<unsigned long long>(cpu ? cpu->GetPC() : 0), static_cast<unsigned long long>(cpu ? cpu->GetSP() : 0));
+  }
   void MemoryWrite128(VAddr a, A64Vector v) override { write(a, v, touchHLE_cpu_write_u128_64, "write128"); }
 
   bool MemoryWriteExclusive8(VAddr a, std::uint8_t v, std::uint8_t e) override { if (MemoryRead8(a) != e) return false; MemoryWrite8(a, v); return true; }
@@ -212,8 +216,14 @@ private:
       cpu->HaltExecution(HaltReasonUndefinedInstruction);
     }
   }
-  void AddTicks(std::uint64_t n) override { ticks_remaining = n > ticks_remaining ? 0 : ticks_remaining - n; }
-  std::uint64_t GetTicksRemaining() override { return ticks_remaining; }
+  void AddTicks(std::uint64_t n) override {
+    trace("DYNARMIC_TICKS_ADD n=%llu before=%llu", static_cast<unsigned long long>(n), static_cast<unsigned long long>(ticks_remaining));
+    ticks_remaining = n > ticks_remaining ? 0 : ticks_remaining - n;
+  }
+  std::uint64_t GetTicksRemaining() override {
+    trace("DYNARMIC_TICKS_GET remaining=%llu", static_cast<unsigned long long>(ticks_remaining));
+    return ticks_remaining;
+  }
   std::uint64_t GetCNTPCT() override { return 0x10000000000ULL - ticks_remaining; }
 };
 
@@ -229,7 +239,8 @@ public:
     config.callbacks = &env;
     config.optimizations = Dynarmic::no_optimizations;
     config.check_halt_on_memory_access = true;
-    config.enable_cycle_counting = true;
+    config.enable_cycle_counting = false;
+    config.very_verbose_debugging_output = false;
     monitor = std::make_unique<Dynarmic::ExclusiveMonitor>(1);
     config.global_monitor = monitor.get();
     cpu = std::make_unique<Dynarmic::A64::Jit>(config);
@@ -301,15 +312,19 @@ public:
     });
     if (ticks) {
       env.ticks_remaining = *ticks;
-      env.trace("Dynarmic configuration: Run mode, single_step=false, cycle_counting=true, tick_budget=%llu, watchdog_ms=%llu", static_cast<unsigned long long>(*ticks), static_cast<unsigned long long>(watchdog_ms));
+      env.trace("Dynarmic configuration: unrestricted Run mode, single_step=false, cycle_counting=false, tick_budget=disabled, watchdog_ms=%llu", static_cast<unsigned long long>(watchdog_ms));
+      env.trace("DYNARMIC_RUN_ENTER");
       env.trace("DEBUG_MARKER_BEFORE_DYNARMIC");
       reason = cpu->Run();
       env.trace("DEBUG_MARKER_AFTER_DYNARMIC");
+      env.trace("DYNARMIC_RUN_RETURN reason=%#x pc=%#llx", static_cast<unsigned>(reason), static_cast<unsigned long long>(cpu->GetPC()));
     } else {
-      env.trace("Dynarmic configuration: Step mode, single_step=true, cycle_counting=true, tick_budget=1, watchdog_ms=%llu", static_cast<unsigned long long>(watchdog_ms));
+      env.trace("Dynarmic configuration: Step mode, cycle_counting=false, watchdog_ms=%llu", static_cast<unsigned long long>(watchdog_ms));
+      env.trace("DYNARMIC_STEP_ENTER");
       env.trace("DEBUG_MARKER_BEFORE_DYNARMIC");
       reason = cpu->Step();
       env.trace("DEBUG_MARKER_AFTER_DYNARMIC");
+      env.trace("DYNARMIC_STEP_RETURN reason=%#x pc=%#llx", static_cast<unsigned>(reason), static_cast<unsigned long long>(cpu->GetPC()));
       const auto step_bit = Dynarmic::HaltReason::Step;
       const bool completed_step = Dynarmic::Has(reason, step_bit);
       env.trace("single-step completion: completed=%s reason=%#x pc=%#llx", completed_step ? "true" : "false", static_cast<unsigned>(reason), static_cast<unsigned long long>(cpu->GetPC()));

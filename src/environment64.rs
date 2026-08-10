@@ -103,15 +103,20 @@ fn verify_guest_mappings(memory: &Mem64, pc: u64, sp: u64) {
     let pc_mapped = memory
         .mapped_regions()
         .any(|region| pc >= region.base && pc.saturating_sub(region.base) < region.size);
-    let sp_mapped = memory
+    let stack_store = sp.saturating_sub(0x30);
+    let stack_store_end = stack_store.saturating_add(16);
+    let stack_store_mapped = memory
         .mapped_regions()
-        .any(|region| sp >= region.base && sp.saturating_sub(region.base) < region.size);
+        .any(|region| stack_store >= region.base && stack_store_end <= region.base.saturating_add(region.size));
     echo!(
-        "ARM64 guest mappings: entry_pc={:#x} executable_page_mapped={} stack_sp={:#x} writable_stack_mapping={}",
+        "ARM64 guest mappings: entry_pc={:#x} executable_page_mapped={} stack_sp={:#x} writable_stack_mapping={} stp_range={:#x}..{:#x} stp_range_mapped={}",
         pc,
         pc_mapped,
         sp,
-        sp_mapped,
+        sp >= STACK_BASE - STACK_SIZE && sp <= STACK_BASE,
+        stack_store,
+        stack_store_end,
+        stack_store_mapped,
     );
 }
 

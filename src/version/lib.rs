@@ -4,6 +4,7 @@
 
 /// Current version. See `build.rs` for how this is generated.
 pub const VERSION: &str = include_str!(concat!(env!("OUT_DIR"), "/version.txt"));
+pub const GIT_SHA: &str = include_str!(concat!(env!("OUT_DIR"), "/git_sha.txt"));
 
 // Environment variables set by GitHub Actions
 pub const GITHUB_REPOSITORY: Option<&str> = option_env!("GITHUB_REPOSITORY");
