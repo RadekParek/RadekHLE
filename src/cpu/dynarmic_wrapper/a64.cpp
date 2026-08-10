@@ -240,7 +240,7 @@ public:
     config.optimizations = Dynarmic::no_optimizations;
     config.check_halt_on_memory_access = true;
     config.enable_cycle_counting = false;
-    config.very_verbose_debugging_output = true;
+    config.very_verbose_debugging_output = false;
     monitor = std::make_unique<Dynarmic::ExclusiveMonitor>(1);
     config.global_monitor = monitor.get();
     cpu = std::make_unique<Dynarmic::A64::Jit>(config);
@@ -312,7 +312,7 @@ public:
     });
     if (ticks) {
       env.ticks_remaining = *ticks;
-      env.trace("Dynarmic configuration: unrestricted Run mode, single_step=false, cycle_counting=false, tick_budget=disabled, watchdog_ms=%llu, very_verbose_debugging_output=true", static_cast<unsigned long long>(watchdog_ms));
+      env.trace("Dynarmic configuration: unrestricted Run mode, single_step=false, cycle_counting=false, tick_budget=disabled, watchdog_ms=%llu", static_cast<unsigned long long>(watchdog_ms));
       env.trace("DYNARMIC_RUN_ENTER");
       env.trace("DEBUG_MARKER_BEFORE_DYNARMIC");
       reason = cpu->Run();
