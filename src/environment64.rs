@@ -427,7 +427,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     echo!("ARM64 execution trace: first PC={:#x}, SP={:#x}, LR={:#x}, FP={:#x}", context.pc, context.sp, context.regs[30], context.regs[29]);
     verify_abi(&context, "entry");
     verify_guest_mappings(&memory, context.pc, context.sp);
-    echo!("ARM64 execution mode: Dynarmic single-cycle execution is active for the startup trace; each call must return after one cycle");
+    echo!("ARM64 execution mode: Dynarmic Step execution is active for the startup trace; each call must execute one instruction");
     loop {
         let trace_this_instruction = trace_count < STARTUP_TRACE_INSTRUCTIONS;
         if trace_count == 0 {
@@ -461,7 +461,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             trace_count += 1;
             let instruction_executed = result == -1 || result >= 0;
             echo!(
-                "ARM64 single-cycle return #{}: result={} executed={} entry_pc={:#x} final_pc={:#x} sp={:#x} lr={:#x} fp={:#x} instruction={:#010x} decoded={} {}",
+                "ARM64 instruction-step return #{}: result={} executed={} entry_pc={:#x} final_pc={:#x} sp={:#x} lr={:#x} fp={:#x} instruction={:#010x} decoded={} {}",
                 trace_count,
                 result,
                 instruction_executed,
@@ -480,7 +480,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                     echo!("ARM64 first basic block: pc={:#x}", instruction_pc);
                 } else {
                     echo!("ARM64 first instruction did not execute: pc={:#x} result={} ({})", instruction_pc, result, if result == -5 { "unexpected halt" } else { "execution fault" });
-                    echo!("ARM64 first-instruction blocker: Dynarmic returned before completing the single-cycle execution");
+                    echo!("ARM64 first-instruction blocker: Dynarmic returned before completing the instruction step");
                 }
             }
             if previous_pcs.len() == 20 { previous_pcs.pop_front(); }
