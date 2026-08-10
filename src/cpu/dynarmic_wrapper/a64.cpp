@@ -4,14 +4,17 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdarg>
+#include <cstdlib>
 #include <memory>
 #include <optional>
 #include <string>
-#include <cstdlib>
+#include <thread>
 
 #include "dynarmic/interface/A64/a64.h"
 #include "dynarmic/interface/A64/config.h"
@@ -278,11 +281,35 @@ public:
       env.trace("execution entry fetch failed: pc=%#llx; Dynarmic will be allowed to report the execution fault", static_cast<unsigned long long>(pc));
     }
     Dynarmic::HaltReason reason;
+    const auto watchdog_ms = [] {
+      const char* value = std::getenv("TOUCHHLE_ARM64_DYNARMIC_WATCHDOG_MS");
+      if (!value) return std::uint64_t{2000};
+      char* end = nullptr;
+      const auto parsed = std::strtoull(value, &end, 10);
+      return static_cast<std::uint64_t>(end != value && *end == '\0' && parsed > 0 ? parsed : 2000ULL);
+    }();
+    std::atomic<bool> execution_returned{false};
+    std::thread watchdog([&] {
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(watchdog_ms);
+      while (!execution_returned.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
+      if (!execution_returned.load(std::memory_order_acquire)) {
+        tracef("ARM64 dynarmic watchdog: Run/Step did not return within %llu ms; pc=%#llx sp=%#llx lr=%#llx ticks=%s%llu; aborting", static_cast<unsigned long long>(watchdog_ms), static_cast<unsigned long long>(cpu->GetPC()), static_cast<unsigned long long>(cpu->GetSP()), static_cast<unsigned long long>(cpu->GetRegister(30)), ticks ? "" : "none", ticks ? static_cast<unsigned long long>(*ticks) : 0);
+        std::abort();
+      }
+    });
     if (ticks) {
       env.ticks_remaining = *ticks;
+      env.trace("Dynarmic configuration: Run mode, single_step=false, cycle_counting=true, tick_budget=%llu, watchdog_ms=%llu", static_cast<unsigned long long>(*ticks), static_cast<unsigned long long>(watchdog_ms));
+      env.trace("DEBUG_MARKER_BEFORE_DYNARMIC");
       reason = cpu->Run();
+      env.trace("DEBUG_MARKER_AFTER_DYNARMIC");
     } else {
+      env.trace("Dynarmic configuration: Step mode, single_step=true, cycle_counting=true, tick_budget=1, watchdog_ms=%llu", static_cast<unsigned long long>(watchdog_ms));
+      env.trace("DEBUG_MARKER_BEFORE_DYNARMIC");
       reason = cpu->Step();
+      env.trace("DEBUG_MARKER_AFTER_DYNARMIC");
       const auto step_bit = Dynarmic::HaltReason::Step;
       const bool completed_step = Dynarmic::Has(reason, step_bit);
       env.trace("single-step completion: completed=%s reason=%#x pc=%#llx", completed_step ? "true" : "false", static_cast<unsigned>(reason), static_cast<unsigned long long>(cpu->GetPC()));
@@ -290,6 +317,8 @@ public:
         cpu->ClearHalt(step_bit);
       }
     }
+    execution_returned.store(true, std::memory_order_release);
+    watchdog.join();
     env.trace("execution return #%llu: reason=%#x (%s) pc=%#llx sp=%#llx lr=%#llx code_fetches=%llu memory_faults=%llu regs={%s}",
               static_cast<unsigned long long>(execution_calls),
               static_cast<unsigned>(reason), halt_reason_name(reason),
