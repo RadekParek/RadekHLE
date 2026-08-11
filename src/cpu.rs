@@ -382,7 +382,10 @@ pub struct A64Cpu {
 }
 
 enum A64Backend {
-    Jit(*mut touchHLE_DynarmicWrapper),
+    Jit {
+        wrapper: *mut touchHLE_DynarmicWrapper,
+        interpreter: A64Interpreter,
+    },
     Interpreter(A64Interpreter),
 }
 
@@ -394,7 +397,7 @@ impl std::fmt::Debug for A64Cpu {
 
 impl Drop for A64Cpu {
     fn drop(&mut self) {
-        if let A64Backend::Jit(wrapper) = self.backend {
+        if let A64Backend::Jit { wrapper, .. } = self.backend {
             unsafe { touchHLE_DynarmicA64Wrapper_delete(wrapper) }
         }
     }
@@ -406,53 +409,67 @@ impl A64Cpu {
     }
 
     pub fn with_backend(backend: crate::options::Arm64Backend) -> Self {
-        let use_interpreter = matches!(backend, crate::options::Arm64Backend::Interpreter)
-            || matches!(backend, crate::options::Arm64Backend::Auto) && cfg!(target_os = "android");
-        let backend = if use_interpreter {
-            echo!("ARM64 backend selected: interpreter");
-            A64Backend::Interpreter(A64Interpreter::new())
-        } else {
-            echo!("ARM64 backend selected: Dynarmic JIT");
-            A64Backend::Jit(unsafe { touchHLE_DynarmicA64Wrapper_new() })
+        let backend = match backend {
+            crate::options::Arm64Backend::Interpreter => {
+                echo!("ARM64 backend selected: interpreter (explicit diagnostic mode)");
+                A64Backend::Interpreter(A64Interpreter::new())
+            }
+            crate::options::Arm64Backend::Auto | crate::options::Arm64Backend::Jit => {
+                echo!("ARM64 backend selected: Dynarmic JIT (interpreter is block fallback)");
+                A64Backend::Jit {
+                    wrapper: unsafe { touchHLE_DynarmicA64Wrapper_new() },
+                    interpreter: A64Interpreter::new(),
+                }
+            }
         };
         Self { backend }
     }
 
     pub fn swap_context(&mut self, context: &mut touchHLE_DynarmicA64Context) {
-        if let A64Backend::Jit(wrapper) = self.backend {
+        if let A64Backend::Jit { wrapper, .. } = self.backend {
             unsafe { touchHLE_DynarmicA64Wrapper_swap_context(wrapper, context) }
         }
     }
 
     pub fn load_context(&mut self, context: &touchHLE_DynarmicA64Context) {
-        if let A64Backend::Jit(wrapper) = self.backend {
+        if let A64Backend::Jit { wrapper, .. } = self.backend {
             unsafe { touchHLE_DynarmicA64Wrapper_load_context(wrapper, context) }
         }
     }
 
     pub fn save_context(&mut self, context: &mut touchHLE_DynarmicA64Context) {
-        if let A64Backend::Jit(wrapper) = self.backend {
+        if let A64Backend::Jit { wrapper, .. } = self.backend {
             unsafe { touchHLE_DynarmicA64Wrapper_save_context(wrapper, context) }
         }
     }
 
     pub fn run_or_step(&mut self, mem: &mut Mem64, context: &mut touchHLE_DynarmicA64Context, ticks: Option<&mut u64>) -> i32 {
         match &mut self.backend {
-            A64Backend::Jit(wrapper) => {
-                unsafe { touchHLE_DynarmicA64Wrapper_run_or_step(*wrapper, mem as *mut _ as *mut _, ticks) }
+            A64Backend::Jit { wrapper, interpreter } => {
+                let result = unsafe { touchHLE_DynarmicA64Wrapper_run_or_step(*wrapper, mem as *mut _ as *mut _, ticks) };
+                if result == -3 {
+                    unsafe { touchHLE_DynarmicA64Wrapper_save_context(*wrapper, context) };
+                    let fallback_result = interpreter.run_or_step(mem, context, None);
+                    if fallback_result >= 0 || fallback_result == -1 {
+                        unsafe { touchHLE_DynarmicA64Wrapper_load_context(*wrapper, context) };
+                        unsafe { touchHLE_DynarmicA64Wrapper_clear_halt(*wrapper, 0x0200_0000) };
+                        return fallback_result;
+                    }
+                }
+                result
             }
             A64Backend::Interpreter(interpreter) => interpreter.run_or_step(mem, context, ticks),
         }
     }
 
     pub fn clear_halt(&mut self, reason: u32) {
-        if let A64Backend::Jit(wrapper) = self.backend {
+        if let A64Backend::Jit { wrapper, .. } = self.backend {
             unsafe { touchHLE_DynarmicA64Wrapper_clear_halt(wrapper, reason) }
         }
     }
 
     pub fn set_trace(&mut self, enabled: bool) {
-        if let A64Backend::Jit(wrapper) = self.backend {
+        if let A64Backend::Jit { wrapper, .. } = self.backend {
             unsafe { touchHLE_DynarmicA64Wrapper_set_trace(wrapper, enabled) }
         }
     }

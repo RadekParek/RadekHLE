@@ -411,7 +411,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     context.regs[3] = apple_ptr;
     context.regs[30] = return_stub;
     let mut cpu = A64Cpu::with_backend(options.arm64_backend);
-    cpu.set_trace(true);
+    cpu.set_trace(false);
     echo!("ARM64 execution transition: context loaded; entering Dynarmic with pc={:#x} sp={:#x} lr={:#x}", context.pc, context.sp, context.regs[30]);
     cpu.load_context(&context);
     let mut ticks = Some(EXECUTION_SLICE_TICKS);
@@ -421,26 +421,27 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     let watchdog_ms = std::env::var("TOUCHHLE_ARM64_WATCHDOG_MS").ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or(100);
     let mut no_progress_since = Instant::now();
     let mut no_progress_slices = 0_u64;
+    let trace_limit = std::env::var("TOUCHHLE_ARM64_TRACE_INSTRUCTIONS").ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or(0);
     let mut trace_count = 0_u64;
     let mut previous_pcs = VecDeque::with_capacity(20);
     let mut previous_branches = VecDeque::with_capacity(20);
-    echo!("ARM64 execution trace: first PC={:#x}, SP={:#x}, LR={:#x}, FP={:#x}", context.pc, context.sp, context.regs[30], context.regs[29]);
+    echo!("ARM64 execution transition: normal mode uses Dynarmic Run with {}-tick slices; instruction tracing limit={}", EXECUTION_SLICE_TICKS, trace_limit);
     verify_abi(&context, "entry");
     verify_guest_mappings(&memory, context.pc, context.sp);
-    echo!("ARM64 execution mode: Dynarmic Step execution is active for the startup trace; each call must execute one instruction");
     loop {
-        let trace_this_instruction = trace_count < STARTUP_TRACE_INSTRUCTIONS;
-        if trace_count == 0 {
-            echo!("ARM64 detailed tracing enabled: instruction_limit={} host_calls=all objc_messages=all metal_calls=all", STARTUP_TRACE_INSTRUCTIONS);
-        }
+        let trace_this_instruction = trace_count < trace_limit;
         let instruction_pc = context.pc;
-        let instruction = memory.read_u32(instruction_pc).unwrap_or(0);
+        let instruction = if trace_this_instruction { memory.read_u32(instruction_pc).unwrap_or(0) } else { 0 };
         let result = cpu.run_or_step(
             &mut memory,
             &mut context,
-            if trace_this_instruction { None } else { ticks.as_mut() },
+            ticks.as_mut(),
         );
         cpu.save_context(&mut context);
+        if trace_this_instruction {
+            trace_count += 1;
+            echo!("ARM64 run slice #{}: result={} entry_pc={:#x} final_pc={:#x} sp={:#x} lr={:#x} instruction={:#010x} decoded={}", trace_count, result, instruction_pc, context.pc, context.sp, context.regs[30], instruction, decode_instruction(instruction, instruction_pc));
+        }
         if result == -1 {
             if context.pc == instruction_pc {
                 no_progress_slices = no_progress_slices.saturating_add(1);
@@ -454,39 +455,12 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             }
         }
         if trace_this_instruction {
-            trace_count += 1;
-            let instruction_executed = result == -1 || result >= 0;
-            echo!(
-                "ARM64 instruction-step return #{}: result={} executed={} entry_pc={:#x} final_pc={:#x} sp={:#x} lr={:#x} fp={:#x} instruction={:#010x} decoded={} {}",
-                trace_count,
-                result,
-                instruction_executed,
-                instruction_pc,
-                context.pc,
-                context.sp,
-                context.regs[30],
-                context.regs[29],
-                instruction,
-                decode_instruction(instruction, instruction_pc),
-                processor_state_dump(&context),
-            );
-            if trace_count == 1 {
-                if instruction_executed {
-                    echo!("ARM64 first executed instruction: pc={:#x} instruction={:#010x} decoded={}", instruction_pc, instruction, decode_instruction(instruction, instruction_pc));
-                    echo!("ARM64 first basic block: pc={:#x}", instruction_pc);
-                } else {
-                    echo!("ARM64 first instruction did not execute: pc={:#x} result={} ({})", instruction_pc, result, if result == -5 { "unexpected halt" } else { "execution fault" });
-                    echo!("ARM64 first-instruction blocker: Dynarmic returned before completing the instruction step");
-                }
-            }
             if previous_pcs.len() == 20 { previous_pcs.pop_front(); }
             previous_pcs.push_back(instruction_pc);
             if let Some(target) = branch_target(instruction, instruction_pc) {
                 if previous_branches.len() == 20 { previous_branches.pop_front(); }
                 previous_branches.push_back((instruction_pc, target));
-                echo!("ARM64 branch #{}: {:#x} -> {:#x} ({})", trace_count, instruction_pc, target, decode_instruction(instruction, instruction_pc));
             }
-            echo!("ARM64 instruction #{}: pc={:#x} next_pc={:#x} sp={:#x} lr={:#x} fp={:#x} instruction={:#010x} decoded={}", trace_count, instruction_pc, context.pc, context.sp, context.regs[30], context.regs[29], instruction, decode_instruction(instruction, instruction_pc));
         } else {
             if previous_pcs.len() == 20 { previous_pcs.pop_front(); }
             previous_pcs.push_back(instruction_pc);

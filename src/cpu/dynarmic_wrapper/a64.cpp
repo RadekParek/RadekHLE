@@ -339,7 +339,7 @@ public:
     tracef("jit construction: begin");
     Dynarmic::A64::UserConfig config;
     config.callbacks = &env;
-    config.optimizations = Dynarmic::no_optimizations;
+    config.optimizations = Dynarmic::all_safe_optimizations;
     config.check_halt_on_memory_access = true;
     config.enable_cycle_counting = false;
     config.very_verbose_debugging_output = false;

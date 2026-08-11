@@ -15,9 +15,32 @@ impl A64Interpreter {
     }
 
     pub fn run_or_step(&mut self, memory: &mut Mem64, context: &mut touchHLE_DynarmicA64Context, ticks: Option<&mut u64>) -> i32 {
-        let result = self.step(memory, context);
+        let run = ticks.is_some();
+        let mut executed = 0;
+        let result = if !run {
+            self.step(memory, context)
+        } else {
+            let mut result = -1;
+            for _ in 0..4096 {
+                let pc = context.pc;
+                let instruction = match memory.read_code_u32(pc) {
+                    Ok(instruction) => instruction,
+                    Err(error) => {
+                        echo!("ARM64 EXCEPTION PC={pc:#x} SP={:#x} instruction=<unreadable> address={pc:#x} reason=execute fault: {error}", context.sp);
+                        result = -2;
+                        break;
+                    }
+                };
+                result = self.step(memory, context);
+                if result != -1 || is_control_flow(instruction, pc, context.pc) {
+                    break;
+                }
+                executed += 1;
+            }
+            result
+        };
         if let Some(ticks) = ticks {
-            *ticks = ticks.saturating_sub(1);
+            *ticks = ticks.saturating_sub(executed);
         }
         result
     }
@@ -473,6 +496,17 @@ fn condition_holds(context: &touchHLE_DynarmicA64Context, condition: u32) -> boo
         14 => true,
         _ => false,
     }
+}
+
+fn is_control_flow(instruction: u32, pc: u64, next_pc: u64) -> bool {
+    next_pc != pc.wrapping_add(4)
+        || instruction & 0x7c00_0000 == 0x1400_0000
+        || instruction & 0xffff_fc1f == 0xd65f_0000
+        || instruction & 0xffff_fc1f == 0xd61f_0000
+        || instruction & 0xffff_fc1f == 0xd63f_0000
+        || instruction & 0xff00_0010 == 0x5400_0000
+        || instruction & 0x7e00_0000 == 0x3400_0000
+        || instruction & 0x7e00_0000 == 0x3600_0000
 }
 
 
