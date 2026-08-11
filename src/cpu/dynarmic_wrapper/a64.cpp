@@ -403,7 +403,9 @@ public:
       return static_cast<std::uint64_t>(end != value && *end == '\0' && parsed > 0 ? parsed : 2000ULL);
     }();
     std::atomic<bool> execution_returned{false};
+#if !defined(_WIN32)
     const auto execution_thread = pthread_self();
+#endif
     std::thread watchdog([&] {
       const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(watchdog_ms);
       while (!execution_returned.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
