@@ -68,6 +68,7 @@ struct touchHLE_DynarmicA64Context {
 const auto HaltReasonSvc = Dynarmic::HaltReason::UserDefined1;
 const auto HaltReasonUndefinedInstruction = Dynarmic::HaltReason::UserDefined2;
 const auto HaltReasonBreakpoint = Dynarmic::HaltReason::UserDefined3;
+const auto HaltReasonWatchdog = Dynarmic::HaltReason::UserDefined4;
 
 namespace {
 
@@ -413,11 +414,8 @@ public:
       }
       if (!execution_returned.load(std::memory_order_acquire)) {
         tracef("ARM64 dynarmic watchdog: Run/Step did not return within %llu ms; guest_pc=%#llx guest_sp=%#llx guest_lr=%#llx; requesting native backtrace", static_cast<unsigned long long>(watchdog_ms), static_cast<unsigned long long>(watchdog_guest_pc.load(std::memory_order_relaxed)), static_cast<unsigned long long>(watchdog_guest_sp.load(std::memory_order_relaxed)), static_cast<unsigned long long>(watchdog_guest_lr.load(std::memory_order_relaxed)));
-#if !defined(_WIN32)
-        pthread_kill(execution_thread, SIGUSR2);
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-#endif
-        std::abort();
+        cpu->HaltExecution(HaltReasonWatchdog);
+        tracef("ARM64 dynarmic watchdog: requested cooperative halt; Run/Step must return for interpreter fallback");
       }
     });
     if (ticks) {
@@ -458,6 +456,7 @@ public:
     else if (Dynarmic::Has(reason, HaltReasonUndefinedInstruction)) result = -3;
     else if (Dynarmic::Has(reason, HaltReasonBreakpoint)) result = -4;
     else if (Dynarmic::Has(reason, HaltReasonSvc)) result = static_cast<std::int32_t>(env.halting_svc);
+    else if (Dynarmic::Has(reason, HaltReasonWatchdog)) result = -6;
     if (ticks) *ticks = env.ticks_remaining;
     env.mem = nullptr;
     return result;

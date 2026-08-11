@@ -385,6 +385,7 @@ enum A64Backend {
     Jit {
         wrapper: *mut touchHLE_DynarmicWrapper,
         interpreter: A64Interpreter,
+        disabled: bool,
     },
     Interpreter(A64Interpreter),
 }
@@ -414,11 +415,16 @@ impl A64Cpu {
                 echo!("ARM64 backend selected: interpreter (explicit diagnostic mode)");
                 A64Backend::Interpreter(A64Interpreter::new())
             }
-            crate::options::Arm64Backend::Auto | crate::options::Arm64Backend::Jit => {
-                echo!("ARM64 backend selected: Dynarmic JIT (interpreter is block fallback)");
+            crate::options::Arm64Backend::Auto => {
+                echo!("ARM64 backend selected: interpreter (compatibility-first default; use --arm64-backend=jit to opt in)");
+                A64Backend::Interpreter(A64Interpreter::new())
+            }
+            crate::options::Arm64Backend::Jit => {
+                echo!("ARM64 backend selected: Dynarmic JIT (single-instruction compatibility stepping with interpreter fallback)");
                 A64Backend::Jit {
                     wrapper: unsafe { touchHLE_DynarmicA64Wrapper_new() },
                     interpreter: A64Interpreter::new(),
+                    disabled: false,
                 }
             }
         };
@@ -438,23 +444,26 @@ impl A64Cpu {
     }
 
     pub fn save_context(&mut self, context: &mut touchHLE_DynarmicA64Context) {
-        if let A64Backend::Jit { wrapper, .. } = self.backend {
-            unsafe { touchHLE_DynarmicA64Wrapper_save_context(wrapper, context) }
+        match &mut self.backend {
+            A64Backend::Jit { wrapper, disabled, .. } if !*disabled => {
+                unsafe { touchHLE_DynarmicA64Wrapper_save_context(*wrapper, context) }
+            }
+            A64Backend::Jit { .. } | A64Backend::Interpreter(_) => {}
         }
     }
 
-    pub fn run_or_step(&mut self, mem: &mut Mem64, context: &mut touchHLE_DynarmicA64Context, ticks: Option<&mut u64>) -> i32 {
+    pub fn run_or_step(&mut self, mem: &mut Mem64, context: &mut touchHLE_DynarmicA64Context, mut ticks: Option<&mut u64>) -> i32 {
         match &mut self.backend {
-            A64Backend::Jit { wrapper, interpreter } => {
-                let result = unsafe { touchHLE_DynarmicA64Wrapper_run_or_step(*wrapper, mem as *mut _ as *mut _, ticks) };
-                if result == -3 {
+            A64Backend::Jit { wrapper, interpreter, disabled } => {
+                if *disabled {
+                    return interpreter.run_or_step(mem, context, ticks);
+                }
+                let result = unsafe { touchHLE_DynarmicA64Wrapper_run_or_step(*wrapper, mem as *mut _ as *mut _, ticks.as_deref_mut()) };
+                if result == -3 || result == -6 {
                     unsafe { touchHLE_DynarmicA64Wrapper_save_context(*wrapper, context) };
-                    let fallback_result = interpreter.run_or_step(mem, context, None);
-                    if fallback_result >= 0 || fallback_result == -1 {
-                        unsafe { touchHLE_DynarmicA64Wrapper_load_context(*wrapper, context) };
-                        unsafe { touchHLE_DynarmicA64Wrapper_clear_halt(*wrapper, 0x0200_0000) };
-                        return fallback_result;
-                    }
+                    *disabled = true;
+                    echo!("ARM64 Dynarmic compatibility fallback: disabling JIT after result {result} at pc={:#x}; continuing with interpreter", context.pc);
+                    return interpreter.run_or_step(mem, context, ticks);
                 }
                 result
             }
@@ -463,8 +472,10 @@ impl A64Cpu {
     }
 
     pub fn clear_halt(&mut self, reason: u32) {
-        if let A64Backend::Jit { wrapper, .. } = self.backend {
-            unsafe { touchHLE_DynarmicA64Wrapper_clear_halt(wrapper, reason) }
+        if let A64Backend::Jit { wrapper, disabled, .. } = self.backend {
+            if !disabled {
+                unsafe { touchHLE_DynarmicA64Wrapper_clear_halt(wrapper, reason) }
+            }
         }
     }
 
