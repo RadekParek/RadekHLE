@@ -341,7 +341,7 @@ public:
     config.callbacks = &env;
     config.optimizations = Dynarmic::all_safe_optimizations;
     config.check_halt_on_memory_access = true;
-    config.enable_cycle_counting = false;
+    config.enable_cycle_counting = true;
     config.very_verbose_debugging_output = false;
     monitor = std::make_unique<Dynarmic::ExclusiveMonitor>(1);
     config.global_monitor = monitor.get();
@@ -422,14 +422,14 @@ public:
     });
     if (ticks) {
       env.ticks_remaining = *ticks;
-      env.trace("Dynarmic configuration: unrestricted Run mode, single_step=false, cycle_counting=false, tick_budget=disabled, watchdog_ms=%llu", static_cast<unsigned long long>(watchdog_ms));
+      env.trace("Dynarmic configuration: unrestricted Run mode, single_step=false, cycle_counting=true, tick_budget=%llu, watchdog_ms=%llu", static_cast<unsigned long long>(*ticks), static_cast<unsigned long long>(watchdog_ms));
       env.trace("DYNARMIC_RUN_ENTER");
       env.trace("DEBUG_MARKER_BEFORE_DYNARMIC");
       reason = cpu->Run();
       env.trace("DEBUG_MARKER_AFTER_DYNARMIC");
       env.trace("DYNARMIC_RUN_RETURN reason=%#x pc=%#llx", static_cast<unsigned>(reason), static_cast<unsigned long long>(cpu->GetPC()));
     } else {
-      env.trace("Dynarmic configuration: Step mode, cycle_counting=false, watchdog_ms=%llu", static_cast<unsigned long long>(watchdog_ms));
+      env.trace("Dynarmic configuration: Step mode, cycle_counting=true, watchdog_ms=%llu", static_cast<unsigned long long>(watchdog_ms));
       env.trace("DYNARMIC_STEP_ENTER");
       env.trace("DEBUG_MARKER_BEFORE_DYNARMIC");
       reason = cpu->Step();

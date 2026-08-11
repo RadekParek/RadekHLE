@@ -418,7 +418,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     let mut host_dispatches = 0_u64;
     let mut last_pc = context.pc;
     let mut repeated_pc = 0_u64;
-    let watchdog_ms = std::env::var("TOUCHHLE_ARM64_WATCHDOG_MS").ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or(100);
+    let watchdog_ms = std::env::var("TOUCHHLE_ARM64_WATCHDOG_MS").ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or(2000);
     let mut no_progress_since = Instant::now();
     let mut no_progress_slices = 0_u64;
     let trace_limit = std::env::var("TOUCHHLE_ARM64_TRACE_INSTRUCTIONS").ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or(0);
