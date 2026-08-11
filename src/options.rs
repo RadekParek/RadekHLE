@@ -34,6 +34,12 @@ pub enum Button {
 /// Highest iOS version currently exposed by the emulator compatibility layer.
 pub const LATEST_IOS_VERSION: (i32, i32, i32) = (13, 7, 0);
 
+/// Compatibility version used by legacy UIKit device queries.
+pub const LEGACY_UI_DEVICE_IOS_VERSION: (i32, i32, i32) = (6, 1, 0);
+
+/// Compatibility version used by legacy Foundation process queries.
+pub const LEGACY_NS_PROCESS_INFO_IOS_VERSION: (i32, i32, i32) = (12, 0, 0);
+
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Arm64Backend {
     Auto,

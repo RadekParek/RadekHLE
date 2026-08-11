@@ -216,7 +216,7 @@ pub const CLASSES: ClassExports = objc_classes! {
         .options
         .as_ref()
         .ios_version
-        .unwrap_or(crate::options::LATEST_IOS_VERSION);
+        .unwrap_or(crate::options::LEGACY_UI_DEVICE_IOS_VERSION);
     ns_string::from_rust_string(env, format!("{major}.{minor}.{patch}"))
 }
 - (id)uniqueIdentifier {

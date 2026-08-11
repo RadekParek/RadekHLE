@@ -411,6 +411,9 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
     }
     crate::log::set_file_logging(options.log_file);
     crate::gles::configure_translator_tracing(options.trace_gl_errors);
+    if options.force_32_bit {
+        echo!("Legacy ARM32 compatibility mode explicitly forced; ARM64-only executables will be rejected.");
+    }
 
     let architecture = {
         let executable_bytes = fs

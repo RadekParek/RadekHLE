@@ -80,15 +80,13 @@ fn assert_process_info_singleton(env: &mut Environment, this: id) {
 
 /// Fake OS version used when the app queries the host system version.
 ///
-/// touchHLE targets early iPhone OS apps; we report iOS 12.0.0 so that any
-/// iOS 8+ feature gate (which is the floor for many third-party SDKs that
-/// query `operatingSystemVersion`) passes without triggering the
-/// "unsupported version" path inside the app.
+/// Keep the legacy runtime's compatibility version independent from the
+/// ARM64 runtime profile. Many 32-bit apps use this value for feature gates.
 fn os_version(env: &Environment) -> (i32, i32, i32) {
     env.options
         .as_ref()
         .ios_version
-        .unwrap_or(crate::options::LATEST_IOS_VERSION)
+        .unwrap_or(crate::options::LEGACY_NS_PROCESS_INFO_IOS_VERSION)
 }
 
 pub const CLASSES: ClassExports = objc_classes! {

@@ -1,7 +1,7 @@
 #!/bin/sh
-# Run an app under touchHLE for a bounded amount of time, for CI.
+# Run an app under RadekHLE for a bounded amount of time, for CI.
 #
-# touchHLE runs apps indefinitely, which isn't useful in CI, so this launches
+# RadekHLE runs apps indefinitely, which isn't useful in CI, so this launches
 # the emulator in the background, waits a fixed number of seconds, and then
 # stops it. Being killed after reaching that time limit is the normal, expected
 # outcome and is reported as success; only the app exiting on its own with a
@@ -10,7 +10,7 @@
 # This is written for POSIX sh so it works the same on Linux, macOS and on
 # Windows under the Git Bash that GitHub Actions provides.
 #
-# Usage: ci-run-app.sh <binary> <run_seconds> <app_path> [extra touchHLE args...]
+# Usage: ci-run-app.sh <binary> <run_seconds> <app_path> [extra RadekHLE args...]
 set -u
 
 BINARY="$1"
@@ -55,5 +55,5 @@ fi
 wait "$APP_PID"
 status=$?
 kill "$TAIL_PID" 2>/dev/null || true
-echo "touchHLE exited on its own with status ${status}."
+echo "RadekHLE exited on its own with status ${status}."
 exit "$status"
