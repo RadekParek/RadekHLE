@@ -5,7 +5,7 @@ use std::convert::TryInto;
 
 use mach_object::{Bind, BindSymbolType, LazyBind, LinkEditData, LoadCommand, MachCommand, OFile, Rebase, Symbol, SymbolIter, ThreadState, WeakBind};
 
-use crate::mem64::{Guest64Addr, Mem64};
+use crate::mem64::{Guest64Addr, Mem64, Permissions};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Architecture {
@@ -180,7 +180,7 @@ fn parse_chained_fixups(
                     } else {
                         target
                     };
-                    memory.write_u64(address, target.checked_add(slide).ok_or("ARM64 chained rebase overflows")?).map_err(str::to_owned)?;
+                    memory.load_u64(address, target.checked_add(slide).ok_or("ARM64 chained rebase overflows")?).map_err(str::to_owned)?;
                 }
                 if next == 0 {
                     break;
@@ -260,6 +260,8 @@ impl MachO64 {
                     vmsize,
                     fileoff,
                     filesize,
+                    maxprot,
+                    initprot,
                     sections: segment_sections,
                     ..
                 } => {
@@ -276,13 +278,14 @@ impl MachO64 {
                     if vmsize == 0 {
                         continue;
                     }
-                    memory.map_zeroed(base, vmsize as u64)?;
+                    let permissions = Permissions::from_mach_protection(initprot, maxprot);
+                    memory.map_zeroed_with_permissions(base, vmsize as u64, permissions)?;
                     if filesize != 0 {
                         let start = usize::try_from(fileoff).map_err(|_| "segment file offset is too large")?;
                         let length = usize::try_from(filesize).map_err(|_| "segment file size is too large")?;
                         let end = start.checked_add(length).ok_or("segment file range overflows")?;
                         let source = image_bytes.get(start..end).ok_or_else(|| format!("segment {segname} extends past the Mach-O file"))?;
-                        memory.write_bytes(base, source)?;
+                        memory.load_bytes(base, source)?;
                     }
                     for section in segment_sections {
                         sections.push(Section64 {
@@ -329,7 +332,7 @@ impl MachO64 {
                             .checked_add(rebased.symbol_offset as u64)
                             .ok_or("ARM64 rebase address overflows")?;
                         let value = memory.read_u64(address)?;
-                        memory.write_u64(address, value.checked_add(slide).ok_or("ARM64 rebase value overflows")?)?;
+                        memory.load_u64(address, value.checked_add(slide).ok_or("ARM64 rebase value overflows")?)?;
                     }
                     for bound in Bind::parse(command_bytes(image_bytes, bind_off, bind_size)?, 8) {
                         if bound.symbol_type != BindSymbolType::Pointer {

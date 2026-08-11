@@ -274,6 +274,11 @@ Debugging options:
         Force dynarmic to always access guest memory via the memory access
         callbacks, rather than using the fast direct access path (page tables).
 
+    --arm64-backend=auto|jit|interpreter
+        Select the ARM64 execution backend. `auto` uses the reliable interpreter
+        on Android and Dynarmic JIT elsewhere. `jit` forces Dynarmic; `interpreter`
+        prioritizes compatibility over speed and is useful for isolating JIT issues.
+
     --gdb=...
         Starts touchHLE in debugging mode, listening for GDB remote serial
         protocol connections over TCP on the specified host and port.

@@ -34,6 +34,32 @@ pub enum Button {
 /// Highest iOS version currently exposed by the emulator compatibility layer.
 pub const LATEST_IOS_VERSION: (i32, i32, i32) = (26, 6, 0);
 
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Arm64Backend {
+    Auto,
+    Jit,
+    Interpreter,
+}
+
+impl Arm64Backend {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "auto" => Ok(Self::Auto),
+            "jit" => Ok(Self::Jit),
+            "interpreter" => Ok(Self::Interpreter),
+            _ => Err(format!("Unknown ARM64 backend {value:?}; expected auto, jit, or interpreter")),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Jit => "jit",
+            Self::Interpreter => "interpreter",
+        }
+    }
+}
+
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum GraphicsApi {
     Default,
@@ -116,6 +142,7 @@ pub struct Options {
     pub fast_memory: bool,
     pub direct_memory_access: bool,
     pub force_32_bit: bool,
+    pub arm64_backend: Arm64Backend,
     pub gdb_listen_addrs: Option<Vec<SocketAddr>>,
     pub preferred_languages: Option<Vec<String>>,
     pub headless: bool,
@@ -199,6 +226,7 @@ impl Default for Options {
             fast_memory: true,
             direct_memory_access: true,
             force_32_bit: false,
+            arm64_backend: Arm64Backend::Auto,
             gdb_listen_addrs: None,
             preferred_languages: None,
             headless: false,
@@ -424,6 +452,8 @@ impl Options {
             self.force_32_bit = true;
         } else if arg == "--disable-force-32-bit" {
             self.force_32_bit = false;
+        } else if let Some(value) = arg.strip_prefix("--arm64-backend=") {
+            self.arm64_backend = Arm64Backend::parse(value)?;
         } else if arg == "--prefer-gles2-context" {
             self.prefer_gles2_context = true;
         } else if arg == "--allow-network-access" {

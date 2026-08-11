@@ -161,7 +161,7 @@ fn prepare_stack(
     envp: &[String],
     apple: &[String],
 ) -> Result<(u64, u64, u64, u64), String> {
-    mem.map_zeroed(STACK_BASE - STACK_SIZE, STACK_SIZE).map_err(str::to_owned)?;
+    mem.map_zeroed_with_permissions(STACK_BASE - STACK_SIZE, STACK_SIZE, crate::mem64::Permissions::read_write()).map_err(str::to_owned)?;
     let mut string_cursor = STACK_BASE & !15;
     let mut argv_strings = Vec::with_capacity(argv.len());
     let mut envp_strings = Vec::with_capacity(envp.len());
@@ -214,7 +214,7 @@ fn prepare_stack(
 }
 
 fn write_svc_stub(mem: &mut Mem64, svc: u32) -> Result<u64, String> {
-    let stub = mem.alloc_zeroed(HOST_STUB_SIZE).map_err(str::to_owned)?;
+    let stub = mem.alloc_zeroed_with_permissions(HOST_STUB_SIZE, crate::mem64::Permissions::read_write_execute()).map_err(str::to_owned)?;
     let instruction = 0xd4000001u32 | ((u64::from(svc) << 5) as u32);
     mem.write_u32(stub, instruction).map_err(str::to_owned)?;
     mem.write_u32(stub + 4, 0xd65f03c0).map_err(str::to_owned)?;
@@ -348,7 +348,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             if binding_index < 32 {
                 echo!("ARM64 materialized import #{}: {} -> {:#x}", binding_index, binding.symbol, value);
             }
-            memory.write_u64(binding.address, value.checked_add_signed(binding.addend).ok_or("ARM64 import address overflows")?).map_err(str::to_owned)?;
+            memory.load_u64(binding.address, value.checked_add_signed(binding.addend).ok_or("ARM64 import address overflows")?).map_err(str::to_owned)?;
             materialized_imports += 1;
             continue;
         }
@@ -371,7 +371,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
         let target = stub
             .checked_add_signed(binding.addend)
             .ok_or("ARM64 import target overflows")?;
-        memory.write_u64(binding.address, target).map_err(str::to_owned)?;
+        memory.load_u64(binding.address, target).map_err(str::to_owned)?;
     }
 
     if !unresolved.is_empty() {
@@ -410,7 +410,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     context.regs[2] = envp_ptr;
     context.regs[3] = apple_ptr;
     context.regs[30] = return_stub;
-    let mut cpu = A64Cpu::new();
+    let mut cpu = A64Cpu::with_backend(options.arm64_backend);
     cpu.set_trace(true);
     echo!("ARM64 execution transition: context loaded; entering Dynarmic with pc={:#x} sp={:#x} lr={:#x}", context.pc, context.sp, context.regs[30]);
     cpu.load_context(&context);
@@ -437,6 +437,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
         let instruction = memory.read_u32(instruction_pc).unwrap_or(0);
         let result = cpu.run_or_step(
             &mut memory,
+            &mut context,
             if trace_this_instruction { None } else { ticks.as_mut() },
         );
         cpu.save_context(&mut context);

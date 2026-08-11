@@ -6,14 +6,84 @@ pub type Guest64USize = u64;
 pub type Guest64Addr = u64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Permissions(u8);
+
+impl Permissions {
+    pub const NONE: Self = Self(0);
+    pub const READ: Self = Self(1);
+    pub const WRITE: Self = Self(2);
+    pub const EXECUTE: Self = Self(4);
+
+    pub const fn contains(self, required: Self) -> bool {
+        self.0 & required.0 == required.0
+    }
+
+    pub const fn from_mach_protection(initprot: i32, _maxprot: i32) -> Self {
+        let mut permissions = Self::NONE;
+        if initprot & 1 != 0 { permissions = Self(permissions.0 | Self::READ.0); }
+        if initprot & 2 != 0 { permissions = Self(permissions.0 | Self::WRITE.0); }
+        if initprot & 4 != 0 { permissions = Self(permissions.0 | Self::EXECUTE.0); }
+        permissions
+    }
+
+    pub const fn read_write() -> Self {
+        Self(Self::READ.0 | Self::WRITE.0)
+    }
+
+    pub const fn read_execute() -> Self {
+        Self(Self::READ.0 | Self::EXECUTE.0)
+    }
+
+    pub const fn read_write_execute() -> Self {
+        Self(Self::READ.0 | Self::WRITE.0 | Self::EXECUTE.0)
+    }
+
+    pub const fn into_access(self) -> AccessType {
+        if self.contains(Self::WRITE) { AccessType::Write } else if self.contains(Self::EXECUTE) && !self.contains(Self::READ) { AccessType::Execute } else { AccessType::Read }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessType {
+    Read,
+    Write,
+    Execute,
+}
+
+impl AccessType {
+    fn permission(self) -> Permissions {
+        match self {
+            Self::Read => Permissions::READ,
+            Self::Write => Permissions::WRITE,
+            Self::Execute => Permissions::EXECUTE,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Execute => "execute",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Region {
     pub base: Guest64Addr,
     pub size: Guest64USize,
+    pub permissions: Permissions,
+}
+
+#[derive(Debug)]
+struct Mapping {
+    bytes: Vec<u8>,
+    permissions: Permissions,
 }
 
 #[derive(Debug, Default)]
 pub struct Mem64 {
-    regions: BTreeMap<Guest64Addr, Vec<u8>>,
+    regions: BTreeMap<Guest64Addr, Mapping>,
     allocations: BTreeMap<Guest64Addr, Guest64USize>,
     next_allocation: Guest64Addr,
 }
@@ -24,35 +94,95 @@ impl Mem64 {
     }
 
     pub fn map_zeroed(&mut self, base: Guest64Addr, size: Guest64USize) -> Result<(), &'static str> {
+        self.map_zeroed_with_permissions(base, size, Permissions::read_write_execute())
+    }
+
+    pub fn map_zeroed_with_permissions(
+        &mut self,
+        base: Guest64Addr,
+        size: Guest64USize,
+        permissions: Permissions,
+    ) -> Result<(), &'static str> {
         let size_usize = usize::try_from(size).map_err(|_| "64-bit mapping is too large for this host")?;
         let end = base.checked_add(size).ok_or("64-bit mapping overflows")?;
-        if size == 0 { return Ok(()); }
+        if size == 0 {
+            return Ok(());
+        }
         if let Some((&previous_base, previous)) = self.regions.range(..=base).next_back() {
-            let previous_end = previous_base.checked_add(previous.len() as u64).ok_or("mapping overflows")?;
-            if previous_end > base { return Err("64-bit mapping overlaps an existing mapping"); }
+            let previous_end = previous_base.checked_add(previous.bytes.len() as u64).ok_or("mapping overflows")?;
+            if previous_end > base {
+                return Err("64-bit mapping overlaps an existing mapping");
+            }
         }
         if self.regions.range(base..).next().is_some_and(|(&next_base, _)| next_base < end) {
             return Err("64-bit mapping overlaps an existing mapping");
         }
-        self.regions.insert(base, vec![0; size_usize]);
+        self.regions.insert(base, Mapping { bytes: vec![0; size_usize], permissions });
+        Ok(())
+    }
+
+    pub fn set_permissions(
+        &mut self,
+        base: Guest64Addr,
+        size: Guest64USize,
+        permissions: Permissions,
+    ) -> Result<(), &'static str> {
+        let end = base.checked_add(size).ok_or("permission range overflows")?;
+        let mapping = self.regions.get_mut(&base).ok_or("permission range is unmapped")?;
+        if mapping.bytes.len() as u64 != size {
+            return Err("permission range must cover one complete mapping");
+        }
+        let mapping_end = base.checked_add(mapping.bytes.len() as u64).ok_or("mapping overflows")?;
+        if mapping_end != end {
+            return Err("permission range is not a complete mapping");
+        }
+        mapping.permissions = permissions;
         Ok(())
     }
 
     pub fn write_bytes(&mut self, base: Guest64Addr, bytes: &[u8]) -> Result<(), &'static str> {
-        self.slice_mut(base, bytes.len())?.copy_from_slice(bytes);
+        self.write_bytes_with_access(base, bytes, AccessType::Write)
+    }
+
+    pub fn load_u64(&mut self, address: Guest64Addr, value: u64) -> Result<(), &'static str> {
+        let (&region_base, _) = self.regions.range(..=address).next_back().ok_or("64-bit memory access is unmapped")?;
+        let (mapping, offset) = self.mapping(address, std::mem::size_of::<u64>())?;
+        let _ = mapping;
+        let mapping = self.regions.get_mut(&region_base).ok_or("64-bit memory access is unmapped")?;
+        mapping.bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        Ok(())
+    }
+
+    pub fn load_bytes(&mut self, base: Guest64Addr, bytes: &[u8]) -> Result<(), &'static str> {
+        let (&region_base, _) = self.regions.range(..=base).next_back().ok_or("64-bit memory access is unmapped")?;
+        let (mapping, offset) = self.mapping(base, bytes.len())?;
+        let _ = mapping;
+        let mapping = self.regions.get_mut(&region_base).ok_or("64-bit memory access is unmapped")?;
+        mapping.bytes[offset..offset + bytes.len()].copy_from_slice(bytes);
+        Ok(())
+    }
+
+    pub fn write_bytes_with_access(
+        &mut self,
+        base: Guest64Addr,
+        bytes: &[u8],
+        access: AccessType,
+    ) -> Result<(), &'static str> {
+        self.slice_mut_with_access(base, bytes.len(), access)?.copy_from_slice(bytes);
         Ok(())
     }
 
     pub fn fill_bytes(&mut self, base: Guest64Addr, value: u8, size: Guest64USize) -> Result<(), &'static str> {
         let size = usize::try_from(size).map_err(|_| "64-bit fill is too large for this host")?;
-        self.slice_mut(base, size)?.fill(value);
+        let target = self.slice_mut_with_access(base, size, AccessType::Write)?;
+        target.fill(value);
         Ok(())
     }
 
     pub fn copy_bytes(&mut self, destination: Guest64Addr, source: Guest64Addr, size: Guest64USize) -> Result<(), &'static str> {
         let size = usize::try_from(size).map_err(|_| "64-bit copy is too large for this host")?;
-        let bytes = self.slice(source, size)?.to_vec();
-        self.slice_mut(destination, size)?.copy_from_slice(&bytes);
+        let bytes = self.slice_with_access(source, size, AccessType::Read)?.to_vec();
+        self.slice_mut_with_access(destination, size, AccessType::Write)?.copy_from_slice(&bytes);
         Ok(())
     }
 
@@ -76,7 +206,7 @@ impl Mem64 {
 
     pub fn read_bytes(&self, base: Guest64Addr, size: Guest64USize) -> Result<Vec<u8>, &'static str> {
         let size = usize::try_from(size).map_err(|_| "64-bit read is too large for this host")?;
-        Ok(self.slice(base, size)?.to_vec())
+        Ok(self.slice_with_access(base, size, AccessType::Read)?.to_vec())
     }
 
     pub fn allocation_size(&self, address: Guest64Addr) -> Option<Guest64USize> {
@@ -84,12 +214,16 @@ impl Mem64 {
     }
 
     pub fn alloc_zeroed(&mut self, size: Guest64USize) -> Result<Guest64Addr, &'static str> {
+        self.alloc_zeroed_with_permissions(size, Permissions::read_write())
+    }
+
+    pub fn alloc_zeroed_with_permissions(&mut self, size: Guest64USize, permissions: Permissions) -> Result<Guest64Addr, &'static str> {
         let size = size.max(16).checked_add(15).ok_or("allocation size overflows")? & !15;
         let mut base = self.next_allocation.max(0x1_0000_0000);
         loop {
             let end = base.checked_add(size).ok_or("allocation address overflows")?;
-            let overlapping = self.regions.range(..end).next_back().and_then(|(&region_base, bytes)| {
-                let region_end = region_base.checked_add(bytes.len() as u64)?;
+            let overlapping = self.regions.range(..end).next_back().and_then(|(&region_base, mapping)| {
+                let region_end = region_base.checked_add(mapping.bytes.len() as u64)?;
                 (region_end > base && region_base < end).then_some(region_end)
             });
             match overlapping {
@@ -97,35 +231,64 @@ impl Mem64 {
                 None => break,
             }
         }
-        self.map_zeroed(base, size)?;
+        self.map_zeroed_with_permissions(base, size, permissions)?;
         self.allocations.insert(base, size);
         self.next_allocation = base.checked_add(size).ok_or("allocation cursor overflows")?;
         Ok(base)
     }
 
-    fn region_base(&self, addr: Guest64Addr, size: usize) -> Result<Guest64Addr, &'static str> {
-        let (&base, bytes) = self.regions.range(..=addr).next_back().ok_or("64-bit memory access is unmapped")?;
+    fn mapping(&self, addr: Guest64Addr, size: usize) -> Result<(&Mapping, usize), &'static str> {
+        let (&base, mapping) = self.regions.range(..=addr).next_back().ok_or("64-bit memory access is unmapped")?;
         let offset = addr.checked_sub(base).ok_or("64-bit address underflow")?;
         let end = offset.checked_add(size as u64).ok_or("64-bit access overflows")?;
-        if end > bytes.len() as u64 { return Err("64-bit memory access is out of bounds"); }
-        Ok(base)
+        if end > mapping.bytes.len() as u64 {
+            return Err("64-bit memory access is out of bounds");
+        }
+        Ok((mapping, usize::try_from(offset).map_err(|_| "64-bit offset overflows host usize")?))
     }
 
-    fn slice(&self, addr: Guest64Addr, size: usize) -> Result<&[u8], &'static str> {
-        let base = self.region_base(addr, size)?;
-        let offset = usize::try_from(addr - base).map_err(|_| "64-bit offset overflows host usize")?;
-        Ok(&self.regions[&base][offset..offset + size])
+    fn check_access(&self, addr: Guest64Addr, size: usize, access: AccessType) -> Result<(&Mapping, usize), &'static str> {
+        let (mapping, offset) = self.mapping(addr, size)?;
+        if !mapping.permissions.contains(access.permission()) {
+            return Err(match access {
+                AccessType::Read => "64-bit memory read protection fault",
+                AccessType::Write => "64-bit memory write protection fault",
+                AccessType::Execute => "64-bit memory execute protection fault",
+            });
+        }
+        Ok((mapping, offset))
     }
 
-    fn slice_mut(&mut self, addr: Guest64Addr, size: usize) -> Result<&mut [u8], &'static str> {
-        let base = self.region_base(addr, size)?;
-        let offset = usize::try_from(addr - base).map_err(|_| "64-bit offset overflows host usize")?;
-        Ok(&mut self.regions.get_mut(&base).unwrap()[offset..offset + size])
+    fn slice_with_access(&self, addr: Guest64Addr, size: usize, access: AccessType) -> Result<&[u8], &'static str> {
+        let (mapping, offset) = self.check_access(addr, size, access)?;
+        Ok(&mapping.bytes[offset..offset + size])
     }
 
-    pub fn read<T: SafeRead + Copy>(&self, addr: Guest64Addr) -> Result<T, &'static str> {
+    fn slice_mut_with_access(&mut self, addr: Guest64Addr, size: usize, access: AccessType) -> Result<&mut [u8], &'static str> {
+        let (&base, _) = self.regions.range(..=addr).next_back().ok_or("64-bit memory access is unmapped")?;
+        let (mapping, offset) = self.mapping(addr, size)?;
+        if !mapping.permissions.contains(access.permission()) {
+            return Err(match access {
+                AccessType::Read => "64-bit memory read protection fault",
+                AccessType::Write => "64-bit memory write protection fault",
+                AccessType::Execute => "64-bit memory execute protection fault",
+            });
+        }
+        let mapping = self.regions.get_mut(&base).ok_or("64-bit memory access is unmapped")?;
+        Ok(&mut mapping.bytes[offset..offset + size])
+    }
+
+    pub fn can_write(&self, addr: Guest64Addr, size: Guest64USize) -> Result<(), &'static str> {
+        self.check_access( addr, usize::try_from(size).map_err(|_| "64-bit write size is too large")?, AccessType::Write).map(|_| ())
+    }
+
+    pub fn read_code_u32(&self, addr: Guest64Addr) -> Result<u32, &'static str> {
+        self.read_with_access(addr, AccessType::Execute)
+    }
+
+    pub fn read_with_access<T: SafeRead + Copy>(&self, addr: Guest64Addr, access: AccessType) -> Result<T, &'static str> {
         let size = std::mem::size_of::<T>();
-        let source = self.slice(addr, size)?;
+        let source = self.slice_with_access(addr, size, access)?;
         let mut value = std::mem::MaybeUninit::<T>::uninit();
         unsafe {
             std::ptr::copy_nonoverlapping(source.as_ptr(), value.as_mut_ptr().cast(), size);
@@ -133,11 +296,19 @@ impl Mem64 {
         }
     }
 
-    pub fn write<T: SafeWrite>(&mut self, addr: Guest64Addr, value: T) -> Result<(), &'static str> {
+    pub fn write_with_access<T: SafeWrite>(&mut self, addr: Guest64Addr, value: T, access: AccessType) -> Result<(), &'static str> {
         let size = std::mem::size_of::<T>();
-        let target = self.slice_mut(addr, size)?;
+        let target = self.slice_mut_with_access(addr, size, access)?;
         unsafe { std::ptr::copy_nonoverlapping((&value as *const T).cast(), target.as_mut_ptr(), size) }
         Ok(())
+    }
+
+    pub fn read<T: SafeRead + Copy>(&self, addr: Guest64Addr) -> Result<T, &'static str> {
+        self.read_with_access(addr, AccessType::Read)
+    }
+
+    pub fn write<T: SafeWrite>(&mut self, addr: Guest64Addr, value: T) -> Result<(), &'static str> {
+        self.write_with_access(addr, value, AccessType::Write)
     }
 
     pub fn read_u8(&self, addr: Guest64Addr) -> Result<u8, &'static str> { self.read(addr) }
@@ -152,13 +323,13 @@ impl Mem64 {
     pub fn write_u128(&mut self, addr: Guest64Addr, value: [u64; 2]) -> Result<(), &'static str> { self.write(addr, value) }
 
     pub fn mapped_regions(&self) -> impl Iterator<Item = Region> + '_ {
-        self.regions.iter().map(|(&base, bytes)| Region { base, size: bytes.len() as u64 })
+        self.regions.iter().map(|(&base, mapping)| Region { base, size: mapping.bytes.len() as u64, permissions: mapping.permissions })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Mem64;
+    use super::{Mem64, Permissions};
 
     #[test]
     fn allocations_skip_loaded_regions() {
@@ -175,6 +346,15 @@ mod tests {
         assert!(mem.write_u64(0x1_0000_0008, 1).is_ok());
         assert!(mem.write_u64(0x1_0000_0009, 1).is_err());
         assert!(mem.read_u32(0x1_0000_000e).is_err());
+    }
+
+    #[test]
+    fn permissions_separate_code_and_data_access() {
+        let mut mem = Mem64::new();
+        mem.map_zeroed_with_permissions(0x1_0000_0000, 0x1000, Permissions::read_execute()).unwrap();
+        assert!(mem.read_code_u32(0x1_0000_0000).is_ok());
+        assert!(mem.write_u32(0x1_0000_0000, 1).is_err());
+        assert!(mem.read_u32(0x1_0000_0000).is_ok());
     }
 
     #[test]
