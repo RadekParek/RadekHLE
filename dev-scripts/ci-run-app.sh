@@ -13,10 +13,22 @@
 # Usage: ci-run-app.sh <binary> <run_seconds> <app_path> [extra RadekHLE args...]
 set -u
 
+if [ "$#" -lt 3 ]; then
+    echo "Usage: $0 <binary> <run_seconds> <app_path> [extra RadekHLE args...]" >&2
+    exit 2
+fi
+
 BINARY="$1"
 RUN_SECONDS="$2"
 APP_PATH="$3"
 shift 3
+
+case "$RUN_SECONDS" in
+    ''|*[!0-9]*)
+        echo "run_seconds must be a non-negative integer, got: $RUN_SECONDS" >&2
+        exit 2
+        ;;
+esac
 
 echo "Running '$APP_PATH' under '$BINARY' for up to ${RUN_SECONDS}s..."
 
@@ -29,6 +41,16 @@ echo "Running '$APP_PATH' under '$BINARY' for up to ${RUN_SECONDS}s..."
 APP_PID=$!
 tail -f run.log &
 TAIL_PID=$!
+
+cleanup() {
+    kill "$TAIL_PID" 2>/dev/null || true
+    if kill -0 "$APP_PID" 2>/dev/null; then
+        kill "$APP_PID" 2>/dev/null || true
+        sleep 2
+        kill -9 "$APP_PID" 2>/dev/null || true
+    fi
+}
+trap cleanup INT TERM EXIT
 
 # Poll once a second so we can notice an early exit instead of always waiting
 # the full duration.
@@ -43,17 +65,17 @@ done
 
 if kill -0 "$APP_PID" 2>/dev/null; then
     echo "Reached the ${RUN_SECONDS}s time limit; stopping the app."
-    kill "$APP_PID" 2>/dev/null || true
-    sleep 2
-    kill -9 "$APP_PID" 2>/dev/null || true
-    kill "$TAIL_PID" 2>/dev/null || true
+    cleanup
+    trap - INT TERM EXIT
     echo "App ran successfully (still running when stopped)."
     exit 0
 fi
 
-# The app exited on its own; surface its real exit status.
+# The app exited on its own; surface its real exit status. `kill -0` can
+# still succeed briefly for a zombie, so wait is the authoritative check.
 wait "$APP_PID"
 status=$?
 kill "$TAIL_PID" 2>/dev/null || true
+trap - INT TERM EXIT
 echo "RadekHLE exited on its own with status ${status}."
 exit "$status"
