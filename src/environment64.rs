@@ -5,7 +5,7 @@ use crate::fs::Fs;
 use crate::mach_o64::MachO64;
 use crate::mem64::Mem64;
 use crate::options::Options;
-use crate::window::DeviceFamily;
+use crate::window::{DeviceFamily, DeviceOrientation};
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 use touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context;
@@ -23,6 +23,7 @@ const A64_HALT_USER_DEFINED3: u32 = 0x0400_0000;
 const STARTUP_TRACE_INSTRUCTIONS: u64 = 10_000;
 const STALL_THRESHOLD: u64 = 512;
 const EXECUTION_SLICE_TICKS: u64 = 1_000;
+const BOOT_SCREEN_HOLD_MS: u64 = 15_000;
 
 fn sign_extend(value: u64, bits: u32) -> i64 {
     let shift = 64 - bits;
@@ -126,6 +127,20 @@ fn mapping_dump(memory: &Mem64) -> String {
         .map(|region| format!("{:#x}..{:#x} ({} bytes)", region.base, region.base.saturating_add(region.size), region.size))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn display_boot_screen(bundle: &Bundle, fs: &Fs, device_family: DeviceFamily, window: &mut crate::window::Window) {
+    let launch_image_path = bundle.launch_image_path(fs, device_family);
+    let Ok(bytes) = fs.read(&launch_image_path) else {
+        log!("ARM64 boot screen: no launch image found at {}", launch_image_path.as_str());
+        return;
+    };
+    let Ok(image) = crate::image::Image::from_bytes(&bytes) else {
+        log!("ARM64 boot screen: could not decode launch image {}", launch_image_path.as_str());
+        return;
+    };
+    window.display_compatibility_image(image, DeviceOrientation::Portrait);
+    echo!("ARM64 boot screen reached: displaying {}", launch_image_path.as_str());
 }
 
 fn failure_diagnostics(
@@ -569,11 +584,8 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                         context.regs[4],
                         context.regs[5],
                     );
-                    echo!("ARM64 host stub complete register dump: {}", register_dump(&context));
-                    echo!("ARM64 host stub processor state: {}", processor_state_dump(&context));
                 }
                 verify_abi(&context, symbol);
-                echo!("ARM64 host binding full trace #{}: symbol={} pc={:#x} sp={:#x} lr={:#x} {}", host_dispatches, symbol, context.pc, context.sp, context.regs[30], processor_state_dump(&context));
                 runtime_state.last_symbol = Some(symbol.to_owned());
                 let handled = match dispatch(&mut memory, &mut context, symbol, &mut runtime_state) {
                     Ok(handled) => {
@@ -588,7 +600,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 verify_abi(&context, symbol);
                 if runtime_state.take_present_request() {
                     log_dbg!(
-                        "ARM64 Metal frame {} submitted: commands={}, clear={:?}",
+                        "ARM64 compatibility frame {} submitted: commands={}, clear={:?}",
                         runtime_state.frame_serial,
                         runtime_state.metal_commands,
                         runtime_state.clear_color
@@ -596,6 +608,14 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                     if let Some(window) = window.as_mut() {
                         window.present_compatibility_frame(runtime_state.clear_color);
                     }
+                }
+                if runtime_state.take_boot_screen_request() {
+                    if let Some(window) = window.as_mut() {
+                        display_boot_screen(&bundle, &fs, device_family, window);
+                    }
+                    echo!("ARM64 startup reached UIApplication bootstrap; holding compatibility screen for {} ms", BOOT_SCREEN_HOLD_MS);
+                    std::thread::sleep(Duration::from_millis(BOOT_SCREEN_HOLD_MS));
+                    return Ok(());
                 }
                 if let Some(window) = window.as_mut() {
                     window.poll_for_events(&options);

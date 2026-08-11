@@ -55,6 +55,7 @@ pub struct RuntimeState {
     pub metal_commands: u64,
     pub frame_serial: u64,
     pub present_requested: bool,
+    pub boot_screen_reached: bool,
     pub clear_color: [f32; 4],
     pub last_selector: Option<String>,
     pub last_symbol: Option<String>,
@@ -81,6 +82,7 @@ impl RuntimeState {
             metal_commands: 0,
             frame_serial: 0,
             present_requested: false,
+            boot_screen_reached: false,
             clear_color: [0.0, 0.0, 0.0, 1.0],
             last_selector: None,
             last_symbol: None,
@@ -95,6 +97,10 @@ impl RuntimeState {
 
     pub fn take_present_request(&mut self) -> bool {
         std::mem::take(&mut self.present_requested)
+    }
+
+    pub fn take_boot_screen_request(&mut self) -> bool {
+        std::mem::take(&mut self.boot_screen_reached)
     }
 }
 
@@ -316,6 +322,11 @@ fn objc_send(
         state.present_requested = true;
     }
     let result = match selector.as_str() {
+        "runUIApplicationMainWithArgc:argv:" => {
+            state.boot_screen_reached = true;
+            state.present_requested = true;
+            0
+        }
         "init" | "self" | "retain" | "autorelease" | "copy" | "mutableCopy" => receiver,
         "release" => 0,
         "class" => receiver,

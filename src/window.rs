@@ -2297,6 +2297,13 @@ impl Window {
         }
     }
 
+    pub fn display_compatibility_image(&mut self, image: Image, orientation: DeviceOrientation) {
+        self.device_orientation = orientation;
+        self.splash_image = Some(image);
+        self.splash_image_is_orientation_specific = false;
+        self.display_splash();
+    }
+
     pub fn present_compatibility_frame(&mut self, clear_color: [f32; 4]) {
         if self.software_presentation {
             let color = Color::RGBA(
