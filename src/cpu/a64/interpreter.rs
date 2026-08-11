@@ -379,7 +379,7 @@ impl A64Interpreter {
         let base = read_sp_or_reg(context, base_reg, true);
         let offset = sign_extend(((instruction >> 15) & 0x7f) as u64, 7) << size.trailing_zeros();
         let mode = (instruction >> 23) & 3;
-        let address = if mode == 3 { base.wrapping_add_signed(offset) } else { base };
+        let address = if mode == 2 || mode == 3 { base.wrapping_add_signed(offset) } else { base };
         if load {
             let first = if size == 8 { memory.read_u64(address) } else { memory.read_u32(address).map(u64::from) }.map_err(|error| InterpreterError::Memory(error, address))?;
             let second_address = address.checked_add(size).ok_or(InterpreterError::Memory("pair address overflows", address))?;
@@ -396,7 +396,7 @@ impl A64Interpreter {
             if size == 8 { memory.write_u64(address, first).map_err(|error| InterpreterError::Memory(error, address))?; memory.write_u64(second_address, second).map_err(|error| InterpreterError::Memory(error, second_address))?; }
             else { memory.write_u32(address, first as u32).map_err(|error| InterpreterError::Memory(error, address))?; memory.write_u32(second_address, second as u32).map_err(|error| InterpreterError::Memory(error, second_address))?; }
         }
-        if mode == 1 { write_sp_or_reg(context, base_reg, address.wrapping_add(size * 2), true); }
+        if mode == 1 { write_sp_or_reg(context, base_reg, address.wrapping_add_signed(offset), true); }
         if mode == 3 { write_sp_or_reg(context, base_reg, address, true); }
         Ok(())
     }
@@ -537,6 +537,40 @@ mod tests {
         assert_eq!(context.sp, SP - 0x30);
         assert_eq!(memory.read_u64(context.sp).unwrap(), context.regs[22]);
         assert_eq!(memory.read_u64(context.sp + 8).unwrap(), context.regs[21]);
+    }
+
+    #[test]
+    fn signed_offset_ldp_uses_offset_without_updating_sp() {
+        let mut memory = Mem64::new();
+        memory.map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute()).unwrap();
+        const SP: u64 = 0x7fff_fffe_ff00;
+        memory.map_zeroed_with_permissions(SP, 0x1000, Permissions::read_write()).unwrap();
+        memory.load_bytes(CODE, &0xa9417bfdu32.to_le_bytes()).unwrap();
+        memory.write_u64(SP + 0x10, 0x2929_2929_2929_2929).unwrap();
+        memory.write_u64(SP + 0x18, 0x3030_3030_3030_3030).unwrap();
+        let mut context = touchHLE_Dynarmic_wrapper::touchHLE_DynarmicA64Context { pc: CODE, sp: SP, ..Default::default() };
+        let mut interpreter = A64Interpreter::new();
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(context.regs[29], 0x2929_2929_2929_2929);
+        assert_eq!(context.regs[30], 0x3030_3030_3030_3030);
+        assert_eq!(context.sp, SP);
+    }
+
+    #[test]
+    fn post_indexed_ldp_uses_signed_immediate_for_sp_update() {
+        let mut memory = Mem64::new();
+        memory.map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute()).unwrap();
+        const SP: u64 = 0x7fff_fffe_ff00;
+        memory.map_zeroed_with_permissions(SP, 0x1000, Permissions::read_write()).unwrap();
+        memory.load_bytes(CODE, &0xa8c27bfdu32.to_le_bytes()).unwrap();
+        memory.write_u64(SP, 0x2929_2929_2929_2929).unwrap();
+        memory.write_u64(SP + 8, 0x3030_3030_3030_3030).unwrap();
+        let mut context = touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context { pc: CODE, sp: SP, ..Default::default() };
+        let mut interpreter = A64Interpreter::new();
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(context.regs[29], 0x2929_2929_2929_2929);
+        assert_eq!(context.regs[30], 0x3030_3030_3030_3030);
+        assert_eq!(context.sp, SP + 0x20);
     }
 
     #[test]
