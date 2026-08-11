@@ -16,6 +16,21 @@
 #include <string>
 #include <thread>
 
+#if !defined(_WIN32)
+#include <pthread.h>
+#include <signal.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <unwind.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#include <ucontext.h>
+#if defined(__x86_64__)
+#include <sys/ucontext.h>
+#endif
+#endif
+#endif
+
 #include "dynarmic/interface/A64/a64.h"
 #include "dynarmic/interface/A64/config.h"
 #include "dynarmic/interface/exclusive_monitor.h"
@@ -53,6 +68,88 @@ struct touchHLE_DynarmicA64Context {
 const auto HaltReasonSvc = Dynarmic::HaltReason::UserDefined1;
 const auto HaltReasonUndefinedInstruction = Dynarmic::HaltReason::UserDefined2;
 const auto HaltReasonBreakpoint = Dynarmic::HaltReason::UserDefined3;
+
+namespace {
+
+std::atomic<std::uint64_t> watchdog_guest_pc{0};
+std::atomic<std::uint64_t> watchdog_guest_sp{0};
+std::atomic<std::uint64_t> watchdog_guest_lr{0};
+
+#if !defined(_WIN32)
+struct UnwindState {
+  unsigned frame = 0;
+};
+
+_Unwind_Reason_Code unwind_frame(_Unwind_Context* context, void* raw_state) {
+  auto* state = static_cast<UnwindState*>(raw_state);
+  const auto pc = _Unwind_GetIP(context);
+  if (pc == 0 || state->frame >= 32) {
+    return _URC_END_OF_STACK;
+  }
+  dprintf(STDERR_FILENO, "#%u native_pc=%#llx\n", state->frame++, static_cast<unsigned long long>(pc));
+  return _URC_NO_REASON;
+}
+
+void watchdog_signal_handler(int signal_number, siginfo_t*, void* raw_context) {
+  std::uintptr_t native_pc = 0;
+  std::uintptr_t native_sp = 0;
+  std::uintptr_t native_lr = 0;
+#if defined(__aarch64__) && defined(__linux__)
+  const auto* context = static_cast<const ucontext_t*>(raw_context);
+  native_pc = context->uc_mcontext.pc;
+  native_sp = context->uc_mcontext.sp;
+  native_lr = context->uc_mcontext.regs[30];
+#elif defined(__x86_64__) && defined(__linux__)
+  const auto* context = static_cast<const ucontext_t*>(raw_context);
+  native_pc = context->uc_mcontext.gregs[REG_RIP];
+  native_sp = context->uc_mcontext.gregs[REG_RSP];
+  native_lr = context->uc_mcontext.gregs[REG_RBP];
+#elif defined(__aarch64__) && defined(__APPLE__)
+  const auto* context = static_cast<const ucontext_t*>(raw_context);
+  native_pc = context->uc_mcontext->__ss.__pc;
+  native_sp = context->uc_mcontext->__ss.__sp;
+  native_lr = context->uc_mcontext->__ss.__lr;
+#elif defined(__x86_64__) && defined(__APPLE__)
+  const auto* context = static_cast<const ucontext_t*>(raw_context);
+  native_pc = context->uc_mcontext->__ss.__rip;
+  native_sp = context->uc_mcontext->__ss.__rsp;
+  native_lr = context->uc_mcontext->__ss.__rbp;
+#endif
+#if defined(__linux__)
+  const auto thread_id = static_cast<unsigned long long>(syscall(SYS_gettid));
+#else
+  const auto thread_id = static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(pthread_self()));
+#endif
+  dprintf(STDERR_FILENO, "ARM64 dynarmic watchdog signal=%d thread_id=%llu native_pc=%#llx native_sp=%#llx native_lr=%#llx guest_pc=%#llx guest_sp=%#llx guest_lr=%#llx\n", signal_number, thread_id, static_cast<unsigned long long>(native_pc), static_cast<unsigned long long>(native_sp), static_cast<unsigned long long>(native_lr), static_cast<unsigned long long>(watchdog_guest_pc.load(std::memory_order_relaxed)), static_cast<unsigned long long>(watchdog_guest_sp.load(std::memory_order_relaxed)), static_cast<unsigned long long>(watchdog_guest_lr.load(std::memory_order_relaxed)));
+  UnwindState state;
+  _Unwind_Backtrace(unwind_frame, &state);
+  _exit(134);
+}
+
+void install_watchdog_signal_handler() {
+  static bool installed = false;
+  if (installed) return;
+  installed = true;
+  struct sigaction action{};
+  action.sa_sigaction = &watchdog_signal_handler;
+  action.sa_flags = SA_SIGINFO | SA_ONSTACK;
+  sigemptyset(&action.sa_mask);
+  sigaction(SIGUSR2, &action, nullptr);
+}
+#else
+void install_watchdog_signal_handler() {}
+#endif
+
+void update_watchdog_guest_state(const Dynarmic::A64::Jit* cpu) {
+  if (!cpu) {
+    return;
+  }
+  watchdog_guest_pc.store(cpu->GetPC(), std::memory_order_relaxed);
+  watchdog_guest_sp.store(cpu->GetSP(), std::memory_order_relaxed);
+  watchdog_guest_lr.store(cpu->GetRegister(30), std::memory_order_relaxed);
+}
+
+}
 
 void tracef(const char* format, ...) {
   char message[768];
@@ -98,6 +195,7 @@ public:
 
   void trace(const char* format, ...) {
     if (!trace_enabled) return;
+    update_watchdog_guest_state(cpu);
     char message[768];
     va_list args;
     va_start(args, format);
@@ -109,6 +207,7 @@ public:
 private:
   template <typename T, typename F>
   T read(VAddr addr, F f, const char* kind) {
+    update_watchdog_guest_state(cpu);
     bool error = false;
     T value = f(mem, addr, &error);
     if (error) {
@@ -125,6 +224,7 @@ private:
 
   template <typename T, typename F>
   void write(VAddr addr, T value, F f, const char* kind) {
+    update_watchdog_guest_state(cpu);
     if (f(mem, addr, value)) {
       ++memory_faults;
       trace("invalid %s: address=%#llx pc=%#llx sp=%#llx lr=%#llx", kind,
@@ -143,6 +243,7 @@ private:
   A64Vector MemoryRead128(VAddr a) override { return read<A64Vector>(a, touchHLE_cpu_read_u128_64, "read128"); }
 
   std::optional<std::uint32_t> MemoryReadCode(VAddr a) override {
+    update_watchdog_guest_state(cpu);
     bool error = false;
     auto value = touchHLE_cpu_read_u32_64(mem, a, &error);
     ++code_fetches;
@@ -234,6 +335,7 @@ class A64Wrapper {
   std::uint64_t execution_calls = 0;
 public:
   A64Wrapper() {
+    install_watchdog_signal_handler();
     tracef("jit construction: begin");
     Dynarmic::A64::UserConfig config;
     config.callbacks = &env;
@@ -276,6 +378,7 @@ public:
     env.halting_svc = 0;
     ++execution_calls;
     const auto pc = cpu->GetPC();
+    update_watchdog_guest_state(cpu.get());
     bool code_error = false;
     const auto instruction = touchHLE_cpu_read_u32_64(mem, pc, &code_error);
     env.trace("execution enter #%llu: mode=%s pc=%#llx instruction=%#010x fetch=%s sp=%#llx lr=%#llx ticks=%s%llu",
@@ -300,13 +403,18 @@ public:
       return static_cast<std::uint64_t>(end != value && *end == '\0' && parsed > 0 ? parsed : 2000ULL);
     }();
     std::atomic<bool> execution_returned{false};
+    const auto execution_thread = pthread_self();
     std::thread watchdog([&] {
       const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(watchdog_ms);
       while (!execution_returned.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
       }
       if (!execution_returned.load(std::memory_order_acquire)) {
-        tracef("ARM64 dynarmic watchdog: Run/Step did not return within %llu ms; pc=%#llx sp=%#llx lr=%#llx ticks=%s%llu; aborting", static_cast<unsigned long long>(watchdog_ms), static_cast<unsigned long long>(cpu->GetPC()), static_cast<unsigned long long>(cpu->GetSP()), static_cast<unsigned long long>(cpu->GetRegister(30)), ticks ? "" : "none", ticks ? static_cast<unsigned long long>(*ticks) : 0);
+        tracef("ARM64 dynarmic watchdog: Run/Step did not return within %llu ms; guest_pc=%#llx guest_sp=%#llx guest_lr=%#llx; requesting native backtrace", static_cast<unsigned long long>(watchdog_ms), static_cast<unsigned long long>(watchdog_guest_pc.load(std::memory_order_relaxed)), static_cast<unsigned long long>(watchdog_guest_sp.load(std::memory_order_relaxed)), static_cast<unsigned long long>(watchdog_guest_lr.load(std::memory_order_relaxed)));
+#if !defined(_WIN32)
+        pthread_kill(execution_thread, SIGUSR2);
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+#endif
         std::abort();
       }
     });
@@ -359,6 +467,13 @@ public:
 
   void set_trace(bool enabled) {
     env.trace_enabled = enabled;
+#if !defined(_WIN32)
+    if (enabled) {
+      setenv("DYNARMIC_TRACE_BLOCKS", "1", 1);
+    } else {
+      unsetenv("DYNARMIC_TRACE_BLOCKS");
+    }
+#endif
     tracef("trace configuration: enabled=%s", enabled ? "true" : "false");
   }
 };
