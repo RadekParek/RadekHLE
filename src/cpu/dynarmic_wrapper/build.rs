@@ -38,6 +38,9 @@ fn main() {
     build.define("DYNARMIC_WARNINGS_AS_ERRORS", "OFF");
     build.define("DYNARMIC_TESTS", "OFF");
     build.define("DYNARMIC_USE_BUNDLED_EXTERNALS", "ON");
+    if env::var("CARGO_CFG_TARGET_OS").is_ok_and(|value| value.eq_ignore_ascii_case("android")) {
+        build.define("DYNARMIC_ENABLE_NO_EXECUTE_SUPPORT", "ON");
+    }
     build.define("CMAKE_POLICY_VERSION_MINIMUM", "3.5");
 
     // The fmt library bundled with dynarmic (v10.1.0) uses a `consteval`
