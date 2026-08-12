@@ -23,7 +23,6 @@ const A64_HALT_USER_DEFINED3: u32 = 0x0400_0000;
 const STARTUP_TRACE_INSTRUCTIONS: u64 = 10_000;
 const STALL_THRESHOLD: u64 = 512;
 const EXECUTION_SLICE_TICKS: u64 = 1_000;
-const BOOT_SCREEN_HOLD_MS: u64 = 15_000;
 
 fn sign_extend(value: u64, bits: u32) -> i64 {
     let shift = 64 - bits;
@@ -129,18 +128,41 @@ fn mapping_dump(memory: &Mem64) -> String {
         .join(", ")
 }
 
-fn display_boot_screen(bundle: &Bundle, fs: &Fs, device_family: DeviceFamily, window: &mut crate::window::Window) {
+fn display_boot_screen(
+    bundle: &Bundle,
+    fs: &Fs,
+    device_family: DeviceFamily,
+    window: &mut crate::window::Window,
+) -> bool {
     let launch_image_path = bundle.launch_image_path(fs, device_family);
-    let Ok(bytes) = fs.read(&launch_image_path) else {
-        log!("ARM64 boot screen: no launch image found at {}", launch_image_path.as_str());
-        return;
-    };
-    let Ok(image) = crate::image::Image::from_bytes(&bytes) else {
-        log!("ARM64 boot screen: could not decode launch image {}", launch_image_path.as_str());
-        return;
-    };
-    window.display_compatibility_image(image, DeviceOrientation::Portrait);
-    echo!("ARM64 boot screen reached: displaying {}", launch_image_path.as_str());
+    if let Ok(bytes) = fs.read(&launch_image_path) {
+        match crate::image::Image::from_bytes(&bytes) {
+            Ok(image) => {
+                window.display_compatibility_image(image, DeviceOrientation::Portrait);
+                echo!("ARM64 boot screen reached: displaying {}", launch_image_path.as_str());
+                return true;
+            }
+            Err(error) => {
+                log!(
+                    "ARM64 boot screen: could not decode launch image {}: {}",
+                    launch_image_path.as_str(),
+                    error
+                );
+            }
+        }
+    }
+
+    match bundle.load_icon(fs) {
+        Ok(image) => {
+            window.display_compatibility_image(image, DeviceOrientation::Portrait);
+            echo!("ARM64 boot/logo fallback: no usable launch image; displaying the app icon");
+            true
+        }
+        Err(error) => {
+            log!("ARM64 boot screen: no launch image or app icon available: {}", error);
+            false
+        }
+    }
 }
 
 fn failure_diagnostics(
@@ -610,12 +632,15 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                     }
                 }
                 if runtime_state.take_boot_screen_request() {
-                    if let Some(window) = window.as_mut() {
-                        display_boot_screen(&bundle, &fs, device_family, window);
-                    }
-                    echo!("ARM64 startup reached UIApplication bootstrap; holding compatibility screen for {} ms", BOOT_SCREEN_HOLD_MS);
-                    std::thread::sleep(Duration::from_millis(BOOT_SCREEN_HOLD_MS));
-                    return Ok(());
+                    let displayed = if let Some(window) = window.as_mut() {
+                        display_boot_screen(&bundle, &fs, device_family, window)
+                    } else {
+                        false
+                    };
+                    echo!(
+                        "ARM64 observed the app's UIApplication bootstrap hook; compatibility logo displayed={}; continuing guest execution",
+                        displayed
+                    );
                 }
                 if let Some(window) = window.as_mut() {
                     window.poll_for_events(&options);

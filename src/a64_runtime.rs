@@ -303,6 +303,10 @@ fn objc_send(
     let kind = objc_kind(mem, receiver).unwrap_or(A64_KIND_GENERIC);
     let class_name = objc_field(mem, receiver, 56);
 
+    if selector == "runUIApplicationMainWithArgc:argv:" && receiver == 0 {
+        echo!("ARM64 Objective-C bootstrap call used a nil receiver; returning zero and continuing startup");
+    }
+
     log_dbg!(
         "ARM64 Objective-C message #{}: receiver={:#x} kind={} selector={} x2={:#x} x3={:#x} x4={:#x} x5={:#x}",
         state.objc_messages,
