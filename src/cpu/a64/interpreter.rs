@@ -548,7 +548,7 @@ mod tests {
         memory.load_bytes(CODE, &0xa9417bfdu32.to_le_bytes()).unwrap();
         memory.write_u64(SP + 0x10, 0x2929_2929_2929_2929).unwrap();
         memory.write_u64(SP + 0x18, 0x3030_3030_3030_3030).unwrap();
-        let mut context = touchHLE_Dynarmic_wrapper::touchHLE_DynarmicA64Context { pc: CODE, sp: SP, ..Default::default() };
+        let mut context = touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context { pc: CODE, sp: SP, ..Default::default() };
         let mut interpreter = A64Interpreter::new();
         assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
         assert_eq!(context.regs[29], 0x2929_2929_2929_2929);

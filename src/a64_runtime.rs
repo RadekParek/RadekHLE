@@ -1,4 +1,5 @@
 use crate::a64_abi::A64Abi;
+use crate::dyld::{search_host_dylibs, HostConstant};
 use crate::mem64::Mem64;
 use crate::window::DeviceFamily;
 use touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context;
@@ -28,6 +29,7 @@ const A64_KIND_DEPTH_STENCIL: u64 = 19;
 const A64_KIND_UI_DEVICE: u64 = 20;
 const A64_KIND_UI_SCREEN: u64 = 21;
 const A64_KIND_UNITY_FRAMEWORK: u64 = 22;
+const A64_KIND_NUMBER: u64 = 23;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum A64GraphicsBackend {
@@ -156,6 +158,50 @@ impl RuntimeState {
 fn name(symbol: &str) -> &str {
     symbol.trim_start_matches('_')
 }
+
+fn materialize_host_constant(mem: &mut Mem64, symbol: &str) -> Result<Option<u64>, String> {
+    let normalized = name(symbol);
+    if let Some((_, constant)) = search_host_dylibs(|dylib| dylib.constant_exports, symbol)
+        .or_else(|| search_host_dylibs(|dylib| dylib.constant_exports, normalized))
+    {
+        return match constant {
+            HostConstant::NSString(value) => Ok(Some(objc_string(mem, value)?)),
+            HostConstant::NullPtr => Ok(Some(0)),
+            HostConstant::Custom(_) => Ok(materialize_custom_constant(mem, normalized)),
+        };
+    }
+
+    match normalized {
+        "ZSt7nothrow"
+        | "ZNSt3__15ctypeIcE2id"
+        | "ZNSt3__15ctypeIcE2idE"
+        | "ZNSt3__17codecvtIcc11__mbstate_tE2id"
+        | "ZNSt3__17codecvtIcc11__mbstate_tE2idE" => {
+            Ok(Some(mem.alloc_zeroed(16).map_err(str::to_owned)?))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn materialize_custom_constant(mem: &mut Mem64, symbol: &str) -> Option<u64> {
+    match name(symbol) {
+        "DefaultRuneLocale" => mem.alloc_zeroed(128).ok(),
+        "stderrp" => {
+            let file = mem.alloc_zeroed(16).ok()?;
+            mem.write_u32(file, 2).ok()?;
+            let slot = mem.alloc_zeroed(8).ok()?;
+            mem.write_u64(slot, file).ok()?;
+            Some(slot)
+        }
+        "kCFBooleanTrue" => objc_number(mem, 1).ok(),
+        "kCFBooleanFalse" => objc_number(mem, 0).ok(),
+        "kCFNull" => objc_object(mem, A64_KIND_GENERIC).ok(),
+        "kCFAllocatorSystemDefault" => Some(0),
+        "gxx_personality_v0" => Some(0),
+        _ => None,
+    }
+}
+
 pub fn can_dispatch(symbol: &str) -> bool {
     match name(symbol) {
         "malloc" | "calloc" | "valloc" | "posix_memalign" | "free"
@@ -190,6 +236,9 @@ pub fn can_dispatch(symbol: &str) -> bool {
         | "vkEnumeratePhysicalDevices" | "vkGetPhysicalDeviceQueueFamilyProperties"
         | "vkCreateDevice" | "vkGetDeviceQueue" | "vkDeviceWaitIdle" => true,
         value if value.starts_with("gl") || value.starts_with("egl") || value.starts_with("EAGL") => true,
+        "compressBound" | "deflate" | "deflateEnd" | "deflateInit_" | "deflateReset"
+        | "gxx_personality_v0"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev" => true,
         _ => false,
     }
 }
@@ -289,6 +338,12 @@ fn objc_ui_screen(mem: &mut Mem64, family: DeviceFamily) -> Result<u64, String> 
     set_objc_field(mem, object, 56, width as u64);
     set_objc_field(mem, object, 64, height as u64);
     set_objc_field(mem, object, 72, family.scale_factor().to_bits() as u64);
+    Ok(object)
+}
+
+fn objc_number(mem: &mut Mem64, value: i64) -> Result<u64, String> {
+    let object = objc_object(mem, A64_KIND_NUMBER)?;
+    set_objc_field(mem, object, 56, value as u64);
     Ok(object)
 }
 
@@ -524,6 +579,13 @@ fn objc_send(
         "length" if kind == A64_KIND_STRING => objc_field(mem, receiver, 64),
         "length" if kind == A64_KIND_BUFFER => objc_field(mem, receiver, 64),
         "boolValue" if kind == A64_KIND_STRING => u64::from(!objc_text_eq(mem, receiver, b"0")),
+        "boolValue" if kind == A64_KIND_NUMBER => u64::from(objc_field(mem, receiver, 56) != 0),
+        "intValue" | "integerValue" | "longLongValue" if kind == A64_KIND_NUMBER => objc_field(mem, receiver, 56),
+        "unsignedIntegerValue" if kind == A64_KIND_NUMBER => objc_field(mem, receiver, 56),
+        "doubleValue" | "floatValue" if kind == A64_KIND_NUMBER => {
+            set_float_return(context, i64::from_ne_bytes(objc_field(mem, receiver, 56).to_ne_bytes()) as f64);
+            0
+        }
         "isEqualToString:" | "isEqual:" if kind == A64_KIND_STRING => {
             u64::from(objc_text(mem, receiver) == objc_text(mem, context.regs[2]))
         }
@@ -632,6 +694,9 @@ fn objc_class(mem: &mut Mem64, name: u64) -> Result<u64, String> {
 }
 
 pub fn materialize_import(mem: &mut Mem64, symbol: &str) -> Result<Option<u64>, String> {
+    if let Some(value) = materialize_host_constant(mem, symbol)? {
+        return Ok(Some(value));
+    }
     let symbol = name(symbol);
     if let Some(class_name) = symbol.strip_prefix("OBJC_CLASS_$_") {
         let pointer = mem.alloc_zeroed(class_name.len() as u64 + 1).map_err(str::to_owned)?;
@@ -939,6 +1004,31 @@ pub fn dispatch(
         }
         "cxa_pure_virtual" | "stack_chk_fail" | "stack_chk_fail_local" => {
             log!("Warning: ARM64 runtime bypassed {}", symbol);
+            return_value(context, 0);
+            Ok(true)
+        }
+        "gxx_personality_v0"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "compressBound" => {
+            let source_len = context.regs[0];
+            let bound = source_len
+                .saturating_add(source_len / 1000)
+                .saturating_add(12);
+            return_value(context, bound);
+            Ok(true)
+        }
+        "deflateInit_" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "deflate" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "deflateEnd" | "deflateReset" => {
             return_value(context, 0);
             Ok(true)
         }
