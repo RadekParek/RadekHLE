@@ -273,10 +273,11 @@ fn load_embedded_unity_framework(
         .bundle_path()
         .join("Frameworks/UnityFramework.framework/UnityFramework");
     if !fs.is_file(&framework_path) {
-        return Err(format!(
-            "ARM64 UnityFramework bootstrap requested but {} is missing",
+        log!(
+            "ARM64 app has no embedded UnityFramework at {}; continuing with the main executable",
             framework_path.as_str()
-        ));
+        );
+        return Ok(());
     }
     let bytes = fs
         .read(&framework_path)

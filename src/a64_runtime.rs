@@ -384,7 +384,9 @@ fn objc_send(
     }
     let result = match selector.as_str() {
         "runUIApplicationMainWithArgc:argv:" if receiver == 0 => {
-            return Err("ARM64 UnityFramework UIApplication bootstrap received a nil receiver".to_owned());
+            state.boot_screen_reached = true;
+            state.present_requested = true;
+            0
         }
         "init" | "self" | "retain" | "autorelease" | "copy" | "mutableCopy" => receiver,
         "release" => 0,
