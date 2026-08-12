@@ -2,7 +2,7 @@ use crate::a64_abi::A64Abi;
 use crate::mem64::Mem64;
 use crate::window::DeviceFamily;
 use touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 const MAX_CSTRING: u64 = 1024 * 1024;
 const A64_OBJECT_SIZE: u64 = 96;
@@ -27,6 +27,7 @@ const A64_KIND_SAMPLER: u64 = 18;
 const A64_KIND_DEPTH_STENCIL: u64 = 19;
 const A64_KIND_UI_DEVICE: u64 = 20;
 const A64_KIND_UI_SCREEN: u64 = 21;
+const A64_KIND_UNITY_FRAMEWORK: u64 = 22;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum A64GraphicsBackend {
@@ -43,6 +44,15 @@ impl A64GraphicsBackend {
             Self::SoftwareCompatibility => "software compatibility",
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadedImage {
+    pub name: String,
+    pub base: u64,
+    pub end: u64,
+    pub entry: Option<u64>,
+    pub exports: HashMap<String, u64>,
 }
 
 #[derive(Debug)]
@@ -65,6 +75,9 @@ pub struct RuntimeState {
     pub bundle_path: String,
     pub bundle_name: String,
     pub unimplemented_symbols: HashSet<String>,
+    pub loaded_images: Vec<LoadedImage>,
+    pub guest_transfer_pc: Option<u64>,
+    pub unity_framework_instance: Option<u64>,
 }
 
 impl RuntimeState {
@@ -92,6 +105,9 @@ impl RuntimeState {
             bundle_path: "/".to_owned(),
             bundle_name: "Application".to_owned(),
             unimplemented_symbols: HashSet::new(),
+            loaded_images: Vec::new(),
+            guest_transfer_pc: None,
+            unity_framework_instance: None,
         }
     }
 
@@ -101,6 +117,39 @@ impl RuntimeState {
 
     pub fn take_boot_screen_request(&mut self) -> bool {
         std::mem::take(&mut self.boot_screen_reached)
+    }
+
+    pub fn take_guest_transfer(&mut self) -> Option<u64> {
+        self.guest_transfer_pc.take()
+    }
+
+    pub fn resolve_image_symbol(&self, candidates: &[&str]) -> Option<u64> {
+        self.find_image_symbol(candidates).map(|(_, address)| address)
+    }
+
+    fn find_image_symbol(&self, candidates: &[&str]) -> Option<(String, u64)> {
+        for image in &self.loaded_images {
+            for candidate in candidates {
+                if let Some(&address) = image.exports.get(*candidate) {
+                    return Some((image.name.clone(), address));
+                }
+            }
+            for (symbol, &address) in &image.exports {
+                if candidates.iter().any(|candidate| symbol.ends_with(candidate)) {
+                    return Some((image.name.clone(), address));
+                }
+            }
+        }
+        None
+    }
+
+    fn transfer_to_method(&mut self, selector: &str, candidates: &[&str]) -> Result<(), String> {
+        let Some((image, address)) = self.find_image_symbol(candidates) else {
+            return Err(format!("ARM64 could not resolve UnityFramework method for selector {selector}"));
+        };
+        log!("ARM64 guest transfer: selector {} -> {} at {:#x}", selector, image, address);
+        self.guest_transfer_pc = Some(address);
+        Ok(())
     }
 }
 
@@ -198,6 +247,13 @@ fn set_objc_field(mem: &mut Mem64, object: u64, offset: u64, value: u64) {
     let _ = mem.write_u64(object.saturating_add(offset), value);
 }
 
+fn objc_string_append(mem: &mut Mem64, left: u64, right: u64) -> Result<u64, String> {
+    let mut bytes = objc_text(mem, left).unwrap_or_default();
+    bytes.extend(objc_text(mem, right).unwrap_or_default());
+    let value = String::from_utf8(bytes).map_err(|_| "ARM64 Objective-C string is not UTF-8")?;
+    objc_string(mem, &value)
+}
+
 fn objc_string(mem: &mut Mem64, value: &str) -> Result<u64, String> {
     let object = objc_object(mem, A64_KIND_STRING)?;
     let bytes = value.as_bytes();
@@ -285,6 +341,7 @@ fn objc_class_kind(mem: &Mem64, class_name: u64) -> u64 {
         Some(b"UIDevice") => A64_KIND_UI_DEVICE,
         Some(b"UIScreen") => A64_KIND_UI_SCREEN,
         Some(b"NSBundle") => A64_KIND_BUNDLE,
+        Some(b"UnityFramework") => A64_KIND_UNITY_FRAMEWORK,
         _ => A64_KIND_GENERIC,
     }
 }
@@ -326,10 +383,8 @@ fn objc_send(
         state.present_requested = true;
     }
     let result = match selector.as_str() {
-        "runUIApplicationMainWithArgc:argv:" => {
-            state.boot_screen_reached = true;
-            state.present_requested = true;
-            0
+        "runUIApplicationMainWithArgc:argv:" if receiver == 0 => {
+            return Err("ARM64 UnityFramework UIApplication bootstrap received a nil receiver".to_owned());
         }
         "init" | "self" | "retain" | "autorelease" | "copy" | "mutableCopy" => receiver,
         "release" => 0,
@@ -347,6 +402,23 @@ fn objc_send(
         }
         "bundleIdentifier" if kind == A64_KIND_BUNDLE => objc_field(mem, receiver, 64),
         "bundlePath" | "resourcePath" if kind == A64_KIND_BUNDLE => objc_field(mem, receiver, 56),
+        "stringByAppendingString:" if kind == A64_KIND_STRING => {
+            objc_string_append(mem, receiver, context.regs[2])?
+        }
+        "bundleWithPath:" if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSBundle") => {
+            let object = objc_object(mem, A64_KIND_BUNDLE)?;
+            let identifier = objc_string(mem, "com.unity.framework")?;
+            let name = objc_string(mem, "UnityFramework")?;
+            set_objc_field(mem, object, 56, context.regs[2]);
+            set_objc_field(mem, object, 64, identifier);
+            set_objc_field(mem, object, 72, name);
+            object
+        }
+        "isLoaded" | "load" if kind == A64_KIND_BUNDLE => 1,
+        "principalClass" if kind == A64_KIND_BUNDLE => {
+            let class_name = objc_string(mem, "UnityFramework")?;
+            objc_class(mem, class_name)?
+        }
         "executablePath" if kind == A64_KIND_BUNDLE => objc_string(mem, &state.bundle_path)?,
         "objectForInfoDictionaryKey:" if kind == A64_KIND_BUNDLE => {
             match objc_text(mem, context.regs[2]).as_deref() {
@@ -454,6 +526,19 @@ fn objc_send(
             u64::from(objc_text(mem, receiver) == objc_text(mem, context.regs[2]))
         }
         "cStringUsingEncoding:" if kind == A64_KIND_STRING => objc_field(mem, receiver, 56),
+        "getInstance" if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"UnityFramework") => {
+            state.transfer_to_method(selector.as_str(), &["+[UnityFramework getInstance]", "getInstance"])?;
+            receiver
+        }
+        "appController" if kind == A64_KIND_UNITY_FRAMEWORK => 0,
+        "setExecuteHeader:" if kind == A64_KIND_UNITY_FRAMEWORK => 0,
+        "runUIApplicationMainWithArgc:argv:" if kind == A64_KIND_UNITY_FRAMEWORK => {
+            state.transfer_to_method(
+                selector.as_str(),
+                &["-[UnityFramework runUIApplicationMainWithArgc:argv:]", "runUIApplicationMainWithArgc:argv:"],
+            )?;
+            receiver
+        }
         "newCommandQueue" | "newCommandQueueWithMaxCommandBufferCount:" => objc_object(mem, A64_KIND_QUEUE)?,
         "commandBuffer" | "commandBufferWithUnretainedReferences" => objc_object(mem, A64_KIND_COMMAND_BUFFER)?,
         "renderCommandEncoderWithDescriptor:" => objc_object(mem, A64_KIND_RENDER_ENCODER)?,
@@ -532,7 +617,9 @@ fn objc_send(
         "alloc" | "new" if kind == A64_KIND_CLASS => objc_object(mem, objc_class_kind(mem, class_name))?,
         _ => 0,
     };
-    return_value(context, result);
+    if state.guest_transfer_pc.is_none() {
+        return_value(context, result);
+    }
     Ok(())
 }
 

@@ -322,6 +322,18 @@ impl Mem64 {
     pub fn write_u64(&mut self, addr: Guest64Addr, value: u64) -> Result<(), &'static str> { self.write(addr, value) }
     pub fn write_u128(&mut self, addr: Guest64Addr, value: [u64; 2]) -> Result<(), &'static str> { self.write(addr, value) }
 
+    pub fn merge_mappings(&mut self, other: Mem64) -> Result<(), &'static str> {
+        for (&base, mapping) in &other.regions {
+            self.map_zeroed_with_permissions(base, mapping.bytes.len() as u64, mapping.permissions)?;
+        }
+        for (base, mapping) in other.regions {
+            self.load_bytes(base, &mapping.bytes)?;
+        }
+        self.allocations.extend(other.allocations);
+        self.next_allocation = self.next_allocation.max(other.next_allocation);
+        Ok(())
+    }
+
     pub fn mapped_regions(&self) -> impl Iterator<Item = Region> + '_ {
         self.regions.iter().map(|(&base, mapping)| Region { base, size: mapping.bytes.len() as u64, permissions: mapping.permissions })
     }

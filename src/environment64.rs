@@ -1,4 +1,4 @@
-use crate::a64_runtime::{dispatch, materialize_import, A64GraphicsBackend, RuntimeState};
+use crate::a64_runtime::{dispatch, materialize_import, A64GraphicsBackend, LoadedImage, RuntimeState};
 use crate::bundle::Bundle;
 use crate::cpu::A64Cpu;
 use crate::fs::Fs;
@@ -263,6 +263,44 @@ fn lookup_host_symbol(symbol: &str) -> Option<&'static str> {
         .map(|(name, _)| *name)
 }
 
+fn load_embedded_unity_framework(
+    bundle: &Bundle,
+    fs: &Fs,
+    memory: &mut Mem64,
+    state: &mut RuntimeState,
+) -> Result<(), String> {
+    let framework_path = bundle
+        .bundle_path()
+        .join("Frameworks/UnityFramework.framework/UnityFramework");
+    if !fs.is_file(&framework_path) {
+        return Err(format!(
+            "ARM64 UnityFramework bootstrap requested but {} is missing",
+            framework_path.as_str()
+        ));
+    }
+    let bytes = fs
+        .read(&framework_path)
+        .map_err(|_| format!("Could not read {}", framework_path.as_str()))?;
+    let framework = MachO64::load_from_bytes(&bytes, "UnityFramework", 0x3000_0000)?;
+    let base = framework.text_base;
+    let end = framework.last_segment_end;
+    memory.merge_mappings(framework.memory)?;
+    state.loaded_images.push(LoadedImage {
+        name: "UnityFramework".to_owned(),
+        base,
+        end,
+        entry: framework.entry_point_pc,
+        exports: framework.exported_symbols,
+    });
+    echo!(
+        "ARM64 loaded embedded UnityFramework: base={:#x} end={:#x} entry={:?}",
+        base,
+        end,
+        framework.entry_point_pc
+    );
+    Ok(())
+}
+
 pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> Result<(), String> {
     echo!(
         "ARM64 launch configuration: device={:?}, orientation={:?}, fullscreen={}, screen={:?}, scale={:.2}, iOS={:?}",
@@ -339,6 +377,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     runtime_state.bundle_identifier = bundle.bundle_identifier().to_owned();
     runtime_state.bundle_path = bundle.bundle_path().as_str().to_owned();
     runtime_state.bundle_name = bundle.bundle_name().to_owned();
+    load_embedded_unity_framework(&bundle, &fs, &mut memory, &mut runtime_state)?;
     let mut window = if options.headless {
         None
     } else {
@@ -630,6 +669,14 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                     if let Some(window) = window.as_mut() {
                         window.present_compatibility_frame(runtime_state.clear_color);
                     }
+                }
+                if let Some(transfer_pc) = runtime_state.take_guest_transfer() {
+                    echo!("ARM64 continuing guest execution at transferred Objective-C method {:#x}", transfer_pc);
+                    context.pc = transfer_pc;
+                    cpu.load_context(&context);
+                    cpu.clear_halt(A64_HALT_USER_DEFINED1);
+                    cpu.clear_halt(A64_HALT_USER_DEFINED2);
+                    cpu.clear_halt(A64_HALT_USER_DEFINED3);
                 }
                 if runtime_state.take_boot_screen_request() {
                     let displayed = if let Some(window) = window.as_mut() {
