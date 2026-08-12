@@ -236,9 +236,28 @@ pub fn can_dispatch(symbol: &str) -> bool {
         | "vkEnumeratePhysicalDevices" | "vkGetPhysicalDeviceQueueFamilyProperties"
         | "vkCreateDevice" | "vkGetDeviceQueue" | "vkDeviceWaitIdle" => true,
         value if value.starts_with("gl") || value.starts_with("egl") || value.starts_with("EAGL") => true,
-        "compressBound" | "deflate" | "deflateEnd" | "deflateInit_" | "deflateReset"
-        | "gxx_personality_v0"
-        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev" => true,
+        "inflate" | "inflateEnd" | "inflateInit_" | "compressBound" | "deflate" | "deflateEnd" | "deflateInit_" | "deflateReset"
+        | "class_addProperty" | "class_addProtocol" | "class_getInstanceVariable" | "class_isMetaClass"
+        | "objc_constructInstance" | "objc_enumerationMutation" | "objc_initializeClassPair" | "object_getIvar"
+        | "property_copyAttributeList" | "gxx_personality_v0"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev"
+        | "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEPKcmm"
+        | "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEcm"
+        | "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5rfindEPKcmm"
+        | "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5rfindEcm"
+        | "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareEPKc"
+        | "ZNKSt3__120__vector_base_commonILb1EE20__throw_length_errorEv"
+        | "ZNKSt3__120__vector_base_commonILb1EE20__throw_out_of_rangeEv"
+        | "ZNKSt3__121__basic_string_commonILb1EE20__throw_length_errorEv"
+        | "ZNKSt3__16locale9has_facetERNS0_2idE" | "ZNKSt3__16locale9use_facetERNS0_2idE"
+        | "ZNKSt3__18ios_base6getlocEv" | "ZNKSt3__111this_thread9sleep_forERKNS_6chrono8durationIxNS_5ratioILl1ELl1000000000EEEEE"
+        | "ZNSt3__112__next_primeEm" | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5eraseEmm"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcmm"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEmc"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKc"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKc"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKcm" => true,
         _ => false,
     }
 }
@@ -254,6 +273,49 @@ fn c_string(mem: &Mem64, address: u64) -> Option<Vec<u8>> {
 
 fn c_string_eq(mem: &Mem64, address: u64, value: &[u8]) -> bool {
     c_string(mem, address).as_deref() == Some(value)
+}
+fn cxx_string_bytes(mem: &Mem64, object: u64) -> Option<Vec<u8>> {
+    let first = mem.read_u64(object).ok()?;
+    if first & 1 == 0 {
+        let length = ((first & 0xff) / 2) as u64;
+        mem.read_bytes(object + 1, length).ok()
+    } else {
+        let length = mem.read_u64(object + 8).ok()?;
+        mem.read_bytes(first & !1, length).ok()
+    }
+}
+
+fn cxx_find(text: &[u8], needle: &[u8], position: u64, reverse: bool) -> u64 {
+    let start = usize::try_from(position).unwrap_or(usize::MAX).min(text.len());
+    if needle.is_empty() {
+        return start as u64;
+    }
+    if reverse {
+        if needle.len() > text.len() {
+            return u64::MAX;
+        }
+        let end = start.min(text.len() - needle.len());
+        text[..=end]
+            .windows(needle.len())
+            .rposition(|window| window == needle)
+            .map_or(u64::MAX, |index| index as u64)
+    } else {
+        text[start..]
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .map_or(u64::MAX, |index| (start + index) as u64)
+    }
+}
+
+fn next_prime(value: u64) -> u64 {
+    fn is_prime(value: u64) -> bool {
+        value >= 2 && (2..=((value as f64).sqrt() as u64)).all(|divisor| value % divisor != 0)
+    }
+    let mut candidate = value.max(2);
+    while !is_prime(candidate) {
+        candidate = candidate.saturating_add(1);
+    }
+    candidate
 }
 fn objc_text(mem: &Mem64, address: u64) -> Option<Vec<u8>> {
     if objc_kind(mem, address) == Some(A64_KIND_STRING) {
@@ -1010,6 +1072,66 @@ pub fn dispatch(
         "gxx_personality_v0"
         | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev" => {
             return_value(context, 0);
+            Ok(true)
+        }
+        "inflateInit_" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "inflate" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "inflateEnd" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "class_addProperty" | "class_addProtocol" | "class_getInstanceVariable" | "class_isMetaClass"
+        | "objc_constructInstance" | "objc_initializeClassPair" | "object_getIvar" | "property_copyAttributeList" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "objc_enumerationMutation" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEPKcmm"
+        | "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEcm" => {
+            let Some(text) = cxx_string_bytes(mem, context.regs[0]) else { return Ok(true) };
+            let needle = if symbol.ends_with("findEcm") { vec![context.regs[2] as u8] } else { c_string(mem, context.regs[2]).unwrap_or_default() };
+            return_value(context, cxx_find(&text, &needle, context.regs[3], false));
+            Ok(true)
+        }
+        "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5rfindEPKcmm"
+        | "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5rfindEcm" => {
+            let Some(text) = cxx_string_bytes(mem, context.regs[0]) else { return Ok(true) };
+            let needle = if symbol.ends_with("rfindEcm") { vec![context.regs[2] as u8] } else { c_string(mem, context.regs[2]).unwrap_or_default() };
+            return_value(context, cxx_find(&text, &needle, context.regs[3], true));
+            Ok(true)
+        }
+        "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareEPKc" => {
+            let left = cxx_string_bytes(mem, context.regs[0]).unwrap_or_default();
+            let right = c_string(mem, context.regs[2]).unwrap_or_default();
+            return_value(context, u64::from(left.cmp(&right) as i8 as i64 as u64));
+            Ok(true)
+        }
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6eraseEmm"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcmm"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEmc"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKc"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKc"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKcm" => {
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "ZNKSt3__120__vector_base_commonILb1EE20__throw_length_errorEv"
+        | "ZNKSt3__120__vector_base_commonILb1EE20__throw_out_of_rangeEv"
+        | "ZNKSt3__121__basic_string_commonILb1EE20__throw_length_errorEv"
+        | "ZNKSt3__16locale9has_facetERNS0_2idE" | "ZNKSt3__16locale9use_facetERNS0_2idE"
+        | "ZNKSt3__18ios_base6getlocEv" | "ZNSt3__111this_thread9sleep_forERKNS_6chrono8durationIxNS_5ratioILl1ELl1000000000EEEEE"
+        | "ZNSt3__112__next_primeEm" => {
+            return_value(context, if symbol.ends_with("next_primeEm") { next_prime(context.regs[0]) } else { 0 });
             Ok(true)
         }
         "compressBound" => {
