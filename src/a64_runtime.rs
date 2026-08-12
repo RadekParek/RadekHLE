@@ -183,7 +183,7 @@ pub fn can_dispatch(symbol: &str) -> bool {
         | "pthread_mutex_unlock" | "pthread_mutex_init" | "pthread_mutex_destroy"
         | "pthread_once" | "pthread_key_create" | "pthread_getspecific" | "pthread_setspecific"
         | "pthread_self" | "sched_yield" | "abort" | "exit" | "_exit"
-        | "NSLog" | "NSLogv" | "os_log" | "os_logv" | "dyld_stub_binder"
+        | "NSLog" | "NSLogv" | "os_log" | "os_logv" | "UIApplicationMain" | "dyld_stub_binder"
         | "CFConstantStringClassReference" | "__CFConstantStringClassReference"
         | "MTLCreateSystemDefaultDevice" | "vkEnumerateInstanceVersion"
         | "vkCreateInstance" | "vkDestroyInstance" | "vkDestroyDevice"
@@ -963,6 +963,15 @@ pub fn dispatch(
             Ok(true)
         }
         "NSLog" | "NSLogv" | "os_log" | "os_logv" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "UIApplicationMain" => {
+            state.boot_screen_reached = true;
+            state.present_requested = true;
+            echo!(
+                "ARM64 UIApplicationMain handled by the compatibility runtime; continuing app startup"
+            );
             return_value(context, 0);
             Ok(true)
         }
