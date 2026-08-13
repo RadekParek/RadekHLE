@@ -596,12 +596,14 @@ impl Environment {
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 env.with_yielder(yielder, move |env| {
                     echo!("CPU emulation begins now.");
+                    echo!("ARM32 startup: stack setup");
                     // Some apps use the stack inside the static initializer.
                     // While properly behaving apps should be fine, some app
                     // will try to poke the top of the stack, so we'll give
                     // it some room.
                     env.cpu.regs_mut()[Cpu::SP] = 0xFFFFF000;
 
+                    echo!("ARM32 startup: calling Objective-C +load methods");
                     // Call `+load` method on classes where it's defined.
                     // TODO: `+load` methods from our image should take priority
                     // over frameworks ones.
@@ -649,6 +651,7 @@ impl Environment {
                         () = objc::msg_send_no_initialize(env, (class, load_sel));
                     }
 
+                    echo!("ARM32 startup: running static initializers");
                     // Static initializers for libraries must be run before
                     // the initializer in the app binary.
                     for bin_idx in env.get_sorted_bin_indices().unwrap() {
@@ -682,6 +685,7 @@ impl Environment {
                         log_dbg!("Static initialization done");
                     }
 
+                    echo!("ARM32 startup: preparing argc/argv/envp/apple");
                     {
                         let bin_path = env.bundle.executable_path();
 
@@ -721,11 +725,13 @@ impl Environment {
                         );
                     }
 
+                    echo!("ARM32 startup: entering guest entry point {:#x}", entry_point_addr.addr_without_thumb_bit());
                     // Manually call here, since running call_from_host pushes
                     // a stack frame and disrupts abi for _start.
                     env.cpu
                         .branch_with_link(entry_point_addr, env.dyld.thread_exit_routine());
 
+                    echo!("ARM32 startup: guest entry point returned to host");
                     env.run_call();
 
                     panic!("Main function exited unexpectedly!");
