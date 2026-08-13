@@ -258,6 +258,7 @@ pub fn can_dispatch(symbol: &str) -> bool {
         | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm"
         | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKc"
         | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKcm" => true,
+        value if value.starts_with("ZNSt3__") || value.starts_with("ZNKSt3__") => true,
         _ => false,
     }
 }
@@ -1283,6 +1284,10 @@ pub fn dispatch(
             Ok(true)
         }
         _ if symbol.starts_with("gl") || symbol.starts_with("egl") || symbol.starts_with("EAGL") => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        value if value.starts_with("ZNSt3__") || value.starts_with("ZNKSt3__") => {
             return_value(context, 0);
             Ok(true)
         }

@@ -1730,6 +1730,16 @@ impl Environment {
         }
 
         if self.gdb_server.is_none() {
+            let regs = *self.cpu.regs();
+            echo!(
+                "ARM32 CPU error: {:?} pc={:#x} lr={:#x} sp={:#x} cpsr={:#x}",
+                error,
+                regs[cpu::Cpu::PC],
+                regs[cpu::Cpu::LR],
+                regs[cpu::Cpu::SP],
+                self.cpu.cpsr()
+            );
+            cpu::Cpu::echo_regs(&regs);
             // Bypass crashes without implementing stubs for every framework.
             // Games often trigger UndefinedInstruction (abort/__builtin_trap)
             // when an API returns nil or an otherwise unexpected value.

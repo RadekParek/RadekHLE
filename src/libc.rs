@@ -16,6 +16,7 @@ pub mod arpa;
 pub mod asl;
 pub mod blocks;
 pub mod clocale;
+pub mod codesign;
 pub mod crypto;
 pub mod ctype;
 pub mod cxxabi;
@@ -90,6 +91,7 @@ pub const DYLIB: crate::dyld::HostDylib = crate::dyld::HostDylib {
         asl::FUNCTIONS,
         blocks::FUNCTIONS,
         clocale::FUNCTIONS,
+        codesign::FUNCTIONS,
         ctype::FUNCTIONS,
         cxxabi::FUNCTIONS,
         crypto::FUNCTIONS,
