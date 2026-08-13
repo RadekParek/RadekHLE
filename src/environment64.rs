@@ -451,8 +451,35 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
         memory.load_u64(binding.address, target).map_err(str::to_owned)?;
     }
 
+    unresolved.sort();
+    unresolved.dedup();
     if !unresolved.is_empty() {
         runtime_state.unimplemented_symbols.extend(unresolved.iter().cloned());
+    }
+    let unresolved_report = crate::paths::user_data_base_path().join("arm64_unresolved_imports.txt");
+    let report = if unresolved.is_empty() {
+        "ARM64 unresolved imports: none\n".to_owned()
+    } else {
+        format!(
+            "ARM64 unresolved imports: {}\n{}\n",
+            unresolved.len(),
+            unresolved
+                .iter()
+                .map(|symbol| format!("{symbol}\n"))
+                .collect::<String>()
+        )
+    };
+    if let Err(error) = std::fs::write(&unresolved_report, report) {
+        log!(
+            "Warning: could not write ARM64 unresolved-import report {}: {}",
+            unresolved_report.display(),
+            error
+        );
+    } else {
+        echo!(
+            "ARM64 unresolved-import report written to {}",
+            unresolved_report.display()
+        );
     }
     echo!(
         "ARM64 runtime: entry point {:#x}, image_end {:#x}, {} unique host stubs for {} bindings, {} materialized imports, {} unresolved, stack {:#x}, argv {:#x}, envp {:#x}, apple {:#x}",
@@ -467,17 +494,11 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
         envp_ptr,
         apple_ptr,
     );
-    for symbol in unresolved.iter().take(32) {
+    for symbol in &unresolved {
         echo!("  unresolved import: {}", symbol);
     }
-    if unresolved.len() > 32 {
-        echo!("  ... and {} more unresolved imports", unresolved.len() - 32);
-    }
-    for (i, binding) in executable.bindings.iter().take(16).enumerate() {
+    for (i, binding) in executable.bindings.iter().enumerate() {
         echo!("  {}: {} @ {:x} + {}", i, binding.symbol, binding.address, binding.addend);
-    }
-    if executable.bindings.len() > 16 {
-        echo!("  ... and {} more", executable.bindings.len() - 16);
     }
     let mut context = touchHLE_DynarmicA64Context::default();
     context.sp = sp;

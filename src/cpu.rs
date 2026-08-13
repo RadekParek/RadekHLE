@@ -38,6 +38,19 @@ extern "C" fn touchHLE_cpu_a64_log(message: *const std::ffi::c_char) {
         echo!("ARM64 dynarmic: {}", message);
     }));
 }
+#[no_mangle]
+extern "C" fn touchHLE_cpu_a32_log(message: *const std::ffi::c_char) {
+    if message.is_null() {
+        return;
+    }
+    let message = unsafe { CStr::from_ptr(message) };
+    let Ok(message) = message.to_str() else {
+        return;
+    };
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        echo!("ARM32 dynarmic: {}", message);
+    }));
+}
 
 fn touchHLE_cpu_read_impl<T: SafeRead + Default>(
     mem: *mut touchHLE_Mem,

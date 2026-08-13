@@ -786,6 +786,7 @@ impl Dyld {
     /// binaries symbols may be looked up in.
     fn do_non_lazy_linking(&mut self, bin: &MachO, bins: &[MachO], mem: &mut Mem, objc: &mut ObjC) {
         let mut unhandled_relocations: HashMap<&str, Vec<u32>> = HashMap::new();
+        let mut unhandled_non_lazy_symbols: HashMap<&str, Vec<u32>> = HashMap::new();
         // Cache for Objective-C blocks runtime class descriptors.
         // All relocation sites for the same name must resolve to the same
         // non-null guest address so that `block->isa ==
@@ -1368,11 +1369,22 @@ impl Dyld {
                 continue;
             }
 
+            unhandled_non_lazy_symbols
+                .entry(symbol)
+                .or_default()
+                .push(ptr_ptr.to_bits());
+        }
+
+        for (symbol, addresses) in unhandled_non_lazy_symbols {
             log!(
-                "Warning: unhandled non-lazy symbol {:?} at {:?} in \"{}\"",
+                "Warning: unhandled non-lazy symbol {:?} in {:?} at {}",
                 symbol,
-                ptr_ptr,
-                bin.name
+                bin.name,
+                addresses
+                    .into_iter()
+                    .map(|address| format!("{address:#x}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
             );
         }
 

@@ -859,7 +859,14 @@ fn select(
                         }
                     }
                 }
-                _ => unimplemented!(),
+                other => {
+                    log!(
+                        "Warning: select() read_set fd {} has unknown socket type {}; treating as not-ready.",
+                        fd,
+                        other
+                    );
+                    false
+                }
             }
         });
         log_dbg!("select: read_set after {:?}", read_set);
@@ -907,7 +914,14 @@ fn select(
                         false
                     }
                 }
-                _ => unimplemented!(),
+                other => {
+                    log!(
+                        "Warning: select() write_set fd {} has unknown socket type {}; treating as not-ready.",
+                        fd,
+                        other
+                    );
+                    false
+                }
             }
         });
         log_dbg!("select: write_set after {:?}", write_set);
@@ -934,14 +948,29 @@ fn select(
                             log_dbg!("No error on TCP socket {}", fd);
                             false
                         }
-                        Ok(Some(error)) => unimplemented!("TCP socket {} error: {:?}", fd, error),
-                        Err(error) => panic!("TCP socket {fd} take_error failed: {error:?}"),
+                        Ok(Some(error)) => {
+                            log!(
+                                "select: TCP socket {} has a pending error: {:?}; reporting it via error_fds.",
+                                fd,
+                                error
+                            );
+                            true
+                        }
+                        Err(error) => {
+                            log!("Warning: select() TCP socket {} take_error failed: {:?}; reporting an error.", fd, error);
+                            true
+                        }
                     }
                 }
-                SOCK_DGRAM => {
-                    todo!()
+                SOCK_DGRAM => false,
+                other => {
+                    log!(
+                        "Warning: select() error_set fd {} has unknown socket type {}; treating as no-error.",
+                        fd,
+                        other
+                    );
+                    false
                 }
-                _ => unimplemented!(),
             }
         });
         log_dbg!("select: error_set after {:?}", error_set);
@@ -1022,18 +1051,35 @@ fn accept(
     let socket_host_object = State::get(env).sockets.get(&socket).unwrap();
     let listener = socket_host_object.tcp_listener.as_ref().unwrap();
     match listener.accept() {
-        Ok((_, addr)) => {
+        Ok((stream, addr)) => {
             log!("accept: New client: {}", addr);
-            unimplemented!()
+            stream.set_nonblocking(true).unwrap();
+            let new_fd = find_or_create_socket(env);
+            let host_object = SocketHostObject {
+                type_: SOCK_STREAM,
+                options: Default::default(),
+                tcp_listener: None,
+                pending_tcp_stream: None,
+                tcp_stream: Some(stream),
+                udp_socket: None,
+            };
+            State::get_mut(env).sockets.insert(new_fd, host_object);
+            if !address.is_null() {
+                env.mem.write(address, sockaddr::from_sockaddr_v4(&addr));
+                if !address_len.is_null() {
+                    env.mem.write(address_len, guest_size_of::<sockaddr>());
+                }
+            }
+            new_fd
         }
         Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-            // No incoming connection is ready
-            // TODO: if this happened, take a deep breath and do:
-            // - block guest thread with a new [ThreadBlock] type
-            // - poll for data in thread scheduling part
-            // - write/read/accept/etc data once it is ready
-            // - unblock guest thread
-            unimplemented!("accept: TCP listener for socket {} would block on accepting, block current guest thread {}.", socket, env.current_thread)
+            log_dbg!(
+                "accept: TCP listener for socket {} would block; returning EAGAIN for thread {}",
+                socket,
+                env.current_thread
+            );
+            set_errno(env, EAGAIN);
+            -1
         }
         Err(e) => {
             panic!("accept: Socket {socket} has error accepting connection: {e}");

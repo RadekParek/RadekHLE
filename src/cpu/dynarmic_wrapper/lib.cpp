@@ -20,6 +20,7 @@ using VAddr = std::uint32_t;
 // Types and functions defined in Rust
 extern "C" {
 struct touchHLE_Mem;
+void touchHLE_cpu_a32_log(const char *message);
 std::uint8_t touchHLE_cpu_read_u8(touchHLE_Mem *mem, VAddr addr, bool *error);
 std::uint16_t touchHLE_cpu_read_u16(touchHLE_Mem *mem, VAddr addr, bool *error);
 std::uint32_t touchHLE_cpu_read_u32(touchHLE_Mem *mem, VAddr addr, bool *error);
@@ -145,8 +146,11 @@ private:
     return true;
   }
 
-  void InterpreterFallback(std::uint32_t, size_t) override {
-    abort(); // TODO
+  void InterpreterFallback(std::uint32_t pc, size_t count) override {
+    char message[160];
+    std::snprintf(message, sizeof(message), "interpreter fallback at %08x for %zu instruction(s)", pc, count);
+    touchHLE_cpu_a32_log(message);
+    cpu->HaltExecution(HaltReasonUndefinedInstruction);
   }
   void CallSVC(std::uint32_t svc) override {
     halting_svc = svc;
@@ -161,9 +165,10 @@ private:
     } else if (exception == Dynarmic::A32::Exception::Breakpoint) {
       cpu->HaltExecution(HaltReasonBreakpoint);
     } else {
-      std::fprintf(stderr, "ExceptionRaised: unexpected exception %u at %x\n",
-                   unsigned(exception), pc);
-      abort();
+      char message[160];
+      std::snprintf(message, sizeof(message), "unexpected exception %u at %x", unsigned(exception), pc);
+      touchHLE_cpu_a32_log(message);
+      cpu->HaltExecution(HaltReasonUndefinedInstruction);
     }
   }
   void AddTicks(std::uint64_t ticks) override {
@@ -306,8 +311,10 @@ public:
     } else if (Dynarmic::Has(hr, HaltReasonSvc)) {
       res = std::int32_t(env.halting_svc);
     } else {
-      printf("unhandled halt reason %u\n", unsigned(hr));
-      abort();
+      char message[96];
+      std::snprintf(message, sizeof(message), "unhandled halt reason %u", unsigned(hr));
+      touchHLE_cpu_a32_log(message);
+      res = -3;
     }
     env.mem = nullptr;
     if (ticks) {
