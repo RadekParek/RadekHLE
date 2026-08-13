@@ -8,6 +8,7 @@ use crate::options::Options;
 use crate::window::{DeviceFamily, DeviceOrientation};
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
+use std::io::Write;
 use touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context;
 
 const STACK_BASE: u64 = 0x7fff_ffff_0000;
@@ -23,6 +24,45 @@ const A64_HALT_USER_DEFINED3: u32 = 0x0400_0000;
 const STARTUP_TRACE_INSTRUCTIONS: u64 = 10_000;
 const STALL_THRESHOLD: u64 = 512;
 const EXECUTION_SLICE_TICKS: u64 = 1_000;
+
+struct ImportReportEntry {
+    index: usize,
+    address: u64,
+    symbol: String,
+    addend: i64,
+    status: &'static str,
+    resolved_as: String,
+}
+
+fn write_import_report(entries: &[ImportReportEntry], unresolved: &[String]) {
+    let path = crate::paths::user_data_base_path().join("arm64_unresolved_imports.txt");
+    let result = (|| -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&path)?;
+        writeln!(file, "RadekHLE ARM64 import report")?;
+        writeln!(file, "All bindings: {}", entries.len())?;
+        writeln!(file, "Unique unresolved imports: {}", unresolved.len())?;
+        writeln!(file)?;
+        writeln!(file, "UNRESOLVED IMPORTS")?;
+        if unresolved.is_empty() {
+            writeln!(file, "<none>")?;
+        } else {
+            for symbol in unresolved {
+                writeln!(file, "{symbol}")?;
+            }
+        }
+        writeln!(file)?;
+        writeln!(file, "ALL BINDINGS")?;
+        writeln!(file, "index\taddress\taddend\tstatus\tresolved_as\tsymbol")?;
+        for entry in entries {
+            writeln!(file, "{}\t{:#x}\t{}\t{}\t{}\t{}", entry.index, entry.address, entry.addend, entry.status, entry.resolved_as, entry.symbol)?;
+        }
+        file.flush()
+    })();
+    match result {
+        Ok(()) => echo!("ARM64 unresolved-import report written to {}", path.display()),
+        Err(error) => log!("Warning: could not write ARM64 unresolved-import report {}: {}", path.display(), error),
+    }
+}
 
 fn sign_extend(value: u64, bits: u32) -> i64 {
     let shift = 64 - bits;
@@ -419,25 +459,27 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     let mut host_stubs = HashMap::new();
     let mut stub_by_symbol: HashMap<String, (u32, u64)> = HashMap::new();
     let mut unresolved = Vec::new();
+    let mut unresolved_seen = std::collections::HashSet::new();
+    let mut report_entries = Vec::with_capacity(executable.bindings.len());
     let mut materialized_imports = 0usize;
     for (binding_index, binding) in executable.bindings.iter().enumerate() {
         if let Some(value) = materialize_import(&mut memory, &binding.symbol)? {
-            if binding_index < 32 {
-                echo!("ARM64 materialized import #{}: {} -> {:#x}", binding_index, binding.symbol, value);
-            }
+            echo!("ARM64 materialized import #{}: {} -> {:#x}", binding_index, binding.symbol, value);
             memory.load_u64(binding.address, value.checked_add_signed(binding.addend).ok_or("ARM64 import address overflows")?).map_err(str::to_owned)?;
+            report_entries.push(ImportReportEntry { index: binding_index, address: binding.address, symbol: binding.symbol.clone(), addend: binding.addend, status: "materialized", resolved_as: format!("{value:#x}") });
             materialized_imports += 1;
             continue;
         }
         let symbol = lookup_host_symbol(&binding.symbol)
             .or_else(|| lookup_host_symbol(binding.symbol.strip_prefix('_').unwrap_or(&binding.symbol)))
             .unwrap_or("<unimplemented>");
-        if symbol == "<unimplemented>" && !crate::a64_runtime::can_dispatch(&binding.symbol) {
+        let dispatchable = symbol == "<unimplemented>" && crate::a64_runtime::can_dispatch(&binding.symbol);
+        if symbol == "<unimplemented>" && !dispatchable && unresolved_seen.insert(binding.symbol.clone()) {
             unresolved.push(binding.symbol.clone());
         }
         let binding_key = binding.symbol.clone();
-        let (_svc, stub) = if let Some(&(_svc, stub)) = stub_by_symbol.get(&binding_key) {
-            (_svc, stub)
+        let (svc, stub) = if let Some(&(svc, stub)) = stub_by_symbol.get(&binding_key) {
+            (svc, stub)
         } else {
             let svc = SVC_HOST_BASE + host_stubs.len() as u32;
             let stub = write_svc_stub(&mut memory, svc)?;
@@ -445,42 +487,22 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             host_stubs.insert(svc as i32, (binding.symbol.clone(), symbol));
             (svc, stub)
         };
-        let target = stub
-            .checked_add_signed(binding.addend)
-            .ok_or("ARM64 import target overflows")?;
+        let target = stub.checked_add_signed(binding.addend).ok_or("ARM64 import target overflows")?;
         memory.load_u64(binding.address, target).map_err(str::to_owned)?;
+        report_entries.push(ImportReportEntry {
+            index: binding_index,
+            address: binding.address,
+            symbol: binding.symbol.clone(),
+            addend: binding.addend,
+            status: if symbol != "<unimplemented>" { "host-export" } else if dispatchable { "compatibility-dispatch" } else { "unresolved" },
+            resolved_as: if symbol != "<unimplemented>" { symbol.to_owned() } else { format!("svc {svc}") },
+        });
     }
 
-    unresolved.sort();
-    unresolved.dedup();
     if !unresolved.is_empty() {
         runtime_state.unimplemented_symbols.extend(unresolved.iter().cloned());
     }
-    let unresolved_report = crate::paths::user_data_base_path().join("arm64_unresolved_imports.txt");
-    let report = if unresolved.is_empty() {
-        "ARM64 unresolved imports: none\n".to_owned()
-    } else {
-        format!(
-            "ARM64 unresolved imports: {}\n{}\n",
-            unresolved.len(),
-            unresolved
-                .iter()
-                .map(|symbol| format!("{symbol}\n"))
-                .collect::<String>()
-        )
-    };
-    if let Err(error) = std::fs::write(&unresolved_report, report) {
-        log!(
-            "Warning: could not write ARM64 unresolved-import report {}: {}",
-            unresolved_report.display(),
-            error
-        );
-    } else {
-        echo!(
-            "ARM64 unresolved-import report written to {}",
-            unresolved_report.display()
-        );
-    }
+    write_import_report(&report_entries, &unresolved);
     echo!(
         "ARM64 runtime: entry point {:#x}, image_end {:#x}, {} unique host stubs for {} bindings, {} materialized imports, {} unresolved, stack {:#x}, argv {:#x}, envp {:#x}, apple {:#x}",
         entry,
@@ -497,8 +519,11 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     for symbol in &unresolved {
         echo!("  unresolved import: {}", symbol);
     }
-    for (i, binding) in executable.bindings.iter().enumerate() {
+    for (i, binding) in executable.bindings.iter().take(16).enumerate() {
         echo!("  {}: {} @ {:x} + {}", i, binding.symbol, binding.address, binding.addend);
+    }
+    if executable.bindings.len() > 16 {
+        echo!("  ... and {} more", executable.bindings.len() - 16);
     }
     let mut context = touchHLE_DynarmicA64Context::default();
     context.sp = sp;
