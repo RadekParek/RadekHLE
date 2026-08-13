@@ -107,9 +107,9 @@ macro_rules! echo {
 
             if $crate::log::file_logging_enabled() {
                 if let Ok(mut log_file) = $crate::log::get_log_file().lock() {
-                    let _ = log_file.write_all(formatted_str.as_bytes());
-                    let _ = log_file.write_all(b"\n");
-                    let _ = log_file.flush();
+                    let _ = std::io::Write::write_all(&mut *log_file, formatted_str.as_bytes());
+                    let _ = std::io::Write::write_all(&mut *log_file, b"\n");
+                    let _ = std::io::Write::flush(&mut *log_file);
                 }
             }
         }
@@ -125,8 +125,8 @@ macro_rules! echo {
 
             if $crate::log::file_logging_enabled() {
                 if let Ok(mut log_file) = $crate::log::get_log_file().lock() {
-                    let _ = log_file.write_all(b"\n");
-                    let _ = log_file.flush();
+                    let _ = std::io::Write::write_all(&mut *log_file, b"\n");
+                    let _ = std::io::Write::flush(&mut *log_file);
                 }
             }
         }
