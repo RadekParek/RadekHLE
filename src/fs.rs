@@ -31,7 +31,7 @@ pub use bundle::BundleData;
 
 use crate::fs::bundle::{IpaFile, IpaFileRef};
 use crate::paths;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::fs::File;
 use std::io::{Read, Seek, Write};
@@ -425,6 +425,24 @@ fn handle_open_err<T, E: std::fmt::Display, P: std::fmt::Debug>(
     }
 }
 
+/// In-memory state shared by the two endpoints of a guest POSIX pipe.
+#[derive(Debug)]
+pub(crate) struct PipeBuffer {
+    bytes: VecDeque<u8>,
+    read_handles: usize,
+    write_handles: usize,
+}
+
+impl PipeBuffer {
+    pub(crate) fn new() -> Self {
+        Self {
+            bytes: VecDeque::new(),
+            read_handles: 1,
+            write_handles: 1,
+        }
+    }
+}
+
 /// Like [File] but for the guest filesystem.
 #[derive(Debug)]
 pub enum GuestFile {
@@ -433,6 +451,8 @@ pub enum GuestFile {
     IpaBundleFile(IpaFile),
     ResourceFile(paths::ResourceFile),
     Socket,
+    PipeRead(std::rc::Rc<std::cell::RefCell<PipeBuffer>>),
+    PipeWrite(std::rc::Rc<std::cell::RefCell<PipeBuffer>>),
 }
 
 impl GuestFile {
@@ -460,6 +480,7 @@ impl GuestFile {
                 log!("Warning: syncing directory as a guest file.");
                 Ok(())
             }
+            GuestFile::PipeRead(_) | GuestFile::PipeWrite(_) => Ok(()),
             GuestFile::Socket => Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "Sync operation not supported on socket",
@@ -476,6 +497,10 @@ impl GuestFile {
             GuestFile::Directory => Err(std::io::Error::new(
                 std::io::ErrorKind::IsADirectory,
                 "Attempt to resize a directory as a guest file",
+            )),
+            GuestFile::PipeRead(_) | GuestFile::PipeWrite(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Attempt to resize a pipe",
             )),
             GuestFile::Socket => Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
@@ -495,7 +520,10 @@ impl GuestFile {
     pub fn is_seekable(&self) -> bool {
         // Due to legacy directory iteration support, directories are seekable
         // https://stackoverflow.com/questions/65911066/what-does-lseek-mean-for-a-directory-file-descriptor
-        !matches!(self, GuestFile::Socket)
+        !matches!(
+            self,
+            GuestFile::Socket | GuestFile::PipeRead(_) | GuestFile::PipeWrite(_)
+        )
     }
 
     /// Duplicate this file descriptor, creating an independent handle that
@@ -522,6 +550,14 @@ impl GuestFile {
                 ))
             }
             GuestFile::Directory => Ok(GuestFile::Directory),
+            GuestFile::PipeRead(pipe) => {
+                pipe.borrow_mut().read_handles += 1;
+                Ok(GuestFile::PipeRead(pipe.clone()))
+            }
+            GuestFile::PipeWrite(pipe) => {
+                pipe.borrow_mut().write_handles += 1;
+                Ok(GuestFile::PipeWrite(pipe.clone()))
+            }
             GuestFile::Socket => {
                 Err(std::io::Error::new(
                     std::io::ErrorKind::Unsupported,
@@ -530,7 +566,24 @@ impl GuestFile {
             }
         }
     }
+    pub fn close_pipe_endpoint(&mut self) {
+        let (pipe, reading) = match self {
+            GuestFile::PipeRead(pipe) => (Some(pipe.clone()), true),
+            GuestFile::PipeWrite(pipe) => (Some(pipe.clone()), false),
+            _ => (None, false),
+        };
+        if let Some(pipe) = pipe {
+            let mut pipe = pipe.borrow_mut();
+            if reading {
+                pipe.read_handles = pipe.read_handles.saturating_sub(1);
+            } else {
+                pipe.write_handles = pipe.write_handles.saturating_sub(1);
+            }
+        }
+    }
 }
+
+impl Read for GuestFile {}
 
 impl Read for GuestFile {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -538,6 +591,30 @@ impl Read for GuestFile {
             GuestFile::File(file) => file.read(buf),
             GuestFile::IpaBundleFile(file) => file.read(buf),
             GuestFile::ResourceFile(file) => file.get().read(buf),
+            GuestFile::PipeRead(pipe) => {
+                let mut pipe = pipe.borrow_mut();
+                if buf.is_empty() {
+                    return Ok(0);
+                }
+                if pipe.bytes.is_empty() {
+                    if pipe.write_handles == 0 {
+                        return Ok(0);
+                    }
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        "pipe has no data yet",
+                    ));
+                }
+                let count = buf.len().min(pipe.bytes.len());
+                for slot in &mut buf[..count] {
+                    *slot = pipe.bytes.pop_front().unwrap();
+                }
+                Ok(count)
+            }
+            GuestFile::PipeWrite(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "attempt to read from the write end of a pipe",
+            )),
             GuestFile::Directory => Err(std::io::Error::new(
                 std::io::ErrorKind::IsADirectory,
                 "Attempt to read from a directory as a guest file",
@@ -558,6 +635,21 @@ impl Write for GuestFile {
                 std::io::ErrorKind::PermissionDenied,
                 "Attempt to write to a read-only file",
             )),
+            GuestFile::PipeRead(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "attempt to write to the read end of a pipe",
+            )),
+            GuestFile::PipeWrite(pipe) => {
+                let mut pipe = pipe.borrow_mut();
+                if pipe.read_handles == 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "pipe has no readers",
+                    ));
+                }
+                pipe.bytes.extend(buf);
+                Ok(buf.len())
+            }
             GuestFile::Directory => Err(std::io::Error::new(
                 std::io::ErrorKind::IsADirectory,
                 "Attempt to write to a directory as a guest file",
@@ -576,6 +668,7 @@ impl Write for GuestFile {
                 std::io::ErrorKind::PermissionDenied,
                 "Attempt to flush a read-only file",
             )),
+            GuestFile::PipeRead(_) | GuestFile::PipeWrite(_) => Ok(()),
             GuestFile::Directory => Err(std::io::Error::new(
                 std::io::ErrorKind::IsADirectory,
                 "Attempt to flush a directory as a guest file",
@@ -606,6 +699,10 @@ impl Seek for GuestFile {
                     "Attempt to seek a directory as a guest file",
                 ))
             }
+            GuestFile::PipeRead(_) | GuestFile::PipeWrite(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "attempt to seek a pipe",
+            )),
             GuestFile::Socket => Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "seek not supported on socket via GuestFile",

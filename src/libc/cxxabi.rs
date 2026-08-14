@@ -195,6 +195,10 @@ fn __cxa_free_exception(_env: &mut Environment, _thrown: MutVoidPtr) {
     // Leak — see comment above.
 }
 
+fn __cxa_decrement_exception_refcount(_env: &mut Environment, _exception: MutVoidPtr) {}
+
+fn __cxa_increment_exception_refcount(_env: &mut Environment, _exception: MutVoidPtr) {}
+
 fn __cxa_throw(env: &mut Environment, _exc: MutVoidPtr, tinfo: ConstVoidPtr, _dtor: GuestFunction) {
     // Itanium type_info layout (32-bit):
     //   +0  vptr
@@ -415,6 +419,8 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(__cxa_guard_abort(_)),
     export_c_func!(__cxa_allocate_exception(_)),
     export_c_func!(__cxa_free_exception(_)),
+    export_c_func!(__cxa_decrement_exception_refcount(_)),
+    export_c_func!(__cxa_increment_exception_refcount(_)),
     export_c_func!(__cxa_throw(_, _, _)),
     export_c_func!(__cxa_rethrow()),
     export_c_func!(__cxa_begin_catch(_)),
