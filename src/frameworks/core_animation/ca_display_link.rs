@@ -71,7 +71,8 @@ pub const CLASSES: ClassExports = objc_classes! {
     // we need a re-direction: the timer fires on the display link, which then
     // calls the original selector, passing the link as a second argument.
     let redirect_sel: SEL = env.objc.lookup_selector("_touchHLE_displayLinkTimerDidFire:").unwrap();
-    let ns_timer = msg_class![env; NSTimer timerWithTimeInterval:(1.0/60.0)
+    let refresh_rate = env.options.fps_limit.unwrap_or(60.0);
+    let ns_timer = msg_class![env; NSTimer timerWithTimeInterval:(1.0 / refresh_rate)
                      target:display_link
                    selector:redirect_sel
                    userInfo:nil
@@ -113,7 +114,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 - (f64)duration {
     let ns_timer = env.objc.borrow::<CADisplayLinkHostObject>(this).ns_timer;
     if ns_timer == nil {
-        return 1.0 / 60.0;
+        return 1.0 / env.options.fps_limit.unwrap_or(60.0);
     }
     msg![env; ns_timer timeInterval]
 }
@@ -132,7 +133,8 @@ pub const CLASSES: ClassExports = objc_classes! {
     // rather than raising NSInvalidArgumentException.
     let safe_interval = frameInterval.max(1);
     env.objc.borrow_mut::<CADisplayLinkHostObject>(this).frame_interval = safe_interval;
-    let interval = safe_interval as f64 / 60.0;
+    let refresh_rate = env.options.fps_limit.unwrap_or(60.0);
+    let interval = safe_interval as f64 / refresh_rate;
 
     let ns_timer = env.objc.borrow::<CADisplayLinkHostObject>(this).ns_timer;
     if ns_timer != nil {
@@ -142,12 +144,13 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 - (NSInteger)preferredFramesPerSecond {
     let interval = env.objc.borrow::<CADisplayLinkHostObject>(this).frame_interval;
-    (60 / interval.max(1)).max(1)
+    (env.options.fps_limit.unwrap_or(60.0) as NSInteger / interval.max(1)).max(1)
 }
 
 - (())setPreferredFramesPerSecond:(NSInteger)fps {
-    let safe_fps = if fps <= 0 { 60 } else { fps.min(60) };
-    let interval = (60 / safe_fps).max(1);
+    let max_fps = env.options.fps_limit.unwrap_or(60.0) as NSInteger;
+    let safe_fps = if fps <= 0 { max_fps } else { fps.min(max_fps) };
+    let interval = (max_fps / safe_fps).max(1);
     () = msg![env; this setFrameInterval:interval];
 }
 

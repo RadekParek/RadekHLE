@@ -117,7 +117,7 @@ Special options:
 ";
 pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
     echo!(
-        "RadekHLE 2.0 {}{}{} git_sha={}",
+        "RadekHLE 3.0 {}{}{} git_sha={}",
         branding(),
         if branding().is_empty() { "" } else { " " },
         VERSION,
@@ -408,6 +408,12 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
     for option_arg in option_args {
         let parse_result = options.parse_argument(&option_arg);
         assert!(parse_result == Ok(true));
+    }
+    if options.fps_limit.is_none() {
+        if let Some(refresh_rate) = window::host_refresh_rate() {
+            options.fps_limit = Some(refresh_rate);
+            log!("Using host display refresh rate for frame pacing: {:.2} Hz", refresh_rate);
+        }
     }
     crate::log::set_file_logging(options.log_file);
     crate::gles::configure_translator_tracing(options.trace_gl_errors);

@@ -259,12 +259,18 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (NSInteger)preferredFramesPerSecond {
-    env.objc.borrow::<GLKViewControllerHostObject>(this).preferred_frames_per_second
+    let preferred = env.objc.borrow::<GLKViewControllerHostObject>(this).preferred_frames_per_second;
+    preferred.min(env.options.fps_limit.unwrap_or(preferred as f64) as NSInteger)
 }
 - (())setPreferredFramesPerSecond:(NSInteger)fps {
     // Apple docs: setting 0 (or a negative value) means "use the default",
     // which is 30 fps.
-    let fps = if fps <= 0 { 30 } else { fps };
+    let fps = if fps <= 0 {
+        env.options.fps_limit.unwrap_or(30.0) as NSInteger
+    } else {
+        fps
+    };
+    let fps = env.options.fps_limit.map_or(fps, |limit| fps.min(limit as NSInteger));
     env.objc
         .borrow_mut::<GLKViewControllerHostObject>(this)
         .preferred_frames_per_second = fps;

@@ -35,7 +35,7 @@ do
     fi
 done
 
-for path in artifacts/macos/radekhle.dmg artifacts/android/radekhle.apk; do
+for path in artifacts/macos/radekhle.dmg artifacts/android/RadekHLE-3.0.apk; do
     if [ ! -e "$path" ]; then
         echo "Missing build artifact (all platform builds must succeed): $path" >&2
         exit 1
@@ -106,7 +106,7 @@ prefix="HyperHLE"
 
 ./prepare-release.sh --create-zip-macos "$ROOT/artifacts/macos/radekhle.dmg" \
     -o "$ROOT/release/${prefix}_macOS_x86_64.zip"
-./prepare-release.sh --create-zip-android "$ROOT/artifacts/android/radekhle.apk" \
+./prepare-release.sh --create-zip-android "$ROOT/artifacts/android/RadekHLE-3.0.apk" \
     -o "$ROOT/release/${prefix}_Android_AArch64.zip"
 ./prepare-release.sh --create-zip-windows \
     "$ROOT/$windows_exe" \

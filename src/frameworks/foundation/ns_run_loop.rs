@@ -445,13 +445,17 @@ pub fn run_run_loop(
         // events that are scheduled but we can't get the time for currently
         // (audio queue buffer exhaustion).
         //
-        // The compromise used here is that we will wait for a 60th of a second,
-        // or until the next scheduled event, whichever is sooner. iPhone OS
-        // apps can't do more than 60fps so this should be fine.
+        // Poll frequently enough for the configured host refresh rate while
+        // still waking early for audio and scheduled timers.
+        let refresh_interval = env
+            .options
+            .fps_limit
+            .map(|fps| Duration::from_secs_f64(1.0 / fps))
+            .unwrap_or(Duration::from_millis(1000 / 60));
         let limit = if has_audio_sources {
-            Duration::from_millis(8)
+            refresh_interval.min(Duration::from_millis(8))
         } else {
-            Duration::from_millis(1000 / 60)
+            refresh_interval
         };
         env.sleep(sleep_until.map_or(limit, |i| i.duration_since(Instant::now()).min(limit)));
 

@@ -100,7 +100,7 @@ pub fn recomposite_if_necessary(env: &mut Environment, force: bool) -> Option<In
     }
 
     let now = Instant::now();
-    let interval = 1.0 / 60.0; // 60Hz
+    let interval = env.options.fps_limit.map(|fps| 1.0 / fps).unwrap_or(1.0 / 60.0);
     let new_recomposite_next = if let Some(recomposite_next) = env
         .framework_state
         .core_animation

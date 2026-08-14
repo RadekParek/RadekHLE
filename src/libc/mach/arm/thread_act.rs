@@ -108,7 +108,6 @@ fn task_set_exception_ports(
     KERN_SUCCESS
 }
 
-
 fn thread_get_state(
     env: &mut Environment,
     target_thread: thread_act_t,
@@ -128,21 +127,23 @@ fn thread_get_state(
     assert!(out_size_expected <= out_size_available);
 
     // Expected `thread send right` is thread_id + 1. See `mach_thread_self()`.
-    let thread_id = (target_thread - 1) as ThreadId;
+    let Some(thread_id) = target_thread.checked_sub(1).map(|id| id as ThreadId) else {
+        return 4;
+    };
 
     let (regs, cpsr) = if thread_id == env.current_thread {
         (*env.cpu.regs(), env.cpu.cpsr())
     } else {
         // Mono only calls this on threads it has previously suspended.
-        assert!(matches!(
-            env.threads[thread_id].blocked_by,
-            ThreadBlock::Suspended(_, _)
-        ));
-        let ctx = env
-            .threads
-            .get(thread_id)
-            .and_then(|t| t.guest_context.as_ref())
-            .expect("thread_get_state on thread without saved context");
+        let Some(thread) = env.threads.get(thread_id) else {
+            return 4;
+        };
+        if !matches!(thread.blocked_by, ThreadBlock::Suspended(_, _)) {
+            return 4;
+        }
+        let Some(ctx) = thread.guest_context.as_ref() else {
+            return 4;
+        };
         (ctx.regs, ctx.cpsr)
     };
 

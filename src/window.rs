@@ -937,6 +937,20 @@ pub fn host_screen_size() -> Option<(u32, u32)> {
     }
 }
 
+/// Query the host display refresh rate. SDL receives this from Android's
+/// Display.getRefreshRate(), so high-refresh devices are not forced to 60 Hz.
+pub fn host_refresh_rate() -> Option<f64> {
+    let sdl_ctx = sdl2::init().ok()?;
+    let video_ctx = sdl_ctx.video().ok()?;
+    let mode = video_ctx.current_display_mode(0).ok()?;
+    let refresh_rate = mode.refresh_rate;
+    if refresh_rate > 0 {
+        Some(refresh_rate as f64)
+    } else {
+        None
+    }
+}
+
 pub struct Window {
     _sdl_ctx: sdl2::Sdl,
     video_ctx: sdl2::VideoSubsystem,

@@ -932,6 +932,16 @@ fn strtoull(
     }
 }
 
+fn strtoull_l(
+    env: &mut Environment,
+    str: ConstPtr<u8>,
+    endptr: MutPtr<MutPtr<u8>>,
+    base: i32,
+    _locale: ConstVoidPtr,
+) -> u64 {
+    strtoull(env, str, endptr, base)
+}
+
 fn strtoll(
     env: &mut Environment,
     str: ConstPtr<u8>,
@@ -1672,6 +1682,7 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(strtof(_, _)),
     export_c_func!(strtoul(_, _, _)),
     export_c_func!(strtoull(_, _, _)),
+    export_c_func!(strtoull_l(_, _, _, _)),
     export_c_func!(strtoll(_, _, _)),
     export_c_func_aliased!("strtoq", strtoll(_, _, _)),
     export_c_func_aliased!("strtouq", strtoull(_, _, _)),
