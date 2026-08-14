@@ -152,11 +152,15 @@ fn access(env: &mut Environment, path: ConstPtr<u8>, mode: i32) -> i32 {
         let relative = binding.strip_prefix("Data/").unwrap_or(&binding);
         let relative = relative.strip_prefix("Data/").unwrap_or(relative);
         let candidate = format!("{bundle_root}/Data/{relative}");
-        if env.fs.exists(GuestPath::new(&candidate)) {
-            candidate
-        } else {
-            binding.clone()
+        let mut candidates = vec![candidate];
+        if relative == "data.unity3d" {
+            candidates.push(format!("{bundle_root}/Data/globalgamemanagers"));
+            candidates.push(format!("{bundle_root}/Data/level0"));
         }
+        candidates
+            .into_iter()
+            .find(|path| env.fs.exists(GuestPath::new(path)))
+            .unwrap_or_else(|| binding.clone())
     } else {
         binding.clone()
     };
