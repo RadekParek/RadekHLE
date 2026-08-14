@@ -1,8 +1,9 @@
 use crate::a64_abi::A64Abi;
+use crate::dyld::{search_host_dylibs, HostConstant};
 use crate::mem64::Mem64;
 use crate::window::DeviceFamily;
 use touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 const MAX_CSTRING: u64 = 1024 * 1024;
 const A64_OBJECT_SIZE: u64 = 96;
@@ -27,6 +28,8 @@ const A64_KIND_SAMPLER: u64 = 18;
 const A64_KIND_DEPTH_STENCIL: u64 = 19;
 const A64_KIND_UI_DEVICE: u64 = 20;
 const A64_KIND_UI_SCREEN: u64 = 21;
+const A64_KIND_UNITY_FRAMEWORK: u64 = 22;
+const A64_KIND_NUMBER: u64 = 23;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum A64GraphicsBackend {
@@ -45,6 +48,15 @@ impl A64GraphicsBackend {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct LoadedImage {
+    pub name: String,
+    pub base: u64,
+    pub end: u64,
+    pub entry: Option<u64>,
+    pub exports: HashMap<String, u64>,
+}
+
 #[derive(Debug)]
 pub struct RuntimeState {
     pub ios_version: (i32, i32, i32),
@@ -55,6 +67,7 @@ pub struct RuntimeState {
     pub metal_commands: u64,
     pub frame_serial: u64,
     pub present_requested: bool,
+    pub boot_screen_reached: bool,
     pub clear_color: [f32; 4],
     pub last_selector: Option<String>,
     pub last_symbol: Option<String>,
@@ -64,6 +77,9 @@ pub struct RuntimeState {
     pub bundle_path: String,
     pub bundle_name: String,
     pub unimplemented_symbols: HashSet<String>,
+    pub loaded_images: Vec<LoadedImage>,
+    pub guest_transfer_pc: Option<u64>,
+    pub unity_framework_instance: Option<u64>,
 }
 
 impl RuntimeState {
@@ -81,6 +97,7 @@ impl RuntimeState {
             metal_commands: 0,
             frame_serial: 0,
             present_requested: false,
+            boot_screen_reached: false,
             clear_color: [0.0, 0.0, 0.0, 1.0],
             last_selector: None,
             last_symbol: None,
@@ -90,17 +107,101 @@ impl RuntimeState {
             bundle_path: "/".to_owned(),
             bundle_name: "Application".to_owned(),
             unimplemented_symbols: HashSet::new(),
+            loaded_images: Vec::new(),
+            guest_transfer_pc: None,
+            unity_framework_instance: None,
         }
     }
 
     pub fn take_present_request(&mut self) -> bool {
         std::mem::take(&mut self.present_requested)
     }
+
+    pub fn take_boot_screen_request(&mut self) -> bool {
+        std::mem::take(&mut self.boot_screen_reached)
+    }
+
+    pub fn take_guest_transfer(&mut self) -> Option<u64> {
+        self.guest_transfer_pc.take()
+    }
+
+    pub fn resolve_image_symbol(&self, candidates: &[&str]) -> Option<u64> {
+        self.find_image_symbol(candidates).map(|(_, address)| address)
+    }
+
+    fn find_image_symbol(&self, candidates: &[&str]) -> Option<(String, u64)> {
+        for image in &self.loaded_images {
+            for candidate in candidates {
+                if let Some(&address) = image.exports.get(*candidate) {
+                    return Some((image.name.clone(), address));
+                }
+            }
+            for (symbol, &address) in &image.exports {
+                if candidates.iter().any(|candidate| symbol.ends_with(candidate)) {
+                    return Some((image.name.clone(), address));
+                }
+            }
+        }
+        None
+    }
+
+    fn transfer_to_method(&mut self, selector: &str, candidates: &[&str]) -> Result<(), String> {
+        let Some((image, address)) = self.find_image_symbol(candidates) else {
+            return Err(format!("ARM64 could not resolve UnityFramework method for selector {selector}"));
+        };
+        log!("ARM64 guest transfer: selector {} -> {} at {:#x}", selector, image, address);
+        self.guest_transfer_pc = Some(address);
+        Ok(())
+    }
 }
 
 fn name(symbol: &str) -> &str {
     symbol.trim_start_matches('_')
 }
+
+fn materialize_host_constant(mem: &mut Mem64, symbol: &str) -> Result<Option<u64>, String> {
+    let normalized = name(symbol);
+    if let Some((_, constant)) = search_host_dylibs(|dylib| dylib.constant_exports, symbol)
+        .or_else(|| search_host_dylibs(|dylib| dylib.constant_exports, normalized))
+    {
+        return match constant {
+            HostConstant::NSString(value) => Ok(Some(objc_string(mem, value)?)),
+            HostConstant::NullPtr => Ok(Some(0)),
+            HostConstant::Custom(_) => Ok(materialize_custom_constant(mem, normalized)),
+        };
+    }
+
+    match normalized {
+        "ZSt7nothrow"
+        | "ZNSt3__15ctypeIcE2id"
+        | "ZNSt3__15ctypeIcE2idE"
+        | "ZNSt3__17codecvtIcc11__mbstate_tE2id"
+        | "ZNSt3__17codecvtIcc11__mbstate_tE2idE" => {
+            Ok(Some(mem.alloc_zeroed(16).map_err(str::to_owned)?))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn materialize_custom_constant(mem: &mut Mem64, symbol: &str) -> Option<u64> {
+    match name(symbol) {
+        "DefaultRuneLocale" => mem.alloc_zeroed(128).ok(),
+        "stderrp" => {
+            let file = mem.alloc_zeroed(16).ok()?;
+            mem.write_u32(file, 2).ok()?;
+            let slot = mem.alloc_zeroed(8).ok()?;
+            mem.write_u64(slot, file).ok()?;
+            Some(slot)
+        }
+        "kCFBooleanTrue" => objc_number(mem, 1).ok(),
+        "kCFBooleanFalse" => objc_number(mem, 0).ok(),
+        "kCFNull" => objc_object(mem, A64_KIND_GENERIC).ok(),
+        "kCFAllocatorSystemDefault" => Some(0),
+        "gxx_personality_v0" => Some(0),
+        _ => None,
+    }
+}
+
 pub fn can_dispatch(symbol: &str) -> bool {
     match name(symbol) {
         "malloc" | "calloc" | "valloc" | "posix_memalign" | "free"
@@ -128,13 +229,35 @@ pub fn can_dispatch(symbol: &str) -> bool {
         | "pthread_mutex_unlock" | "pthread_mutex_init" | "pthread_mutex_destroy"
         | "pthread_once" | "pthread_key_create" | "pthread_getspecific" | "pthread_setspecific"
         | "pthread_self" | "sched_yield" | "abort" | "exit" | "_exit"
-        | "NSLog" | "NSLogv" | "os_log" | "os_logv" | "dyld_stub_binder"
+        | "NSLog" | "NSLogv" | "os_log" | "os_logv" | "UIApplicationMain" | "dyld_stub_binder"
         | "CFConstantStringClassReference" | "__CFConstantStringClassReference"
         | "MTLCreateSystemDefaultDevice" | "vkEnumerateInstanceVersion"
         | "vkCreateInstance" | "vkDestroyInstance" | "vkDestroyDevice"
         | "vkEnumeratePhysicalDevices" | "vkGetPhysicalDeviceQueueFamilyProperties"
         | "vkCreateDevice" | "vkGetDeviceQueue" | "vkDeviceWaitIdle" => true,
         value if value.starts_with("gl") || value.starts_with("egl") || value.starts_with("EAGL") => true,
+        "inflate" | "inflateEnd" | "inflateInit_" | "compressBound" | "deflate" | "deflateEnd" | "deflateInit_" | "deflateReset"
+        | "class_addProperty" | "class_addProtocol" | "class_getInstanceVariable" | "class_isMetaClass"
+        | "objc_constructInstance" | "objc_enumerationMutation" | "objc_initializeClassPair" | "object_getIvar"
+        | "property_copyAttributeList" | "gxx_personality_v0"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev"
+        | "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEPKcmm"
+        | "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEcm"
+        | "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5rfindEPKcmm"
+        | "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5rfindEcm"
+        | "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareEPKc"
+        | "ZNKSt3__120__vector_base_commonILb1EE20__throw_length_errorEv"
+        | "ZNKSt3__120__vector_base_commonILb1EE20__throw_out_of_rangeEv"
+        | "ZNKSt3__121__basic_string_commonILb1EE20__throw_length_errorEv"
+        | "ZNKSt3__16locale9has_facetERNS0_2idE" | "ZNKSt3__16locale9use_facetERNS0_2idE"
+        | "ZNKSt3__18ios_base6getlocEv" | "ZNKSt3__111this_thread9sleep_forERKNS_6chrono8durationIxNS_5ratioILl1ELl1000000000EEEEE"
+        | "ZNSt3__112__next_primeEm" | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5eraseEmm"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcmm"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEmc"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKc"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKc"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKcm" => true,
         _ => false,
     }
 }
@@ -150,6 +273,49 @@ fn c_string(mem: &Mem64, address: u64) -> Option<Vec<u8>> {
 
 fn c_string_eq(mem: &Mem64, address: u64, value: &[u8]) -> bool {
     c_string(mem, address).as_deref() == Some(value)
+}
+fn cxx_string_bytes(mem: &Mem64, object: u64) -> Option<Vec<u8>> {
+    let first = mem.read_u64(object).ok()?;
+    if first & 1 == 0 {
+        let length = ((first & 0xff) / 2) as u64;
+        mem.read_bytes(object + 1, length).ok()
+    } else {
+        let length = mem.read_u64(object + 8).ok()?;
+        mem.read_bytes(first & !1, length).ok()
+    }
+}
+
+fn cxx_find(text: &[u8], needle: &[u8], position: u64, reverse: bool) -> u64 {
+    let start = usize::try_from(position).unwrap_or(usize::MAX).min(text.len());
+    if needle.is_empty() {
+        return start as u64;
+    }
+    if reverse {
+        if needle.len() > text.len() {
+            return u64::MAX;
+        }
+        let end = start.min(text.len() - needle.len());
+        text[..=end]
+            .windows(needle.len())
+            .rposition(|window| window == needle)
+            .map_or(u64::MAX, |index| index as u64)
+    } else {
+        text[start..]
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .map_or(u64::MAX, |index| (start + index) as u64)
+    }
+}
+
+fn next_prime(value: u64) -> u64 {
+    fn is_prime(value: u64) -> bool {
+        value >= 2 && (2..=((value as f64).sqrt() as u64)).all(|divisor| value % divisor != 0)
+    }
+    let mut candidate = value.max(2);
+    while !is_prime(candidate) {
+        candidate = candidate.saturating_add(1);
+    }
+    candidate
 }
 fn objc_text(mem: &Mem64, address: u64) -> Option<Vec<u8>> {
     if objc_kind(mem, address) == Some(A64_KIND_STRING) {
@@ -192,6 +358,13 @@ fn set_objc_field(mem: &mut Mem64, object: u64, offset: u64, value: u64) {
     let _ = mem.write_u64(object.saturating_add(offset), value);
 }
 
+fn objc_string_append(mem: &mut Mem64, left: u64, right: u64) -> Result<u64, String> {
+    let mut bytes = objc_text(mem, left).unwrap_or_default();
+    bytes.extend(objc_text(mem, right).unwrap_or_default());
+    let value = String::from_utf8(bytes).map_err(|_| "ARM64 Objective-C string is not UTF-8")?;
+    objc_string(mem, &value)
+}
+
 fn objc_string(mem: &mut Mem64, value: &str) -> Result<u64, String> {
     let object = objc_object(mem, A64_KIND_STRING)?;
     let bytes = value.as_bytes();
@@ -227,6 +400,12 @@ fn objc_ui_screen(mem: &mut Mem64, family: DeviceFamily) -> Result<u64, String> 
     set_objc_field(mem, object, 56, width as u64);
     set_objc_field(mem, object, 64, height as u64);
     set_objc_field(mem, object, 72, family.scale_factor().to_bits() as u64);
+    Ok(object)
+}
+
+fn objc_number(mem: &mut Mem64, value: i64) -> Result<u64, String> {
+    let object = objc_object(mem, A64_KIND_NUMBER)?;
+    set_objc_field(mem, object, 56, value as u64);
     Ok(object)
 }
 
@@ -279,6 +458,7 @@ fn objc_class_kind(mem: &Mem64, class_name: u64) -> u64 {
         Some(b"UIDevice") => A64_KIND_UI_DEVICE,
         Some(b"UIScreen") => A64_KIND_UI_SCREEN,
         Some(b"NSBundle") => A64_KIND_BUNDLE,
+        Some(b"UnityFramework") => A64_KIND_UNITY_FRAMEWORK,
         _ => A64_KIND_GENERIC,
     }
 }
@@ -296,6 +476,10 @@ fn objc_send(
     state.last_selector = Some(selector.clone());
     let kind = objc_kind(mem, receiver).unwrap_or(A64_KIND_GENERIC);
     let class_name = objc_field(mem, receiver, 56);
+
+    if selector == "runUIApplicationMainWithArgc:argv:" && receiver == 0 {
+        echo!("ARM64 Objective-C bootstrap call used a nil receiver; returning zero and continuing startup");
+    }
 
     log_dbg!(
         "ARM64 Objective-C message #{}: receiver={:#x} kind={} selector={} x2={:#x} x3={:#x} x4={:#x} x5={:#x}",
@@ -316,6 +500,11 @@ fn objc_send(
         state.present_requested = true;
     }
     let result = match selector.as_str() {
+        "runUIApplicationMainWithArgc:argv:" if receiver == 0 => {
+            state.boot_screen_reached = true;
+            state.present_requested = true;
+            0
+        }
         "init" | "self" | "retain" | "autorelease" | "copy" | "mutableCopy" => receiver,
         "release" => 0,
         "class" => receiver,
@@ -332,6 +521,23 @@ fn objc_send(
         }
         "bundleIdentifier" if kind == A64_KIND_BUNDLE => objc_field(mem, receiver, 64),
         "bundlePath" | "resourcePath" if kind == A64_KIND_BUNDLE => objc_field(mem, receiver, 56),
+        "stringByAppendingString:" if kind == A64_KIND_STRING => {
+            objc_string_append(mem, receiver, context.regs[2])?
+        }
+        "bundleWithPath:" if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSBundle") => {
+            let object = objc_object(mem, A64_KIND_BUNDLE)?;
+            let identifier = objc_string(mem, "com.unity.framework")?;
+            let name = objc_string(mem, "UnityFramework")?;
+            set_objc_field(mem, object, 56, context.regs[2]);
+            set_objc_field(mem, object, 64, identifier);
+            set_objc_field(mem, object, 72, name);
+            object
+        }
+        "isLoaded" | "load" if kind == A64_KIND_BUNDLE => 1,
+        "principalClass" if kind == A64_KIND_BUNDLE => {
+            let class_name = objc_string(mem, "UnityFramework")?;
+            objc_class(mem, class_name)?
+        }
         "executablePath" if kind == A64_KIND_BUNDLE => objc_string(mem, &state.bundle_path)?,
         "objectForInfoDictionaryKey:" if kind == A64_KIND_BUNDLE => {
             match objc_text(mem, context.regs[2]).as_deref() {
@@ -435,10 +641,30 @@ fn objc_send(
         "length" if kind == A64_KIND_STRING => objc_field(mem, receiver, 64),
         "length" if kind == A64_KIND_BUFFER => objc_field(mem, receiver, 64),
         "boolValue" if kind == A64_KIND_STRING => u64::from(!objc_text_eq(mem, receiver, b"0")),
+        "boolValue" if kind == A64_KIND_NUMBER => u64::from(objc_field(mem, receiver, 56) != 0),
+        "intValue" | "integerValue" | "longLongValue" if kind == A64_KIND_NUMBER => objc_field(mem, receiver, 56),
+        "unsignedIntegerValue" if kind == A64_KIND_NUMBER => objc_field(mem, receiver, 56),
+        "doubleValue" | "floatValue" if kind == A64_KIND_NUMBER => {
+            set_float_return(context, i64::from_ne_bytes(objc_field(mem, receiver, 56).to_ne_bytes()) as f64);
+            0
+        }
         "isEqualToString:" | "isEqual:" if kind == A64_KIND_STRING => {
             u64::from(objc_text(mem, receiver) == objc_text(mem, context.regs[2]))
         }
         "cStringUsingEncoding:" if kind == A64_KIND_STRING => objc_field(mem, receiver, 56),
+        "getInstance" if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"UnityFramework") => {
+            state.transfer_to_method(selector.as_str(), &["+[UnityFramework getInstance]", "getInstance"])?;
+            receiver
+        }
+        "appController" if kind == A64_KIND_UNITY_FRAMEWORK => 0,
+        "setExecuteHeader:" if kind == A64_KIND_UNITY_FRAMEWORK => 0,
+        "runUIApplicationMainWithArgc:argv:" if kind == A64_KIND_UNITY_FRAMEWORK => {
+            state.transfer_to_method(
+                selector.as_str(),
+                &["-[UnityFramework runUIApplicationMainWithArgc:argv:]", "runUIApplicationMainWithArgc:argv:"],
+            )?;
+            receiver
+        }
         "newCommandQueue" | "newCommandQueueWithMaxCommandBufferCount:" => objc_object(mem, A64_KIND_QUEUE)?,
         "commandBuffer" | "commandBufferWithUnretainedReferences" => objc_object(mem, A64_KIND_COMMAND_BUFFER)?,
         "renderCommandEncoderWithDescriptor:" => objc_object(mem, A64_KIND_RENDER_ENCODER)?,
@@ -517,7 +743,9 @@ fn objc_send(
         "alloc" | "new" if kind == A64_KIND_CLASS => objc_object(mem, objc_class_kind(mem, class_name))?,
         _ => 0,
     };
-    return_value(context, result);
+    if state.guest_transfer_pc.is_none() {
+        return_value(context, result);
+    }
     Ok(())
 }
 
@@ -528,6 +756,9 @@ fn objc_class(mem: &mut Mem64, name: u64) -> Result<u64, String> {
 }
 
 pub fn materialize_import(mem: &mut Mem64, symbol: &str) -> Result<Option<u64>, String> {
+    if let Some(value) = materialize_host_constant(mem, symbol)? {
+        return Ok(Some(value));
+    }
     let symbol = name(symbol);
     if let Some(class_name) = symbol.strip_prefix("OBJC_CLASS_$_") {
         let pointer = mem.alloc_zeroed(class_name.len() as u64 + 1).map_err(str::to_owned)?;
@@ -838,6 +1069,91 @@ pub fn dispatch(
             return_value(context, 0);
             Ok(true)
         }
+        "gxx_personality_v0"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "inflateInit_" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "inflate" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "inflateEnd" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "class_addProperty" | "class_addProtocol" | "class_getInstanceVariable" | "class_isMetaClass"
+        | "objc_constructInstance" | "objc_initializeClassPair" | "object_getIvar" | "property_copyAttributeList" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "objc_enumerationMutation" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEPKcmm"
+        | "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEcm" => {
+            let Some(text) = cxx_string_bytes(mem, context.regs[0]) else { return Ok(true) };
+            let needle = if symbol.ends_with("findEcm") { vec![context.regs[2] as u8] } else { c_string(mem, context.regs[2]).unwrap_or_default() };
+            return_value(context, cxx_find(&text, &needle, context.regs[3], false));
+            Ok(true)
+        }
+        "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5rfindEPKcmm"
+        | "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5rfindEcm" => {
+            let Some(text) = cxx_string_bytes(mem, context.regs[0]) else { return Ok(true) };
+            let needle = if symbol.ends_with("rfindEcm") { vec![context.regs[2] as u8] } else { c_string(mem, context.regs[2]).unwrap_or_default() };
+            return_value(context, cxx_find(&text, &needle, context.regs[3], true));
+            Ok(true)
+        }
+        "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareEPKc" => {
+            let left = cxx_string_bytes(mem, context.regs[0]).unwrap_or_default();
+            let right = c_string(mem, context.regs[2]).unwrap_or_default();
+            return_value(context, u64::from(left.cmp(&right) as i8 as i64 as u64));
+            Ok(true)
+        }
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6eraseEmm"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcmm"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEmc"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKc"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKc"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKcm" => {
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "ZNKSt3__120__vector_base_commonILb1EE20__throw_length_errorEv"
+        | "ZNKSt3__120__vector_base_commonILb1EE20__throw_out_of_rangeEv"
+        | "ZNKSt3__121__basic_string_commonILb1EE20__throw_length_errorEv"
+        | "ZNKSt3__16locale9has_facetERNS0_2idE" | "ZNKSt3__16locale9use_facetERNS0_2idE"
+        | "ZNKSt3__18ios_base6getlocEv" | "ZNSt3__111this_thread9sleep_forERKNS_6chrono8durationIxNS_5ratioILl1ELl1000000000EEEEE"
+        | "ZNSt3__112__next_primeEm" => {
+            return_value(context, if symbol.ends_with("next_primeEm") { next_prime(context.regs[0]) } else { 0 });
+            Ok(true)
+        }
+        "compressBound" => {
+            let source_len = context.regs[0];
+            let bound = source_len
+                .saturating_add(source_len / 1000)
+                .saturating_add(12);
+            return_value(context, bound);
+            Ok(true)
+        }
+        "deflateInit_" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "deflate" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "deflateEnd" | "deflateReset" => {
+            return_value(context, 0);
+            Ok(true)
+        }
         "cxa_atexit" | "atexit" | "pthread_mutex_lock" | "pthread_mutex_unlock" | "pthread_mutex_init" | "pthread_mutex_destroy" | "pthread_once" | "pthread_key_create" | "pthread_setspecific" | "sched_yield" => {
             if symbol == "pthread_once" && context.regs[0] != 0 && mem.read_u32(context.regs[0]).map_err(str::to_owned)? == 0 {
                 mem.write_u32(context.regs[0], 1).map_err(str::to_owned)?;
@@ -859,6 +1175,15 @@ pub fn dispatch(
             Ok(true)
         }
         "NSLog" | "NSLogv" | "os_log" | "os_logv" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "UIApplicationMain" => {
+            state.boot_screen_reached = true;
+            state.present_requested = true;
+            echo!(
+                "ARM64 UIApplicationMain handled by the compatibility runtime; continuing app startup"
+            );
             return_value(context, 0);
             Ok(true)
         }

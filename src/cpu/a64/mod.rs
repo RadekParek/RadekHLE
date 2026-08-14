@@ -21,3 +21,7 @@ pub const GENERAL_REGISTER_COUNT: usize = 31;
 pub const SIMD_REGISTER_COUNT: usize = 32;
 pub const SIMD_REGISTER_WORDS: usize = 2;
 pub const STACK_ALIGNMENT: u64 = 16;
+
+mod interpreter;
+
+pub use interpreter::A64Interpreter;

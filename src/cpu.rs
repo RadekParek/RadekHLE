@@ -13,6 +13,9 @@
 use crate::abi::GuestFunction;
 use crate::mem::{ConstPtr, GuestUSize, Mem, MutPtr, Ptr, SafeRead, SafeWrite};
 use crate::mem64::Mem64;
+mod a64;
+
+use self::a64::A64Interpreter;
 
 use std::ffi::CStr;
 
@@ -375,7 +378,16 @@ impl Cpu {
 }
 
 pub struct A64Cpu {
-    dynarmic_wrapper: *mut touchHLE_DynarmicWrapper,
+    backend: A64Backend,
+}
+
+enum A64Backend {
+    Jit {
+        wrapper: *mut touchHLE_DynarmicWrapper,
+        interpreter: A64Interpreter,
+        disabled: bool,
+    },
+    Interpreter(A64Interpreter),
 }
 
 impl std::fmt::Debug for A64Cpu {
@@ -386,45 +398,101 @@ impl std::fmt::Debug for A64Cpu {
 
 impl Drop for A64Cpu {
     fn drop(&mut self) {
-        unsafe { touchHLE_DynarmicA64Wrapper_delete(self.dynarmic_wrapper) }
+        if let A64Backend::Jit { wrapper, .. } = self.backend {
+            unsafe { touchHLE_DynarmicA64Wrapper_delete(wrapper) }
+        }
     }
 }
 
 impl A64Cpu {
     pub fn new() -> Self {
-        Self {
-            dynarmic_wrapper: unsafe { touchHLE_DynarmicA64Wrapper_new() },
-        }
+        Self::with_backend(crate::options::Arm64Backend::Auto)
+    }
+
+    pub fn with_backend(backend: crate::options::Arm64Backend) -> Self {
+        let backend = match backend {
+            crate::options::Arm64Backend::Interpreter => {
+                echo!("ARM64 backend selected: interpreter (explicit diagnostic mode)");
+                A64Backend::Interpreter(A64Interpreter::new())
+            }
+            crate::options::Arm64Backend::Auto => {
+                let use_interpreter = cfg!(target_os = "android");
+                if use_interpreter {
+                    echo!("ARM64 backend selected: interpreter (Android compatibility default; use --arm64-backend=jit to opt in)");
+                    A64Backend::Interpreter(A64Interpreter::new())
+                } else {
+                    echo!("ARM64 backend selected: Dynarmic JIT (desktop default; use --arm64-backend=interpreter for compatibility diagnostics)");
+                    A64Backend::Jit {
+                        wrapper: unsafe { touchHLE_DynarmicA64Wrapper_new() },
+                        interpreter: A64Interpreter::new(),
+                        disabled: false,
+                    }
+                }
+            }
+            crate::options::Arm64Backend::Jit => {
+                echo!("ARM64 backend selected: Dynarmic JIT (single-instruction compatibility stepping with interpreter fallback)");
+                A64Backend::Jit {
+                    wrapper: unsafe { touchHLE_DynarmicA64Wrapper_new() },
+                    interpreter: A64Interpreter::new(),
+                    disabled: false,
+                }
+            }
+        };
+        Self { backend }
     }
 
     pub fn swap_context(&mut self, context: &mut touchHLE_DynarmicA64Context) {
-        unsafe { touchHLE_DynarmicA64Wrapper_swap_context(self.dynarmic_wrapper, context) }
+        if let A64Backend::Jit { wrapper, .. } = self.backend {
+            unsafe { touchHLE_DynarmicA64Wrapper_swap_context(wrapper, context) }
+        }
     }
 
     pub fn load_context(&mut self, context: &touchHLE_DynarmicA64Context) {
-        unsafe { touchHLE_DynarmicA64Wrapper_load_context(self.dynarmic_wrapper, context) }
+        if let A64Backend::Jit { wrapper, .. } = self.backend {
+            unsafe { touchHLE_DynarmicA64Wrapper_load_context(wrapper, context) }
+        }
     }
 
     pub fn save_context(&mut self, context: &mut touchHLE_DynarmicA64Context) {
-        unsafe { touchHLE_DynarmicA64Wrapper_save_context(self.dynarmic_wrapper, context) }
+        match &mut self.backend {
+            A64Backend::Jit { wrapper, disabled, .. } if !*disabled => {
+                unsafe { touchHLE_DynarmicA64Wrapper_save_context(*wrapper, context) }
+            }
+            A64Backend::Jit { .. } | A64Backend::Interpreter(_) => {}
+        }
     }
 
-    pub fn run_or_step(&mut self, mem: &mut Mem64, ticks: Option<&mut u64>) -> i32 {
-        unsafe {
-            touchHLE_DynarmicA64Wrapper_run_or_step(
-                self.dynarmic_wrapper,
-                mem as *mut _ as *mut _,
-                ticks,
-            )
+    pub fn run_or_step(&mut self, mem: &mut Mem64, context: &mut touchHLE_DynarmicA64Context, mut ticks: Option<&mut u64>) -> i32 {
+        match &mut self.backend {
+            A64Backend::Jit { wrapper, interpreter, disabled } => {
+                if *disabled {
+                    return interpreter.run_or_step(mem, context, ticks);
+                }
+                let result = unsafe { touchHLE_DynarmicA64Wrapper_run_or_step(*wrapper, mem as *mut _ as *mut _, ticks.as_deref_mut()) };
+                if result == -3 || result == -6 {
+                    unsafe { touchHLE_DynarmicA64Wrapper_save_context(*wrapper, context) };
+                    *disabled = true;
+                    echo!("ARM64 Dynarmic compatibility fallback: disabling JIT after result {result} at pc={:#x}; continuing with interpreter", context.pc);
+                    return interpreter.run_or_step(mem, context, ticks);
+                }
+                result
+            }
+            A64Backend::Interpreter(interpreter) => interpreter.run_or_step(mem, context, ticks),
         }
     }
 
     pub fn clear_halt(&mut self, reason: u32) {
-        unsafe { touchHLE_DynarmicA64Wrapper_clear_halt(self.dynarmic_wrapper, reason) }
+        if let A64Backend::Jit { wrapper, disabled, .. } = self.backend {
+            if !disabled {
+                unsafe { touchHLE_DynarmicA64Wrapper_clear_halt(wrapper, reason) }
+            }
+        }
     }
 
     pub fn set_trace(&mut self, enabled: bool) {
-        unsafe { touchHLE_DynarmicA64Wrapper_set_trace(self.dynarmic_wrapper, enabled) }
+        if let A64Backend::Jit { wrapper, .. } = self.backend {
+            unsafe { touchHLE_DynarmicA64Wrapper_set_trace(wrapper, enabled) }
+        }
     }
 }
 
@@ -444,7 +512,7 @@ mod tests {
             0x91001401,
             0xd1000822,
             0xa9bf07e0,
-            0xa8c107e3,
+            0xa8c113e3,
             0xd65f03c0,
         ];
         let mut memory = Mem64::new();
@@ -462,7 +530,7 @@ mod tests {
         cpu.load_context(&context);
 
         for (index, instruction) in instructions.iter().take(6).enumerate() {
-            assert_eq!(cpu.run_or_step(&mut memory, None), -1, "instruction {} {instruction:#010x}", index + 1);
+            assert_eq!(cpu.run_or_step(&mut memory, &mut context, None), -1, "instruction {} {instruction:#010x}", index + 1);
             cpu.save_context(&mut context);
             assert_eq!(context.pc, CODE + (index as u64 + 1) * 4);
         }
@@ -477,7 +545,7 @@ mod tests {
         assert_eq!(memory.read_u64(original_sp - 16).unwrap(), 42);
         assert_eq!(memory.read_u64(original_sp - 8).unwrap(), 47);
 
-        assert_eq!(cpu.run_or_step(&mut memory, None), -1);
+        assert_eq!(cpu.run_or_step(&mut memory, &mut context, None), -1);
         cpu.save_context(&mut context);
         assert_eq!(context.pc, CODE + 0x100);
     }

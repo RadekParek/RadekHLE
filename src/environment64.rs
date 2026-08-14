@@ -1,4 +1,4 @@
-use crate::a64_runtime::{dispatch, materialize_import, A64GraphicsBackend, RuntimeState};
+use crate::a64_runtime::{dispatch, materialize_import, A64GraphicsBackend, LoadedImage, RuntimeState};
 use crate::bundle::Bundle;
 use crate::cpu::A64Cpu;
 use crate::fs::Fs;
@@ -161,7 +161,7 @@ fn prepare_stack(
     envp: &[String],
     apple: &[String],
 ) -> Result<(u64, u64, u64, u64), String> {
-    mem.map_zeroed(STACK_BASE - STACK_SIZE, STACK_SIZE).map_err(str::to_owned)?;
+    mem.map_zeroed_with_permissions(STACK_BASE - STACK_SIZE, STACK_SIZE, crate::mem64::Permissions::read_write()).map_err(str::to_owned)?;
     let mut string_cursor = STACK_BASE & !15;
     let mut argv_strings = Vec::with_capacity(argv.len());
     let mut envp_strings = Vec::with_capacity(envp.len());
@@ -214,7 +214,7 @@ fn prepare_stack(
 }
 
 fn write_svc_stub(mem: &mut Mem64, svc: u32) -> Result<u64, String> {
-    let stub = mem.alloc_zeroed(HOST_STUB_SIZE).map_err(str::to_owned)?;
+    let stub = mem.alloc_zeroed_with_permissions(HOST_STUB_SIZE, crate::mem64::Permissions::read_write_execute()).map_err(str::to_owned)?;
     let instruction = 0xd4000001u32 | ((u64::from(svc) << 5) as u32);
     mem.write_u32(stub, instruction).map_err(str::to_owned)?;
     mem.write_u32(stub + 4, 0xd65f03c0).map_err(str::to_owned)?;
@@ -224,6 +224,45 @@ fn write_svc_stub(mem: &mut Mem64, svc: u32) -> Result<u64, String> {
 fn lookup_host_symbol(symbol: &str) -> Option<&'static str> {
     crate::dyld::search_host_dylibs(|dylib| dylib.function_exports, symbol)
         .map(|(name, _)| *name)
+}
+
+fn load_embedded_unity_framework(
+    bundle: &Bundle,
+    fs: &Fs,
+    memory: &mut Mem64,
+    state: &mut RuntimeState,
+) -> Result<(), String> {
+    let framework_path = bundle
+        .bundle_path()
+        .join("Frameworks/UnityFramework.framework/UnityFramework");
+    if !fs.is_file(&framework_path) {
+        log!(
+            "ARM64 app has no embedded UnityFramework at {}; continuing with the main executable",
+            framework_path.as_str()
+        );
+        return Ok(());
+    }
+    let bytes = fs
+        .read(&framework_path)
+        .map_err(|_| format!("Could not read {}", framework_path.as_str()))?;
+    let framework = MachO64::load_from_bytes(&bytes, "UnityFramework", 0x3000_0000)?;
+    let base = framework.text_base;
+    let end = framework.last_segment_end;
+    memory.merge_mappings(framework.memory)?;
+    state.loaded_images.push(LoadedImage {
+        name: "UnityFramework".to_owned(),
+        base,
+        end,
+        entry: framework.entry_point_pc,
+        exports: framework.exported_symbols,
+    });
+    echo!(
+        "ARM64 loaded embedded UnityFramework: base={:#x} end={:#x} entry={:?}",
+        base,
+        end,
+        framework.entry_point_pc
+    );
+    Ok(())
 }
 
 pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> Result<(), String> {
@@ -302,6 +341,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     runtime_state.bundle_identifier = bundle.bundle_identifier().to_owned();
     runtime_state.bundle_path = bundle.bundle_path().as_str().to_owned();
     runtime_state.bundle_name = bundle.bundle_name().to_owned();
+    load_embedded_unity_framework(&bundle, &fs, &mut memory, &mut runtime_state)?;
     let mut window = if options.headless {
         None
     } else {
@@ -348,7 +388,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             if binding_index < 32 {
                 echo!("ARM64 materialized import #{}: {} -> {:#x}", binding_index, binding.symbol, value);
             }
-            memory.write_u64(binding.address, value.checked_add_signed(binding.addend).ok_or("ARM64 import address overflows")?).map_err(str::to_owned)?;
+            memory.load_u64(binding.address, value.checked_add_signed(binding.addend).ok_or("ARM64 import address overflows")?).map_err(str::to_owned)?;
             materialized_imports += 1;
             continue;
         }
@@ -371,7 +411,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
         let target = stub
             .checked_add_signed(binding.addend)
             .ok_or("ARM64 import target overflows")?;
-        memory.write_u64(binding.address, target).map_err(str::to_owned)?;
+        memory.load_u64(binding.address, target).map_err(str::to_owned)?;
     }
 
     if !unresolved.is_empty() {
@@ -410,36 +450,38 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     context.regs[2] = envp_ptr;
     context.regs[3] = apple_ptr;
     context.regs[30] = return_stub;
-    let mut cpu = A64Cpu::new();
-    cpu.set_trace(true);
+    let mut cpu = A64Cpu::with_backend(options.arm64_backend);
+    cpu.set_trace(false);
     echo!("ARM64 execution transition: context loaded; entering Dynarmic with pc={:#x} sp={:#x} lr={:#x}", context.pc, context.sp, context.regs[30]);
     cpu.load_context(&context);
     let mut ticks = Some(EXECUTION_SLICE_TICKS);
     let mut host_dispatches = 0_u64;
     let mut last_pc = context.pc;
     let mut repeated_pc = 0_u64;
-    let watchdog_ms = std::env::var("TOUCHHLE_ARM64_WATCHDOG_MS").ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or(100);
+    let watchdog_ms = std::env::var("TOUCHHLE_ARM64_WATCHDOG_MS").ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or(2000);
     let mut no_progress_since = Instant::now();
     let mut no_progress_slices = 0_u64;
+    let trace_limit = std::env::var("TOUCHHLE_ARM64_TRACE_INSTRUCTIONS").ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or(0);
     let mut trace_count = 0_u64;
     let mut previous_pcs = VecDeque::with_capacity(20);
     let mut previous_branches = VecDeque::with_capacity(20);
-    echo!("ARM64 execution trace: first PC={:#x}, SP={:#x}, LR={:#x}, FP={:#x}", context.pc, context.sp, context.regs[30], context.regs[29]);
+    echo!("ARM64 execution transition: normal mode uses Dynarmic Run with {}-tick slices; instruction tracing limit={}", EXECUTION_SLICE_TICKS, trace_limit);
     verify_abi(&context, "entry");
     verify_guest_mappings(&memory, context.pc, context.sp);
-    echo!("ARM64 execution mode: Dynarmic Step execution is active for the startup trace; each call must execute one instruction");
     loop {
-        let trace_this_instruction = trace_count < STARTUP_TRACE_INSTRUCTIONS;
-        if trace_count == 0 {
-            echo!("ARM64 detailed tracing enabled: instruction_limit={} host_calls=all objc_messages=all metal_calls=all", STARTUP_TRACE_INSTRUCTIONS);
-        }
+        let trace_this_instruction = trace_count < trace_limit;
         let instruction_pc = context.pc;
-        let instruction = memory.read_u32(instruction_pc).unwrap_or(0);
+        let instruction = if trace_this_instruction { memory.read_u32(instruction_pc).unwrap_or(0) } else { 0 };
         let result = cpu.run_or_step(
             &mut memory,
-            if trace_this_instruction { None } else { ticks.as_mut() },
+            &mut context,
+            ticks.as_mut(),
         );
         cpu.save_context(&mut context);
+        if trace_this_instruction {
+            trace_count += 1;
+            echo!("ARM64 run slice #{}: result={} entry_pc={:#x} final_pc={:#x} sp={:#x} lr={:#x} instruction={:#010x} decoded={}", trace_count, result, instruction_pc, context.pc, context.sp, context.regs[30], instruction, decode_instruction(instruction, instruction_pc));
+        }
         if result == -1 {
             if context.pc == instruction_pc {
                 no_progress_slices = no_progress_slices.saturating_add(1);
@@ -453,39 +495,12 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             }
         }
         if trace_this_instruction {
-            trace_count += 1;
-            let instruction_executed = result == -1 || result >= 0;
-            echo!(
-                "ARM64 instruction-step return #{}: result={} executed={} entry_pc={:#x} final_pc={:#x} sp={:#x} lr={:#x} fp={:#x} instruction={:#010x} decoded={} {}",
-                trace_count,
-                result,
-                instruction_executed,
-                instruction_pc,
-                context.pc,
-                context.sp,
-                context.regs[30],
-                context.regs[29],
-                instruction,
-                decode_instruction(instruction, instruction_pc),
-                processor_state_dump(&context),
-            );
-            if trace_count == 1 {
-                if instruction_executed {
-                    echo!("ARM64 first executed instruction: pc={:#x} instruction={:#010x} decoded={}", instruction_pc, instruction, decode_instruction(instruction, instruction_pc));
-                    echo!("ARM64 first basic block: pc={:#x}", instruction_pc);
-                } else {
-                    echo!("ARM64 first instruction did not execute: pc={:#x} result={} ({})", instruction_pc, result, if result == -5 { "unexpected halt" } else { "execution fault" });
-                    echo!("ARM64 first-instruction blocker: Dynarmic returned before completing the instruction step");
-                }
-            }
             if previous_pcs.len() == 20 { previous_pcs.pop_front(); }
             previous_pcs.push_back(instruction_pc);
             if let Some(target) = branch_target(instruction, instruction_pc) {
                 if previous_branches.len() == 20 { previous_branches.pop_front(); }
                 previous_branches.push_back((instruction_pc, target));
-                echo!("ARM64 branch #{}: {:#x} -> {:#x} ({})", trace_count, instruction_pc, target, decode_instruction(instruction, instruction_pc));
             }
-            echo!("ARM64 instruction #{}: pc={:#x} next_pc={:#x} sp={:#x} lr={:#x} fp={:#x} instruction={:#010x} decoded={}", trace_count, instruction_pc, context.pc, context.sp, context.regs[30], context.regs[29], instruction, decode_instruction(instruction, instruction_pc));
         } else {
             if previous_pcs.len() == 20 { previous_pcs.pop_front(); }
             previous_pcs.push_back(instruction_pc);
@@ -594,11 +609,8 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                         context.regs[4],
                         context.regs[5],
                     );
-                    echo!("ARM64 host stub complete register dump: {}", register_dump(&context));
-                    echo!("ARM64 host stub processor state: {}", processor_state_dump(&context));
                 }
                 verify_abi(&context, symbol);
-                echo!("ARM64 host binding full trace #{}: symbol={} pc={:#x} sp={:#x} lr={:#x} {}", host_dispatches, symbol, context.pc, context.sp, context.regs[30], processor_state_dump(&context));
                 runtime_state.last_symbol = Some(symbol.to_owned());
                 let handled = match dispatch(&mut memory, &mut context, symbol, &mut runtime_state) {
                     Ok(handled) => {
@@ -613,7 +625,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 verify_abi(&context, symbol);
                 if runtime_state.take_present_request() {
                     log_dbg!(
-                        "ARM64 Metal frame {} submitted: commands={}, clear={:?}",
+                        "ARM64 compatibility frame {} submitted: commands={}, clear={:?}",
                         runtime_state.frame_serial,
                         runtime_state.metal_commands,
                         runtime_state.clear_color
@@ -621,6 +633,17 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                     if let Some(window) = window.as_mut() {
                         window.present_compatibility_frame(runtime_state.clear_color);
                     }
+                }
+                if let Some(transfer_pc) = runtime_state.take_guest_transfer() {
+                    echo!("ARM64 continuing guest execution at transferred Objective-C method {:#x}", transfer_pc);
+                    context.pc = transfer_pc;
+                    cpu.load_context(&context);
+                    cpu.clear_halt(A64_HALT_USER_DEFINED1);
+                    cpu.clear_halt(A64_HALT_USER_DEFINED2);
+                    cpu.clear_halt(A64_HALT_USER_DEFINED3);
+                }
+                if runtime_state.take_boot_screen_request() {
+                    echo!("ARM64 observed the app's UIApplication bootstrap hook; continuing guest execution");
                 }
                 if let Some(window) = window.as_mut() {
                     window.poll_for_events(&options);
