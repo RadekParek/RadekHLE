@@ -31,7 +31,7 @@ pub use bundle::BundleData;
 
 use crate::fs::bundle::{IpaFile, IpaFileRef};
 use crate::paths;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::fs;
 use std::fs::File;
 use std::io::{Read, Seek, Write};
@@ -582,6 +582,8 @@ impl GuestFile {
         }
     }
 }
+
+impl Read for GuestFile {}
 
 impl Read for GuestFile {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {

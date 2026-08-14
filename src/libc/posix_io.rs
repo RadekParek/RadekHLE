@@ -12,7 +12,7 @@ pub mod statvfs;
 use crate::abi::DotDotDot;
 use crate::dyld::{export_c_func, FunctionExports};
 use crate::fs::{GuestFile, GuestOpenOptions, GuestPath};
-use crate::libc::errno::{set_errno, EBADF, EAGAIN, EINTR, EINVAL, EIO, EISDIR, EMFILE, EOVERFLOW, EPIPE, ESPIPE};
+use crate::libc::errno::{set_errno, EBADF, EINTR, EINVAL, EIO, EISDIR, EMFILE, EOVERFLOW, ESPIPE};
 use crate::libc::sys::socket::close_socket;
 use crate::libc::unistd::pid_t;
 use crate::mem::{
@@ -336,12 +336,8 @@ pub fn open_direct(env: &mut Environment, path: ConstPtr<u8>, flags: i32) -> Fil
             let data_relative_path = relative_path.strip_prefix("Data/").unwrap_or(relative_path);
             let bundle_relative_path = format!("{bundle_root}/{relative_path}");
             let bundle_data_path = format!("{bundle_root}/Data/{data_relative_path}");
-            let mut candidates = vec![bundle_relative_path, bundle_data_path];
-            if relative_path == "Data/data.unity3d" || relative_path == "data.unity3d" {
-                candidates.push(format!("{bundle_root}/Data/globalgamemanagers"));
-                candidates.push(format!("{bundle_root}/Data/level0"));
-            }
-            candidates.iter().find_map(|candidate| case_insensitive_path(env, candidate))
+            case_insensitive_path(env, &bundle_relative_path)
+                .or_else(|| case_insensitive_path(env, &bundle_data_path))
         })
         .unwrap_or_else(|| path_string.clone());
 
@@ -458,14 +454,6 @@ pub fn read(
                     set_errno(env, EISDIR);
                     0
                 }
-                std::io::ErrorKind::WouldBlock => {
-                    set_errno(env, EAGAIN);
-                    -1
-                }
-                std::io::ErrorKind::BrokenPipe => {
-                    set_errno(env, EPIPE);
-                    -1
-                }
                 _ => -1,
             };
             log!(
@@ -576,11 +564,6 @@ pub fn write(
             bytes_written.try_into().unwrap_or(-1)
         }
         Err(e) => {
-            match e.kind() {
-                std::io::ErrorKind::WouldBlock => set_errno(env, EAGAIN),
-                std::io::ErrorKind::BrokenPipe => set_errno(env, EPIPE),
-                _ => {}
-            }
             log!(
                 "Warning: write({:?}, {:?}, {:#x}) encountered error {:?}, \
                  returning -1",
@@ -770,8 +753,7 @@ pub fn close(env: &mut Environment, fd: FileDescriptor) -> i32 {
     if let Some(file_obj_slot) = env.libc_state.posix_io.files.get_mut(fd_to_file_idx(fd)) {
         // Честно извлекаем объект (take заменяет его на None в массиве,
         // освобождая FD)
-        if let Some(mut file_obj) = file_obj_slot.take() {
-            file_obj.file.close_pipe_endpoint();
+        if let Some(file_obj) = file_obj_slot.take() {
             // Если это был сокет, ОБЯЗАТЕЛЬНО удаляем его из таблицы в
             // socket.rs
             if matches!(file_obj.file, GuestFile::Socket) {
@@ -1361,38 +1343,6 @@ fn find_or_create_fd(env: &mut Environment, host_object: PosixFileHostObject) ->
         idx
     };
     file_idx_to_fd(idx)
-}
-
-pub fn find_or_create_pipe_read_fd(
-    env: &mut Environment,
-    buffer: std::rc::Rc<std::cell::RefCell<crate::fs::PipeBuffer>>,
-) -> FileDescriptor {
-    find_or_create_fd(env, PosixFileHostObject {
-        file: GuestFile::PipeRead(buffer),
-        needs_flush: false,
-        reached_eof: false,
-        flags: 0,
-        status_flags: O_RDONLY,
-        path: None,
-        locks: Vec::new(),
-        flock_state: None,
-    })
-}
-
-pub fn find_or_create_pipe_write_fd(
-    env: &mut Environment,
-    buffer: std::rc::Rc<std::cell::RefCell<crate::fs::PipeBuffer>>,
-) -> FileDescriptor {
-    find_or_create_fd(env, PosixFileHostObject {
-        file: GuestFile::PipeWrite(buffer),
-        needs_flush: false,
-        reached_eof: false,
-        flags: 0,
-        status_flags: O_WRONLY,
-        path: None,
-        locks: Vec::new(),
-        flock_state: None,
-    })
 }
 
 pub fn find_or_create_socket(env: &mut Environment) -> FileDescriptor {
