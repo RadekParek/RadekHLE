@@ -583,8 +583,6 @@ impl GuestFile {
     }
 }
 
-impl Read for GuestFile {}
-
 impl Read for GuestFile {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self {
