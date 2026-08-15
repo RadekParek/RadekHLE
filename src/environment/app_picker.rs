@@ -223,7 +223,9 @@ struct AppPickerDelegateHostObject {
     /// Quick option: show FPS counter (maps to --print-fps)
     show_fps: Option<bool>,
     frame_pacing: Option<bool>,
-    frame_generation: Option<u8>,
+    frame_generation_off: bool,
+    frame_generation2: bool,
+    frame_generation3: bool,
     fullscreen: Option<bool>,
     angle_driver: Option<bool>,
     log_file: Option<bool>,
@@ -343,9 +345,14 @@ const CLASSES: ClassExports = objc_classes! {
     let switch_state: bool = msg![env; switch isOn];
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).frame_pacing = Some(switch_state);
 }
-- (())frameGeneration:(id)switch { // UISwitch*
-    let switch_state: bool = msg![env; switch isOn];
-    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).frame_generation = if switch_state { Some(2) } else { Some(0) };
+- (())frameGenerationOff {
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).frame_generation_off = true;
+}
+- (())frameGeneration2 {
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).frame_generation2 = true;
+}
+- (())frameGeneration3 {
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).frame_generation3 = true;
 }
 - (())fullscreen:(id)switch { // UISwitch*
     let switch_state: bool = msg![env; switch isOn];
@@ -811,6 +818,7 @@ fn app_picker_inner(
         &quick_options_stuff.scale_hack_buttons,
         quick_options_scale_hack,
     );
+    update_quick_option_buttons(env, &quick_options_stuff.frame_generation_buttons, 0);
     update_orientation_buttons(
         env,
         &quick_options_stuff.orientation_buttons,
@@ -1092,8 +1100,15 @@ fn app_picker_inner(
             quick_options_force_32_bit = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.frame_pacing) {
             quick_options_frame_pacing = enabled;
-        } else if let Some(multiplier) = std::mem::take(&mut host_obj.frame_generation) {
-            quick_options_frame_generation = if multiplier == 0 { None } else { Some(multiplier) };
+        } else if std::mem::take(&mut host_obj.frame_generation_off) {
+            quick_options_frame_generation = None;
+            update_quick_option_buttons(env, &quick_options_stuff.frame_generation_buttons, 0);
+        } else if std::mem::take(&mut host_obj.frame_generation2) {
+            quick_options_frame_generation = Some(2);
+            update_quick_option_buttons(env, &quick_options_stuff.frame_generation_buttons, 1);
+        } else if std::mem::take(&mut host_obj.frame_generation3) {
+            quick_options_frame_generation = Some(3);
+            update_quick_option_buttons(env, &quick_options_stuff.frame_generation_buttons, 2);
         } else if let Some(fullscreen) = std::mem::take(&mut host_obj.fullscreen) {
             quick_options_fullscreen = match fullscreen {
                 false => None,
@@ -1845,6 +1860,7 @@ struct QuickOptionsStuff {
     graphics_api_items: Vec<id>,
     scale_hack_buttons: [id; 7],
     orientation_buttons: [id; 4],
+    frame_generation_buttons: [id; 3],
     /// The button that toggles the "Device model" dropdown open/closed. Its
     /// title shows the currently-selected model plus an up/down arrow.
     device_model_btn: id,
@@ -2087,7 +2103,11 @@ fn setup_quick_options(
         RowKind::Label("Show FPS"),
         RowKind::Switch("showFPS:", true),
         RowKind::Label("Frame generation (experimental)"),
-        RowKind::Switch("frameGeneration:", false),
+        RowKind::Buttons(&[
+            ("Off", "frameGenerationOff"),
+            ("2×", "frameGeneration2"),
+            ("3×", "frameGeneration3"),
+        ]),
         RowKind::Label("Use analog sticks for tilt controls"),
         RowKind::Switch("analogStickTiltControls:", true),
         // ---- (divider for stuff skipped below)
@@ -2237,6 +2257,7 @@ fn setup_quick_options(
         graphics_api_items,
         scale_hack_buttons: button_rows[1][..].try_into().unwrap(),
         orientation_buttons: button_rows[2][..].try_into().unwrap(),
+        frame_generation_buttons: button_rows[3][..].try_into().unwrap(),
         device_model_btn,
         device_model_menu,
         device_model_items,
