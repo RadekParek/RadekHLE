@@ -341,7 +341,9 @@ pub fn open_direct(env: &mut Environment, path: ConstPtr<u8>, flags: i32) -> Fil
                 candidates.push(format!("{bundle_root}/Data/globalgamemanagers"));
                 candidates.push(format!("{bundle_root}/Data/level0"));
             }
-            candidates.iter().find_map(|candidate| case_insensitive_path(env, candidate))
+            candidates
+                .iter()
+                .find_map(|candidate| case_insensitive_path(env, candidate))
         })
         .unwrap_or_else(|| path_string.clone());
 
