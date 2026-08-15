@@ -302,8 +302,12 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (id)allObjects {
-    let objects = env.objc.borrow_mut::<SetHostObject>(this).dict.iter_keys().collect();
-    ns_array::from_vec(env, objects)
+    let objects: Vec<id> = env.objc.borrow_mut::<SetHostObject>(this).dict.iter_keys().collect();
+    for &object in &objects {
+        retain(env, object);
+    }
+    let array = ns_array::from_vec(env, objects);
+    autorelease(env, array)
 }
 
 // Apple: "Returns the object in the set that is equal to a given object, or
@@ -437,8 +441,12 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (id)allObjects {
-    let objects = env.objc.borrow_mut::<SetHostObject>(this).dict.iter_keys().collect();
-    ns_array::from_vec(env, objects)
+    let objects: Vec<id> = env.objc.borrow_mut::<SetHostObject>(this).dict.iter_keys().collect();
+    for &object in &objects {
+        retain(env, object);
+    }
+    let array = ns_array::from_vec(env, objects);
+    autorelease(env, array)
 }
 
 - (id)member:(id)object {

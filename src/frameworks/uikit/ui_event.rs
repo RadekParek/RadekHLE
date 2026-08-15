@@ -5,7 +5,6 @@
  */
 //! `UIEvent`.
 
-use super::ui_touch::UITouchHostObject;
 use crate::frameworks::foundation::{NSInteger, NSTimeInterval, NSUInteger};
 use crate::mem::MutVoidPtr;
 use crate::objc::{
@@ -57,8 +56,12 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (())dealloc {
-    let &UIEventHostObject { touches, .. } = env.objc.borrow(this);
+    let touches = {
+        let host_object = env.objc.borrow_mut::<UIEventHostObject>(this);
+        std::mem::replace(&mut host_object.touches, nil)
+    };
     release(env, touches);
+    env.objc.dealloc_object(this, &mut env.mem)
 }
 
 - (NSTimeInterval)timestamp {
@@ -74,7 +77,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     let touches_count: NSUInteger = msg![env; touches_arr count];
     for i in 0..touches_count {
         let touch: id = msg![env; touches_arr objectAtIndex:i];
-        let &UITouchHostObject { view, .. } = env.objc.borrow(touch);
+        let view = msg![env; touch view];
         if view_ == view {
             let _: () = msg![env; touches_for_view addObject:touch];
             if !msg![env; view isMultipleTouchEnabled] {
@@ -82,7 +85,7 @@ pub const CLASSES: ClassExports = objc_classes! {
             }
         }
     }
-
+    release(env, touches_arr);
     touches_for_view
 }
 
@@ -108,6 +111,7 @@ pub const CLASSES: ClassExports = objc_classes! {
             }
         }
     }
+    release(env, touches_arr);
     result
 }
 
