@@ -71,8 +71,6 @@ fn newlocale(
     _locale: ConstPtr<u8>,
     _base: locale_t,
 ) -> locale_t {
-    // Return a non-null sentinel — we don't implement real locale objects.
-    log!("newlocale: stubbed, returning sentinel");
     MutVoidPtr::from_bits(1)
 }
 

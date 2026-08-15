@@ -184,13 +184,15 @@ pub const CLASSES: ClassExports = objc_classes! {
     }
     let path_str = to_rust_string(env, path);
     let mut candidates = vec![path_str.clone()];
+    let bundle_root = env.bundle.bundle_path().as_str().trim_end_matches('/');
+    let relative_path = path_str.trim_start_matches("./");
+    let data_relative_path = relative_path.strip_prefix("Data/").unwrap_or(relative_path);
     if path_str == "Data/data.unity3d" || path_str == "data.unity3d" {
-        let bundle_root = env.bundle.bundle_path().as_str().trim_end_matches('/');
         candidates.push(format!("{bundle_root}/Data/globalgamemanagers").into());
         candidates.push(format!("{bundle_root}/Data/level0").into());
-    } else if !path_str.starts_with('/') && !env.fs.exists(GuestPath::new(&path_str)) {
-        let bundle_root = env.bundle.bundle_path().as_str().trim_end_matches('/');
-        candidates.push(format!("{bundle_root}/{path_str}").into());
+    } else if !path_str.starts_with('/') {
+        candidates.push(format!("{bundle_root}/{relative_path}").into());
+        candidates.push(format!("{bundle_root}/Data/{data_relative_path}").into());
     }
     let Some(bytes) = candidates
         .iter()

@@ -709,7 +709,7 @@ fn app_picker_inner(
     let mut quick_options_orientation: Option<DeviceOrientation> = None;
     let mut quick_options_analog_stick_tilt_controls = true;
     let mut quick_options_network = false;
-    let mut quick_options_show_fps = false;
+    let mut quick_options_show_fps = true;
     let mut quick_options_frame_pacing = true;
     let mut quick_options_angle_driver = false;
     let mut quick_options_log_file = true;
@@ -2075,7 +2075,7 @@ fn setup_quick_options(
         RowKind::Label("Frame pacing"),
         RowKind::Switch("framePacing:", true),
         RowKind::Label("Show FPS"),
-        RowKind::Switch("showFPS:", false),
+        RowKind::Switch("showFPS:", true),
         RowKind::Label("Use analog sticks for tilt controls"),
         RowKind::Switch("analogStickTiltControls:", true),
         // ---- (divider for stuff skipped below)
