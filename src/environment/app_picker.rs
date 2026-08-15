@@ -223,6 +223,7 @@ struct AppPickerDelegateHostObject {
     /// Quick option: show FPS counter (maps to --print-fps)
     show_fps: Option<bool>,
     frame_pacing: Option<bool>,
+    frame_generation: Option<u8>,
     fullscreen: Option<bool>,
     angle_driver: Option<bool>,
     log_file: Option<bool>,
@@ -341,6 +342,10 @@ const CLASSES: ClassExports = objc_classes! {
 - (())framePacing:(id)switch { // UISwitch*
     let switch_state: bool = msg![env; switch isOn];
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).frame_pacing = Some(switch_state);
+}
+- (())frameGeneration:(id)switch { // UISwitch*
+    let switch_state: bool = msg![env; switch isOn];
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).frame_generation = if switch_state { Some(2) } else { Some(0) };
 }
 - (())fullscreen:(id)switch { // UISwitch*
     let switch_state: bool = msg![env; switch isOn];
@@ -711,6 +716,7 @@ fn app_picker_inner(
     let mut quick_options_network = false;
     let mut quick_options_show_fps = true;
     let mut quick_options_frame_pacing = true;
+    let mut quick_options_frame_generation: Option<u8> = None;
     let mut quick_options_angle_driver = false;
     let mut quick_options_log_file = true;
     let mut quick_options_fast_memory = true;
@@ -1086,6 +1092,8 @@ fn app_picker_inner(
             quick_options_force_32_bit = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.frame_pacing) {
             quick_options_frame_pacing = enabled;
+        } else if let Some(multiplier) = std::mem::take(&mut host_obj.frame_generation) {
+            quick_options_frame_generation = if multiplier == 0 { None } else { Some(multiplier) };
         } else if let Some(fullscreen) = std::mem::take(&mut host_obj.fullscreen) {
             quick_options_fullscreen = match fullscreen {
                 false => None,
@@ -1132,6 +1140,8 @@ fn app_picker_inner(
     } else {
         "--disable-frame-pacing"
     }.to_string());
+    option_args.push(format!("--frame-generation={}", quick_options_frame_generation
+        .map_or_else(|| "off".to_string(), |multiplier| multiplier.to_string())));
     if quick_options_graphics_api != crate::options::GraphicsApi::Default {
         let value = match quick_options_graphics_api {
             crate::options::GraphicsApi::Translator => "translator",
@@ -2076,6 +2086,8 @@ fn setup_quick_options(
         RowKind::Switch("framePacing:", true),
         RowKind::Label("Show FPS"),
         RowKind::Switch("showFPS:", true),
+        RowKind::Label("Frame generation (experimental)"),
+        RowKind::Switch("frameGeneration:", false),
         RowKind::Label("Use analog sticks for tilt controls"),
         RowKind::Switch("analogStickTiltControls:", true),
         // ---- (divider for stuff skipped below)

@@ -338,6 +338,10 @@ Other options:
         Disabling it allows the emulator to run the guest as fast as possible,
         but may increase CPU/GPU usage and produce uneven presentation.
 
+    --frame-generation=off|2|3
+        Experimental display-frame synthesis. Off by default; generates
+        interpolated presentation frames without changing guest game logic.
+
     --fps-limit=...
         Modify or disable the framerate (FPS) limit.
 
