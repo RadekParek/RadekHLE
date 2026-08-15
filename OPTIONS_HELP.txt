@@ -30,7 +30,8 @@ View options:
         The default is no scale hack, which is equivalent to a value of 1 (i.e.
         a scale of 1×).
 
-        This is a natural number that is at least 1.
+        Values below 1 are supported for lower internal resolution, including
+        0.50 and 0.75. Values above 1 increase internal resolution.
 
 Device options:
     --device-family=...
@@ -331,6 +332,11 @@ Other options:
 
     --print-fps
         Logs the current framerate (FPS) to the console once per second.
+
+    --enable-frame-pacing / --disable-frame-pacing
+        Enable or disable emulator-side frame pacing. It is enabled by default.
+        Disabling it allows the emulator to run the guest as fast as possible,
+        but may increase CPU/GPU usage and produce uneven presentation.
 
     --fps-limit=...
         Modify or disable the framerate (FPS) limit.

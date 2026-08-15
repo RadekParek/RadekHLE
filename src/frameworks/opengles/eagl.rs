@@ -422,10 +422,10 @@ pub const CLASSES: ClassExports = objc_classes! {
                 );
                 (fallback_width, fallback_height)
             };
-            let scale_hack = env.options.scale_hack.get();
+            let scale_hack = env.options.scale_hack;
 
-            let mut width = width.round() as u32 * scale_hack;
-            let mut height = height.round() as u32 * scale_hack;
+            let mut width = (width * scale_hack).round() as u32;
+            let mut height = (height * scale_hack).round() as u32;
 
             // If even the fallback produced a degenerate size, clamp to a
             // minimum 1x1 so the GL call below cannot receive a zero extent.

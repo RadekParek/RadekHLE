@@ -10,7 +10,6 @@ use crate::window::{DeviceFamily, DeviceOrientation};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::num::NonZeroU32;
 use std::path::PathBuf;
 
 pub const OPTIONS_HELP: &str =
@@ -121,7 +120,7 @@ pub struct Options {
     pub initial_orientation: DeviceOrientation,
     /// iOS version reported to guest applications. `None` uses the latest compatibility version.
     pub ios_version: Option<(i32, i32, i32)>,
-    pub scale_hack: NonZeroU32,
+    pub scale_hack: f32,
     pub deadzone: f32,
     pub analog_stick_tilt_controls: bool,
     pub x_tilt_range: f32,
@@ -148,6 +147,7 @@ pub struct Options {
     pub headless: bool,
     pub print_fps: bool,
     pub fps_limit: Option<f64>,
+    pub frame_pacing: bool,
     pub force_composition: bool,
     /// Force EAGL `initWithAPI:` to create an OpenGL ES 2.0 context even when
     /// the app requested an OpenGL ES 1.1 context.
@@ -207,7 +207,7 @@ impl Default for Options {
             host_screen_size: None,
             initial_orientation: DeviceOrientation::Portrait,
             ios_version: None,
-            scale_hack: NonZeroU32::new(1).unwrap(),
+            scale_hack: 1.0,
             analog_stick_tilt_controls: true,
             deadzone: 0.1,
             x_tilt_range: 60.0,
@@ -232,6 +232,7 @@ impl Default for Options {
             headless: false,
             print_fps: false,
             fps_limit: None, // Follow the host display; legacy apps can still opt into a fixed cap.
+            frame_pacing: true,
             force_composition: false,
             prefer_gles2_context: false,
             network_access: false,
@@ -317,8 +318,10 @@ impl Options {
             self.host_screen_size = Some((w, h));
         } else if let Some(value) = arg.strip_prefix("--scale-hack=") {
             self.scale_hack = value
-                .parse()
-                .map_err(|_| "Invalid scale hack factor".to_string())?;
+                .parse::<f32>()
+                .ok()
+                .filter(|value| value.is_finite() && *value > 0.0)
+                .ok_or_else(|| "Invalid scale hack factor".to_string())?;
         } else if arg == "--disable-analog-stick-tilt-controls" {
             self.analog_stick_tilt_controls = false;
         } else if let Some(value) = arg.strip_prefix("--deadzone=") {
@@ -435,6 +438,10 @@ impl Options {
             self.popup_errors = false;
         } else if arg == "--print-fps" {
             self.print_fps = true;
+        } else if arg == "--enable-frame-pacing" {
+            self.frame_pacing = true;
+        } else if arg == "--disable-frame-pacing" {
+            self.frame_pacing = false;
         } else if let Some(value) = arg.strip_prefix("--fps-limit=") {
             if value == "off" {
                 self.fps_limit = None;

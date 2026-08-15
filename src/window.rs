@@ -29,7 +29,6 @@ use sdl2_sys::SDL_PowerState;
 use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::f32::consts::{FRAC_PI_2, PI};
-use std::num::NonZeroU32;
 use std::ptr::null_mut;
 use std::time::{Duration, Instant};
 use std::cell::{Cell, RefCell};
@@ -774,22 +773,22 @@ fn normalize_portrait_size(size: (u32, u32)) -> (u32, u32) {
 fn size_for_orientation_from_size(
     size: (u32, u32),
     orientation: DeviceOrientation,
-    scale_hack: NonZeroU32,
+    scale_hack: f32,
 ) -> (u32, u32) {
     let (width, height) = size;
-    let scale_hack = scale_hack.get();
+    let scale = |value: u32| ((value as f32 * scale_hack).round() as u32).max(1);
     match orientation {
-        DeviceOrientation::Portrait => (width * scale_hack, height * scale_hack),
-        DeviceOrientation::PortraitUpsideDown => (width * scale_hack, height * scale_hack),
-        DeviceOrientation::LandscapeLeft => (height * scale_hack, width * scale_hack),
-        DeviceOrientation::LandscapeRight => (height * scale_hack, width * scale_hack),
+        DeviceOrientation::Portrait => (scale(width), scale(height)),
+        DeviceOrientation::PortraitUpsideDown => (scale(width), scale(height)),
+        DeviceOrientation::LandscapeLeft => (scale(height), scale(width)),
+        DeviceOrientation::LandscapeRight => (scale(height), scale(width)),
     }
 }
 
 fn size_for_orientation(
     family: DeviceFamily,
     orientation: DeviceOrientation,
-    scale_hack: NonZeroU32,
+    scale_hack: f32,
 ) -> (u32, u32) {
     size_for_orientation_from_size(family.portrait_size(), orientation, scale_hack)
 }
@@ -969,7 +968,7 @@ pub struct Window {
     /// Copy of `fullscreen` on [Options]. Note that this is meaningless when
     /// [Self::rotatable_fullscreen] returns [true].
     fullscreen: bool,
-    scale_hack: NonZeroU32,
+    scale_hack: f32,
     host_screen_size: Option<(u32, u32)>,
     software_presentation: bool,
     internal_gl_ins: Option<Box<dyn GLESContext>>,
@@ -1298,7 +1297,7 @@ impl Window {
                 let (width, height) = size_for_orientation(
                     window.device_family,
                     window.device_orientation,
-                    NonZeroU32::new(1).unwrap(),
+                    1.0,
                 );
                 (0, 0, width, height)
             } else {
@@ -2432,7 +2431,7 @@ impl Window {
         size_for_orientation_from_size(
             self.screen_size(),
             DeviceOrientation::Portrait,
-            NonZeroU32::new(1).unwrap(),
+            1.0,
         )
     }
 

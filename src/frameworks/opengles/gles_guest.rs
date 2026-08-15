@@ -541,9 +541,10 @@ fn glScissor(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height: 
             log_dbg!("First glScissor({}, {}, {}, {})", x, y, width, height);
         }
     }
-    let factor = env.options.scale_hack.get() as GLsizei;
-    let (x, y) = (x * factor, y * factor);
-    let (width, height) = (width * factor, height * factor);
+    let factor = env.options.scale_hack;
+    let scale = |value: GLsizei| (value as f32 * factor).round() as GLsizei;
+    let (x, y) = (scale(x), scale(y));
+    let (width, height) = (scale(width), scale(height));
     with_ctx_and_mem(env, |gles, _mem| unsafe {
         gles.Scissor(x, y, width, height)
     })
@@ -607,9 +608,10 @@ fn glViewport(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height:
             log_dbg!("First glViewport({}, {}, {}, {})", x, y, width, height);
         }
     }
-    let factor = env.options.scale_hack.get() as GLsizei;
-    let (x, y) = (x * factor, y * factor);
-    let (width, height) = (width * factor, height * factor);
+    let factor = env.options.scale_hack;
+    let scale = |value: GLsizei| (value as f32 * factor).round() as GLsizei;
+    let (x, y) = (scale(x), scale(y));
+    let (width, height) = (scale(width), scale(height));
     with_ctx_and_mem(env, |gles, _mem| unsafe {
         gles.Viewport(x, y, width, height)
     })
@@ -1142,8 +1144,9 @@ fn glRenderbufferStorageMultisampleAPPLE(
 ) {
     // Apply --scale-hack so an MSAA renderbuffer matches the size of the
     // single-sample one it'll be resolved into.
-    let factor = env.options.scale_hack.get() as GLsizei;
-    let (width, height) = (width * factor, height * factor);
+    let factor = env.options.scale_hack;
+    let scale = |value: GLsizei| (value as f32 * factor).round() as GLsizei;
+    let (width, height) = (scale(width), scale(height));
     with_ctx_and_mem(env, |gles, _mem| unsafe {
         gles.RenderbufferStorageMultisampleAPPLE(target, samples, internalformat, width, height)
     })
@@ -2396,8 +2399,9 @@ fn glRenderbufferStorageOES(
     width: GLsizei,
     height: GLsizei,
 ) {
-    let factor = env.options.scale_hack.get() as GLsizei;
-    let (width, height) = (width * factor, height * factor);
+    let factor = env.options.scale_hack;
+    let scale = |value: GLsizei| (value as f32 * factor).round() as GLsizei;
+    let (width, height) = (scale(width), scale(height));
     with_ctx_and_mem(env, |gles, _mem| unsafe {
         gles.RenderbufferStorageOES(target, internalformat, width, height)
     })
@@ -2511,12 +2515,12 @@ fn glGetRenderbufferParameterivOES(
     pname: GLenum,
     params: MutPtr<GLint>,
 ) {
-    let factor = env.options.scale_hack.get() as GLint;
+    let factor = env.options.scale_hack;
     with_ctx_and_mem(env, |gles, mem| {
         let params = mem.ptr_at_mut(params, 1);
         unsafe { gles.GetRenderbufferParameterivOES(target, pname, params) };
         if pname == gles11::RENDERBUFFER_WIDTH_OES || pname == gles11::RENDERBUFFER_HEIGHT_OES {
-            unsafe { params.write_unaligned(params.read_unaligned() / factor) }
+            unsafe { params.write_unaligned((params.read_unaligned() as f32 / factor).round() as GLint) }
         }
     })
 }

@@ -38,7 +38,6 @@ use crate::Environment;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::Read;
-use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
 struct AppInfo {
@@ -210,6 +209,8 @@ struct AppPickerDelegateHostObject {
     quick_options_hide: bool,
     scale_hack_default: bool,
     scale_hack1: bool,
+    scale_hack_half: bool,
+    scale_hack_three_quarters: bool,
     scale_hack2: bool,
     scale_hack3: bool,
     scale_hack4: bool,
@@ -221,6 +222,7 @@ struct AppPickerDelegateHostObject {
     network: Option<bool>,
     /// Quick option: show FPS counter (maps to --print-fps)
     show_fps: Option<bool>,
+    frame_pacing: Option<bool>,
     fullscreen: Option<bool>,
     angle_driver: Option<bool>,
     log_file: Option<bool>,
@@ -290,6 +292,12 @@ const CLASSES: ClassExports = objc_classes! {
 - (())scaleHack1 {
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).scale_hack1 = true;
 }
+- (())scaleHackHalf {
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).scale_hack_half = true;
+}
+- (())scaleHackThreeQuarters {
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).scale_hack_three_quarters = true;
+}
 - (())scaleHack2 {
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).scale_hack2 = true;
 }
@@ -322,9 +330,6 @@ const CLASSES: ClassExports = objc_classes! {
 - (())showFPS:(id)switch { // UISwitch*
     let switch_state: bool = msg![env; switch isOn];
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).show_fps = Some(switch_state);
-    // Immediately reflect the runtime change so users see the overlay without
-    // having to re-launch or wait for the option to be applied.
-    // SAFETY: calling into the runtime-level API is safe from the UI thread.
     if switch_state {
         std::env::set_var("TOUCHHLE_ONSCREEN_FPS", "1");
         crate::gles::present::set_onscreen_fps_enabled(true);
@@ -332,6 +337,10 @@ const CLASSES: ClassExports = objc_classes! {
         std::env::remove_var("TOUCHHLE_ONSCREEN_FPS");
         crate::gles::present::set_onscreen_fps_enabled(false);
     }
+}
+- (())framePacing:(id)switch { // UISwitch*
+    let switch_state: bool = msg![env; switch isOn];
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).frame_pacing = Some(switch_state);
 }
 - (())fullscreen:(id)switch { // UISwitch*
     let switch_state: bool = msg![env; switch isOn];
@@ -466,8 +475,9 @@ fn show_app_picker_gui(
         })
         .unwrap_or((320, 568));
     options.host_screen_size = Some(picker_canvas_size);
+    options.scale_hack = 2.0;
     log!(
-        "App picker: using fixed {}x{} logical canvas, preserving host aspect ratio.",
+        "App picker: using fixed {}x{} logical canvas at 2x internal resolution, preserving host aspect ratio.",
         picker_canvas_size.0,
         picker_canvas_size.1
     );
@@ -694,12 +704,13 @@ fn app_picker_inner(
     let mut copyright_info_page_idx = 0;
 
     let quick_options_stuff = setup_quick_options(env, delegate, main_view, app_frame);
-    let mut quick_options_scale_hack: Option<NonZeroU32> = None;
+    let mut quick_options_scale_hack: Option<f32> = None;
     let mut quick_options_fullscreen: Option<()> = None;
     let mut quick_options_orientation: Option<DeviceOrientation> = None;
     let mut quick_options_analog_stick_tilt_controls = true;
     let mut quick_options_network = false;
     let mut quick_options_show_fps = false;
+    let mut quick_options_frame_pacing = true;
     let mut quick_options_angle_driver = false;
     let mut quick_options_log_file = true;
     let mut quick_options_fast_memory = true;
@@ -720,8 +731,18 @@ fn app_picker_inner(
             () = msg![env; button setBackgroundColor:color];
         }
     }
-    fn update_scale_hack_buttons(env: &mut Environment, buttons: &[id], value: Option<NonZeroU32>) {
-        update_quick_option_buttons(env, buttons, value.map_or(0, |v| v.get() as usize));
+    fn update_scale_hack_buttons(env: &mut Environment, buttons: &[id], value: Option<f32>) {
+        let selected = match value {
+            None => 0,
+            Some(v) if (v - 1.0).abs() < f32::EPSILON => 1,
+            Some(v) if (v - 0.5).abs() < f32::EPSILON => 2,
+            Some(v) if (v - 0.75).abs() < f32::EPSILON => 3,
+            Some(v) if (v - 2.0).abs() < f32::EPSILON => 4,
+            Some(v) if (v - 3.0).abs() < f32::EPSILON => 5,
+            Some(v) if (v - 4.0).abs() < f32::EPSILON => 6,
+            Some(_) => 0,
+        };
+        update_quick_option_buttons(env, buttons, selected);
     }
     fn update_ios_version_dropdown(
         env: &mut Environment,
@@ -920,28 +941,42 @@ fn app_picker_inner(
                 quick_options_scale_hack,
             );
         } else if std::mem::take(&mut host_obj.scale_hack1) {
-            quick_options_scale_hack = Some(NonZeroU32::new(1).unwrap());
+            quick_options_scale_hack = Some(1.0);
+            update_scale_hack_buttons(
+                env,
+                &quick_options_stuff.scale_hack_buttons,
+                quick_options_scale_hack,
+            );
+        } else if std::mem::take(&mut host_obj.scale_hack_half) {
+            quick_options_scale_hack = Some(0.5);
+            update_scale_hack_buttons(
+                env,
+                &quick_options_stuff.scale_hack_buttons,
+                quick_options_scale_hack,
+            );
+        } else if std::mem::take(&mut host_obj.scale_hack_three_quarters) {
+            quick_options_scale_hack = Some(0.75);
             update_scale_hack_buttons(
                 env,
                 &quick_options_stuff.scale_hack_buttons,
                 quick_options_scale_hack,
             );
         } else if std::mem::take(&mut host_obj.scale_hack2) {
-            quick_options_scale_hack = Some(NonZeroU32::new(2).unwrap());
+            quick_options_scale_hack = Some(2.0);
             update_scale_hack_buttons(
                 env,
                 &quick_options_stuff.scale_hack_buttons,
                 quick_options_scale_hack,
             );
         } else if std::mem::take(&mut host_obj.scale_hack3) {
-            quick_options_scale_hack = Some(NonZeroU32::new(3).unwrap());
+            quick_options_scale_hack = Some(3.0);
             update_scale_hack_buttons(
                 env,
                 &quick_options_stuff.scale_hack_buttons,
                 quick_options_scale_hack,
             );
         } else if std::mem::take(&mut host_obj.scale_hack4) {
-            quick_options_scale_hack = Some(NonZeroU32::new(4).unwrap());
+            quick_options_scale_hack = Some(4.0);
             update_scale_hack_buttons(
                 env,
                 &quick_options_stuff.scale_hack_buttons,
@@ -1049,6 +1084,8 @@ fn app_picker_inner(
             quick_options_fast_memory = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.force_32_bit) {
             quick_options_force_32_bit = enabled;
+        } else if let Some(enabled) = std::mem::take(&mut host_obj.frame_pacing) {
+            quick_options_frame_pacing = enabled;
         } else if let Some(fullscreen) = std::mem::take(&mut host_obj.fullscreen) {
             quick_options_fullscreen = match fullscreen {
                 false => None,
@@ -1062,7 +1099,7 @@ fn app_picker_inner(
         option_args.push(format!("--ios-version={major}.{minor}.{patch}"));
     }
     if let Some(scale_hack) = quick_options_scale_hack {
-        option_args.push(format!("--scale-hack={}", scale_hack.get()));
+        option_args.push(format!("--scale-hack={scale_hack}"));
     }
     if let Some(orientation) = quick_options_orientation {
         option_args.push(
@@ -1090,6 +1127,11 @@ fn app_picker_inner(
         std::env::set_var("TOUCHHLE_ONSCREEN_FPS", "1");
         crate::gles::present::set_onscreen_fps_enabled(true);
     }
+    option_args.push(if quick_options_frame_pacing {
+        "--enable-frame-pacing"
+    } else {
+        "--disable-frame-pacing"
+    }.to_string());
     if quick_options_graphics_api != crate::options::GraphicsApi::Default {
         let value = match quick_options_graphics_api {
             crate::options::GraphicsApi::Translator => "translator",
@@ -1791,7 +1833,7 @@ struct QuickOptionsStuff {
     graphics_api_btn: id,
     graphics_api_menu: id,
     graphics_api_items: Vec<id>,
-    scale_hack_buttons: [id; 5],
+    scale_hack_buttons: [id; 7],
     orientation_buttons: [id; 4],
     /// The button that toggles the "Device model" dropdown open/closed. Its
     /// title shows the currently-selected model plus an up/down arrow.
@@ -2005,6 +2047,8 @@ fn setup_quick_options(
         RowKind::Buttons(&[
             ("Default", "scaleHackDefault"),
             ("Off", "scaleHack1"),
+            ("0.50×", "scaleHackHalf"),
+            ("0.75×", "scaleHackThreeQuarters"),
             ("2×", "scaleHack2"),
             ("3×", "scaleHack3"),
             ("4×", "scaleHack4"),
@@ -2028,6 +2072,8 @@ fn setup_quick_options(
         RowKind::Switch("fastMemory:", true),
         RowKind::Label("Force 32-bit"),
         RowKind::Switch("force32Bit:", false),
+        RowKind::Label("Frame pacing"),
+        RowKind::Switch("framePacing:", true),
         RowKind::Label("Show FPS"),
         RowKind::Switch("showFPS:", false),
         RowKind::Label("Use analog sticks for tilt controls"),
