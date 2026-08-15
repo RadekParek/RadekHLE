@@ -35,7 +35,7 @@ pub(super) struct UIGestureRecognizerHostObject {
     delegate: id,
     pub(super) view: id,
     kind: GestureKind,
-    state: UIGestureRecognizerState,
+    pub(super) state: UIGestureRecognizerState,
     enabled: bool,
     cancels_touches_in_view: bool,
     delays_touches_began: bool,

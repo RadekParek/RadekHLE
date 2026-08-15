@@ -786,6 +786,9 @@ fn handle_touches_up(env: &mut Environment, map: HashMap<FingerId, Coords>) {
         };
         let view = env.objc.borrow::<UITouchHostObject>(touch).view;
         let start_location = env.objc.borrow::<UITouchHostObject>(touch).start_location;
+        if view != nil {
+            swipe_candidates.push((view, start_location, location));
+        }
         {
             let host = env.objc.borrow_mut::<UITouchHostObject>(touch);
             host.previous_location = host.location;
@@ -924,7 +927,7 @@ fn recognize_swipes(env: &mut Environment, view: id, start: CGPoint, end: CGPoin
         return;
     }
 
-    let detected_direction: NSInteger = if adx >= ady {
+    let detected_direction: NSUInteger = if adx >= ady {
         if adx < ady * AXIS_DOMINANCE && ady >= MIN_SWIPE_DISTANCE {
             return;
         }
@@ -953,7 +956,7 @@ fn recognize_swipes(env: &mut Environment, view: id, start: CGPoint, end: CGPoin
     }
 }
 
-fn fire_matching_swipes(env: &mut Environment, view: id, detected_direction: NSInteger) {
+fn fire_matching_swipes(env: &mut Environment, view: id, detected_direction: NSUInteger) {
     let recognizers: id = msg![env; view gestureRecognizers];
     if recognizers == nil {
         return;
@@ -975,7 +978,7 @@ fn fire_matching_swipes(env: &mut Environment, view: id, detected_direction: NSI
         if !enabled {
             continue;
         }
-        let mask: NSInteger = msg![env; recognizer direction];
+        let mask: NSUInteger = msg![env; recognizer direction];
         if mask & detected_direction == 0 {
             continue;
         }
