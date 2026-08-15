@@ -845,6 +845,11 @@ unsafe fn present_renderbuffer_readback(env: &mut Environment, drawable: id) {
 /// slop is not desirable, because if the game is running slowly for a long time
 /// and suddenly speeds back up, it will then run too fast for a long time.
 fn limit_framerate(next_frame_due: &mut Option<Instant>, options: &Options) -> Option<Duration> {
+    if !options.frame_pacing {
+        *next_frame_due = None;
+        return None;
+    }
+
     let interval = if let Some(fps) = options.fps_limit {
         1.0 / fps
     } else {
