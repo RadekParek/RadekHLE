@@ -7,7 +7,7 @@
 
 use std::fs::File;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 
 static FILE_LOGGING_ENABLED: AtomicBool = AtomicBool::new(true);
 
@@ -27,9 +27,9 @@ pub fn file_logging_enabled() -> bool {
 /// All the logging macros print to stderr or (on Android) logcat, but this
 /// is not convenient for users who aren't accustomed to command-line tools or
 /// who don't have access to ADB, so we also write to a log file.
-pub fn get_log_file() -> &'static File {
-    static LOG_FILE: LazyLock<File> = LazyLock::new(|| {
-        File::create(crate::paths::user_data_base_path().join("touchHLE_log.txt")).unwrap()
+pub fn get_log_file() -> &'static Mutex<File> {
+    static LOG_FILE: LazyLock<Mutex<File>> = LazyLock::new(|| {
+        Mutex::new(File::create(crate::paths::user_data_base_path().join("touchHLE_log.txt")).unwrap())
     });
 
     &LOG_FILE
@@ -102,10 +102,11 @@ macro_rules! echo {
             eprintln!("{}", formatted_str);
 
             if $crate::log::file_logging_enabled() {
-                use std::io::Write;
-                let mut log_file = $crate::log::get_log_file();
-                let _ = log_file.write_all(formatted_str.as_bytes());
-                let _ = log_file.write_all(b"\n");
+                if let Ok(mut log_file) = $crate::log::get_log_file().lock() {
+                    let _ = std::io::Write::write_all(&mut *log_file, formatted_str.as_bytes());
+                    let _ = std::io::Write::write_all(&mut *log_file, b"\n");
+                    let _ = std::io::Write::flush(&mut *log_file);
+                }
             }
         }
     };
@@ -119,8 +120,10 @@ macro_rules! echo {
             eprintln!("");
 
             if $crate::log::file_logging_enabled() {
-                use std::io::Write;
-                let _ = $crate::log::get_log_file().write_all(b"\n");
+                if let Ok(mut log_file) = $crate::log::get_log_file().lock() {
+                    let _ = std::io::Write::write_all(&mut *log_file, b"\n");
+                    let _ = std::io::Write::flush(&mut *log_file);
+                }
             }
         }
     }

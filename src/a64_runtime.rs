@@ -203,7 +203,9 @@ fn materialize_custom_constant(mem: &mut Mem64, symbol: &str) -> Option<u64> {
 }
 
 pub fn can_dispatch(symbol: &str) -> bool {
-    match name(symbol) {
+    let symbol = name(symbol);
+    let symbol = symbol.strip_prefix('_').unwrap_or(symbol);
+    match symbol {
         "malloc" | "calloc" | "valloc" | "posix_memalign" | "free"
         | "malloc_zone_free" | "realloc" | "malloc_zone_realloc" | "memcpy"
         | "memmove" | "memcpy_chk" | "memmove_chk" | "memset" | "bzero"
@@ -257,8 +259,39 @@ pub fn can_dispatch(symbol: &str) -> bool {
         | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKc"
         | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm"
         | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKc"
-        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKcm" => true,
-        value if value.starts_with("ZNSt3__") || value.starts_with("ZNKSt3__") => true,
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKcm"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertEmPKc"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertEmPKcm"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6resizeEmc"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7replaceEmmPKcm"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7reserveEm"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE9__grow_byEmmmmmm"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE9push_backEc"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1ERKS5_"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1ERKS5_mmRKS4_"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEaSERKS5_"
+        | "ZNSt3__113basic_istreamIcNS_11char_traitsIcEEE6sentryC1ERS3_b"
+        | "ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEE5writeEPKcl"
+        | "ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEE6sentryC1ERS3_"
+        | "ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEED2Ev"
+        | "ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEElsEPKv"
+        | "ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEElsEb"
+        | "ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEElsEd"
+        | "ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEElsEf"
+        | "ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEElsEi"
+        | "ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEElsEm"
+        | "ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEElsEs"
+        | "ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEElsEx"
+        | "ZNSt3__114basic_iostreamIcNS_11char_traitsIcEEED2Ev"
+        | "ZNSt3__115__thread_structC1Ev"
+        | "ZNSt3__115__thread_structD1Ev"
+        | "ZNSt3__115basic_streambufIcNS_11char_traitsIcEEEC2Ev"
+        | "ZNSt3__115basic_streambufIcNS_11char_traitsIcEEED2Ev"
+        | "ZNSt3__118condition_variable10notify_allEv"
+        | "ZNSt3__118condition_variable10notify_oneEv"
+        | "ZNSt3__118condition_variable15__do_timed_waitERNS_11unique_lockINS_5mutexEEENS_6chrono10time_pointINS5_12system_clockENS5_8durationIxNS_5ratioILl1ELl1000000000EEEEEEE"
+        | "ZNSt3__111this_thread9sleep_forERKNS_6chrono8durationIxNS_5ratioILl1ELl1000000000EEEEE"
+        | "ZNSt3__112__next_primeEm" => true,
         _ => false,
     }
 }
@@ -796,6 +829,7 @@ pub fn dispatch(
 ) -> Result<bool, String> {
     state.host_dispatches = state.host_dispatches.saturating_add(1);
     let symbol = name(symbol);
+    let symbol = symbol.strip_prefix('_').unwrap_or(symbol);
     state.last_symbol = Some(symbol.to_owned());
     if state.host_dispatches <= 128 || state.host_dispatches.is_power_of_two() {
         log_dbg!(
@@ -1127,7 +1161,7 @@ pub fn dispatch(
             Ok(true)
         }
         value if value.starts_with("ZNSt3__") || value.starts_with("ZNKSt3__") => {
-            return_value(context, 0);
+            return_value(context, if context.regs[0] != 0 { context.regs[0] } else { 0 });
             Ok(true)
         }
         "ZNKSt3__120__vector_base_commonILb1EE20__throw_length_errorEv"

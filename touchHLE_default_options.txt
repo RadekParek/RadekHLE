@@ -218,6 +218,9 @@ com.ea.nfsucinc: --force-composition
 # BOF
 com.gameloft.BladesOfFury: --force-composition
 
+# Granny (Unity/Mono)
+com.dvloper.granny: --landscape-left --prefer-gles2-context --fix-texture-min-filter --force-composition --enable-direct-memory-access
+
 # MCPE LITE
 com.mojang.minecraftpe: --force-composition --trace-gl-errors --fix-texture-min-filter
 com.mojang.minecraftpe-demo: --force-composition --trace-gl-errors --fix-texture-min-filter
@@ -250,7 +253,7 @@ com.chillingo.redball3hd: --landscape-left
 # present path, so this app no longer needs --prefer-gles2-context.
 # --trace-gl-errors stays so any remaining 0x500 noise is logged with a
 # pointer to the calling host site.
-com.lego.NinjagoSpinjitzuScavengerHunt: --landscape-left --graphics-api=gles1.1-gles2.0 --fix-texture-min-filter --force-composition --trace-gl-errors
+com.lego.NinjagoSpinjitzuScavengerHunt: --landscape-left --graphics-api=gles1.1-gles3.0 --fix-texture-min-filter --force-composition --trace-gl-errors
 
 # Ninjago: Rise of the Snakes
 # Same fixed-function texture-completeness issue as the other LEGO Ninjago

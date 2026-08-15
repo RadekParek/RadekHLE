@@ -416,9 +416,9 @@ impl A64Cpu {
                 A64Backend::Interpreter(A64Interpreter::new())
             }
             crate::options::Arm64Backend::Auto => {
-                let use_interpreter = cfg!(target_os = "android");
+                let use_interpreter = false;
                 if use_interpreter {
-                    echo!("ARM64 backend selected: interpreter (Android compatibility default; use --arm64-backend=jit to opt in)");
+                    echo!("ARM64 backend selected: interpreter (explicit compatibility fallback)");
                     A64Backend::Interpreter(A64Interpreter::new())
                 } else {
                     echo!("ARM64 backend selected: Dynarmic JIT (desktop default; use --arm64-backend=interpreter for compatibility diagnostics)");

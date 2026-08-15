@@ -233,6 +233,7 @@ class DynarmicWrapper {
 public:
   DynarmicWrapper(void *direct_memory_access_ptr, size_t null_page_count) {
     Dynarmic::A32::UserConfig user_config;
+    user_config.optimizations = Dynarmic::all_safe_optimizations;
     user_config.callbacks = &env;
     user_config.coprocessors[15] = std::make_shared<ArmDynarmicCP15>();
     mon = std::make_unique<Dynarmic::ExclusiveMonitor>(1);
