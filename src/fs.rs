@@ -443,6 +443,58 @@ impl PipeBuffer {
     }
 }
 
+/// Backing for the guest's `/dev/random` and `/dev/urandom` character devices.
+#[derive(Debug)]
+pub struct RandomFile {
+    host_source: Option<File>,
+    prng_state: u64,
+}
+
+impl RandomFile {
+    fn new() -> Self {
+        let mut seed = 0x9E37_79B9_7F4A_7C15;
+        if let Ok(duration) = std::time::SystemTime::now().duration_since(UNIX_EPOCH) {
+            seed ^= duration.as_nanos() as u64;
+        }
+        seed ^= (&seed as *const u64) as u64;
+        Self {
+            host_source: File::open("/dev/urandom").ok(),
+            prng_state: seed | 1,
+        }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let mut value = self.prng_state;
+        value ^= value >> 12;
+        value ^= value << 25;
+        value ^= value >> 27;
+        self.prng_state = value;
+        value.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+
+    fn fill_fallback(&mut self, buffer: &mut [u8]) {
+        for chunk in buffer.chunks_mut(8) {
+            let bytes = self.next_u64().to_le_bytes();
+            chunk.copy_from_slice(&bytes[..chunk.len()]);
+        }
+    }
+
+    fn fill(&mut self, buffer: &mut [u8]) -> usize {
+        if let Some(source) = self.host_source.as_mut() {
+            match source.read(buffer) {
+                Ok(count) if count == buffer.len() => return count,
+                Ok(count) => {
+                    self.fill_fallback(&mut buffer[count..]);
+                    return buffer.len();
+                }
+                Err(_) => self.host_source = None,
+            }
+        }
+        self.fill_fallback(buffer);
+        buffer.len()
+    }
+}
+
 /// Like [File] but for the guest filesystem.
 #[derive(Debug)]
 pub enum GuestFile {
@@ -453,6 +505,7 @@ pub enum GuestFile {
     Socket,
     PipeRead(std::rc::Rc<std::cell::RefCell<PipeBuffer>>),
     PipeWrite(std::rc::Rc<std::cell::RefCell<PipeBuffer>>),
+    Random(RandomFile),
 }
 
 impl GuestFile {
@@ -472,6 +525,10 @@ impl GuestFile {
         GuestFile::Directory
     }
 
+    pub fn random() -> GuestFile {
+        GuestFile::Random(RandomFile::new())
+    }
+
     pub fn sync_all(&self) -> std::io::Result<()> {
         match self {
             GuestFile::File(file) => file.sync_all(),
@@ -480,7 +537,7 @@ impl GuestFile {
                 log!("Warning: syncing directory as a guest file.");
                 Ok(())
             }
-            GuestFile::PipeRead(_) | GuestFile::PipeWrite(_) => Ok(()),
+            GuestFile::PipeRead(_) | GuestFile::PipeWrite(_) | GuestFile::Random(_) => Ok(()),
             GuestFile::Socket => Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "Sync operation not supported on socket",
@@ -498,9 +555,9 @@ impl GuestFile {
                 std::io::ErrorKind::IsADirectory,
                 "Attempt to resize a directory as a guest file",
             )),
-            GuestFile::PipeRead(_) | GuestFile::PipeWrite(_) => Err(std::io::Error::new(
+            GuestFile::PipeRead(_) | GuestFile::PipeWrite(_) | GuestFile::Random(_) => Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
-                "Attempt to resize a pipe",
+                "Attempt to resize a pipe or character device",
             )),
             GuestFile::Socket => Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
@@ -522,7 +579,7 @@ impl GuestFile {
         // https://stackoverflow.com/questions/65911066/what-does-lseek-mean-for-a-directory-file-descriptor
         !matches!(
             self,
-            GuestFile::Socket | GuestFile::PipeRead(_) | GuestFile::PipeWrite(_)
+            GuestFile::Socket | GuestFile::PipeRead(_) | GuestFile::PipeWrite(_) | GuestFile::Random(_)
         )
     }
 
@@ -550,6 +607,7 @@ impl GuestFile {
                 ))
             }
             GuestFile::Directory => Ok(GuestFile::Directory),
+            GuestFile::Random(_) => Ok(GuestFile::random()),
             GuestFile::PipeRead(pipe) => {
                 pipe.borrow_mut().read_handles += 1;
                 Ok(GuestFile::PipeRead(pipe.clone()))
@@ -589,6 +647,7 @@ impl Read for GuestFile {
             GuestFile::File(file) => file.read(buf),
             GuestFile::IpaBundleFile(file) => file.read(buf),
             GuestFile::ResourceFile(file) => file.get().read(buf),
+            GuestFile::Random(random) => Ok(random.fill(buf)),
             GuestFile::PipeRead(pipe) => {
                 let mut pipe = pipe.borrow_mut();
                 if buf.is_empty() {
@@ -633,6 +692,7 @@ impl Write for GuestFile {
                 std::io::ErrorKind::PermissionDenied,
                 "Attempt to write to a read-only file",
             )),
+            GuestFile::Random(_) => Ok(buf.len()),
             GuestFile::PipeRead(_) => Err(std::io::Error::new(
                 std::io::ErrorKind::BrokenPipe,
                 "attempt to write to the read end of a pipe",
@@ -666,7 +726,7 @@ impl Write for GuestFile {
                 std::io::ErrorKind::PermissionDenied,
                 "Attempt to flush a read-only file",
             )),
-            GuestFile::PipeRead(_) | GuestFile::PipeWrite(_) => Ok(()),
+            GuestFile::PipeRead(_) | GuestFile::PipeWrite(_) | GuestFile::Random(_) => Ok(()),
             GuestFile::Directory => Err(std::io::Error::new(
                 std::io::ErrorKind::IsADirectory,
                 "Attempt to flush a directory as a guest file",
@@ -697,6 +757,7 @@ impl Seek for GuestFile {
                     "Attempt to seek a directory as a guest file",
                 ))
             }
+            GuestFile::Random(_) => Ok(0),
             GuestFile::PipeRead(_) | GuestFile::PipeWrite(_) => Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "attempt to seek a pipe",
