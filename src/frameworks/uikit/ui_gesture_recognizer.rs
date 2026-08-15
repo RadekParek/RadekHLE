@@ -108,6 +108,12 @@ fn send_action(env: &mut Environment, recognizer: id) {
     }
 }
 
+/// Fire the registered target-action pair for a gesture recognizer.
+/// Public so that `ui_touch` can call it when synthesizing tap/swipe events.
+pub fn fire_targets(env: &mut Environment, recognizer: id) {
+    send_action(env, recognizer);
+}
+
 pub const CLASSES: ClassExports = objc_classes! {
 
 (env, this, _cmd);
