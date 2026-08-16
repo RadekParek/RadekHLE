@@ -411,6 +411,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     runtime_state.bundle_identifier = bundle.bundle_identifier().to_owned();
     runtime_state.bundle_path = bundle.bundle_path().as_str().to_owned();
     runtime_state.bundle_name = bundle.bundle_name().to_owned();
+    runtime_state.main_nib_name = bundle.main_nib_filename(Some(device_family)).map(str::to_owned);
     runtime_state.objc_classes = executable.objc_classes.clone();
     echo!("ARM64 Objective-C metadata: {} guest classes loaded", runtime_state.objc_classes.len());
     load_embedded_unity_framework(&bundle, &fs, &mut memory, &mut runtime_state)?;

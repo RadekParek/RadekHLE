@@ -89,6 +89,12 @@ pub struct RuntimeState {
     pub objc_classes: Vec<ObjCClass64>,
     pub class_objects: HashMap<String, u64>,
     pub application_object: Option<u64>,
+    pub application_delegate: Option<u64>,
+    pub application_window: Option<u64>,
+    pub application_view_controller: Option<u64>,
+    pub main_nib_name: Option<String>,
+    pub launch_callback_return_pc: Option<u64>,
+    pub pending_application_did_become_active: bool,
 }
 
 impl RuntimeState {
@@ -126,6 +132,12 @@ impl RuntimeState {
             objc_classes: Vec::new(),
             class_objects: HashMap::new(),
             application_object: None,
+            application_delegate: None,
+            application_window: None,
+            application_view_controller: None,
+            main_nib_name: None,
+            launch_callback_return_pc: None,
+            pending_application_did_become_active: false,
         }
     }
 
@@ -567,7 +579,10 @@ fn objc_send(
         state.present_requested = true;
     }
     let class_method = kind == A64_KIND_CLASS;
-    if !matches!(selector.as_str(), "alloc" | "new" | "init" | "self" | "retain" | "autorelease" | "copy" | "mutableCopy" | "release" | "class" | "respondsToSelector:" | "isKindOfClass:" | "hasUnifiedMemory")
+    let application_accessor = state.application_delegate == Some(receiver)
+        && matches!(selector.as_str(), "window" | "viewController");
+    if !application_accessor
+        && !matches!(selector.as_str(), "alloc" | "new" | "init" | "self" | "retain" | "autorelease" | "copy" | "mutableCopy" | "release" | "class" | "respondsToSelector:" | "isKindOfClass:" | "hasUnifiedMemory")
         && transfer_guest_method(mem, context, state, &selector, class_method)
     {
         return Ok(());
@@ -581,6 +596,8 @@ fn objc_send(
             0
         }
         "init" | "self" | "retain" | "autorelease" | "copy" | "mutableCopy" => receiver,
+        "window" if state.application_delegate == Some(receiver) => state.application_window.unwrap_or(0),
+        "viewController" if state.application_delegate == Some(receiver) => state.application_view_controller.unwrap_or(0),
         "release" => 0,
         "class" => receiver,
         "respondsToSelector:" | "isKindOfClass:" | "hasUnifiedMemory" => 1,
@@ -956,6 +973,24 @@ pub fn dispatch(
             state.ios_version.1,
             state.ios_version.2
         );
+    }
+    if symbol == "objc_msgSend"
+        && state.pending_application_did_become_active
+        && state.launch_callback_return_pc == Some(context.regs[30])
+    {
+        if let (Some(delegate), Some(application)) = (state.application_delegate, state.application_object) {
+            let selector = selector_pointer(mem, "applicationDidBecomeActive:")?;
+            state.pending_application_did_become_active = false;
+            context.regs[0] = delegate;
+            context.regs[1] = selector;
+            context.regs[2] = application;
+            if let Some(address) = guest_method(state, &receiver_class_name(mem, delegate, A64_KIND_GENERIC).unwrap_or_default(), "applicationDidBecomeActive:", false) {
+                state.guest_transfer_pc = Some(address);
+                log!("ARM64 lifecycle transfer: applicationDidBecomeActive: -> {:#x}", address);
+                return Ok(true);
+            }
+        }
+        state.pending_application_did_become_active = false;
     }
     match symbol {
         "malloc" | "calloc" | "valloc" | "posix_memalign" => {
@@ -1346,6 +1381,17 @@ pub fn dispatch(
             };
             if let Some(delegate_name) = delegate_name {
                 let delegate = objc_instance_for_class(mem, state, &delegate_name)?;
+                state.application_delegate = Some(delegate);
+                if state.main_nib_name.is_some() {
+                    let view_controller_name = state.objc_classes.iter()
+                        .map(|class| class.name.as_str())
+                        .find(|name| name.to_ascii_lowercase().contains("viewcontroller"))
+                        .map(str::to_owned);
+                    state.application_window = Some(objc_object(mem, A64_KIND_GENERIC)?);
+                    if let Some(view_controller_name) = view_controller_name {
+                        state.application_view_controller = Some(objc_instance_for_class(mem, state, &view_controller_name)?);
+                    }
+                }
                 let selector = selector_pointer(mem, "application:didFinishLaunchingWithOptions:")?;
                 context.regs[0] = delegate;
                 context.regs[1] = selector;
@@ -1353,6 +1399,8 @@ pub fn dispatch(
                 context.regs[3] = 0;
                 if let Some(address) = guest_method(state, &delegate_name, "application:didFinishLaunchingWithOptions:", false) {
                     state.guest_transfer_pc = Some(address);
+                    state.launch_callback_return_pc = Some(context.regs[30]);
+                    state.pending_application_did_become_active = true;
                     log!("ARM64 UIApplicationMain transferring to {} application:didFinishLaunchingWithOptions: at {:#x}", delegate_name, address);
                 }
             }
