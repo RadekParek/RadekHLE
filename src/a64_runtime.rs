@@ -68,6 +68,8 @@ pub struct RuntimeState {
     pub frame_serial: u64,
     pub present_requested: bool,
     pub boot_screen_reached: bool,
+    pub application_main_active: bool,
+    pub application_main_calls: u64,
     pub clear_color: [f32; 4],
     pub last_selector: Option<String>,
     pub last_symbol: Option<String>,
@@ -77,6 +79,7 @@ pub struct RuntimeState {
     pub bundle_path: String,
     pub bundle_name: String,
     pub unimplemented_symbols: HashSet<String>,
+    pub reached_unimplemented_symbols: HashSet<String>,
     pub loaded_images: Vec<LoadedImage>,
     pub guest_transfer_pc: Option<u64>,
     pub unity_framework_instance: Option<u64>,
@@ -98,6 +101,8 @@ impl RuntimeState {
             frame_serial: 0,
             present_requested: false,
             boot_screen_reached: false,
+            application_main_active: false,
+            application_main_calls: 0,
             clear_color: [0.0, 0.0, 0.0, 1.0],
             last_selector: None,
             last_symbol: None,
@@ -107,6 +112,7 @@ impl RuntimeState {
             bundle_path: "/".to_owned(),
             bundle_name: "Application".to_owned(),
             unimplemented_symbols: HashSet::new(),
+            reached_unimplemented_symbols: HashSet::new(),
             loaded_images: Vec::new(),
             guest_transfer_pc: None,
             unity_framework_instance: None,
@@ -119,6 +125,14 @@ impl RuntimeState {
 
     pub fn take_boot_screen_request(&mut self) -> bool {
         std::mem::take(&mut self.boot_screen_reached)
+    }
+
+    pub fn application_main_is_active(&self) -> bool {
+        self.application_main_active
+    }
+
+    pub fn mark_unimplemented_reached(&mut self, symbol: &str) -> bool {
+        self.reached_unimplemented_symbols.insert(symbol.to_owned())
     }
 
     pub fn take_guest_transfer(&mut self) -> Option<u64> {
@@ -219,12 +233,12 @@ pub fn can_dispatch(symbol: &str) -> bool {
         | "objc_msgSend_stret" | "objc_msgSendSuper2_stret" | "objc_msgSend_fpret"
         | "objc_msgSend_fp2ret" | "objc_getClass" | "objc_getRequiredClass"
         | "objc_lookUpClass" | "object_getClass" | "object_getClassName"
-        | "sel_registerName" | "sel_getUid" | "strcpy" | "strncpy" | "strcat"
+        | "sel_registerName" | "sel_getUid"
         | "objc_autoreleasePoolPush" | "objc_autoreleasePoolPop"
         | "objc_exception_throw" | "objc_begin_catch" | "objc_end_catch"
         | "cxa_guard_acquire" | "cxa_guard_release" | "cxa_guard_abort"
         | "cxa_pure_virtual" | "stack_chk_fail" | "stack_chk_fail_local"
-        | "memchr" | "strnlen" | "strchr" | "strrchr" | "strstr"
+        | "memchr" | "strchr" | "strrchr" | "strstr"
         | "strcasecmp" | "strncasecmp" | "bcopy" | "bcmp"
         | "memset_pattern4" | "memset_pattern8" | "memset_pattern16"
         | "cxa_atexit" | "atexit" | "pthread_mutex_lock"
@@ -291,7 +305,7 @@ pub fn can_dispatch(symbol: &str) -> bool {
         | "ZNSt3__118condition_variable10notify_oneEv"
         | "ZNSt3__118condition_variable15__do_timed_waitERNS_11unique_lockINS_5mutexEEENS_6chrono10time_pointINS5_12system_clockENS5_8durationIxNS_5ratioILl1ELl1000000000EEEEEEE"
         | "ZNSt3__111this_thread9sleep_forERKNS_6chrono8durationIxNS_5ratioILl1ELl1000000000EEEEE"
-        | "ZNSt3__112__next_primeEm" => true,
+        => true,
         _ => false,
     }
 }
@@ -1219,8 +1233,10 @@ pub fn dispatch(
         "UIApplicationMain" => {
             state.boot_screen_reached = true;
             state.present_requested = true;
+            state.application_main_active = true;
+            state.application_main_calls = state.application_main_calls.saturating_add(1);
             echo!(
-                "ARM64 UIApplicationMain handled by the compatibility runtime; continuing app startup"
+                "ARM64 UIApplicationMain entered the compatibility application lifecycle; the host run loop will remain active after guest main returns"
             );
             return_value(context, 0);
             Ok(true)

@@ -75,6 +75,11 @@ struct AudioQueueHostObject {
     aq_is_running_proc: Option<AudioQueuePropertyListenerProc>,
     aq_is_running_user_data: Option<MutVoidPtr>,
     is_running_handler: bool,
+    callbacks: u64,
+    requested_frames: u64,
+    supplied_frames: u64,
+    underruns: u64,
+    last_underrun_log: Option<std::time::Instant>,
     is_input: bool,
     input_delay: u32,
     /// Stored `kAudioQueueProperty_HardwareCodecPolicy` value. Defaults to
@@ -238,7 +243,12 @@ pub fn AudioQueueNewOutput(
         al_unused_buffers: Vec::new(),
         aq_is_running_proc: None,
         aq_is_running_user_data: None,
+        callbacks: 0,
+        requested_frames: 0,
         is_running_handler: false,
+        supplied_frames: 0,
+        underruns: 0,
+        last_underrun_log: None,
         is_input: false,
         input_delay: 0,
         hardware_codec_policy: codec_policy::DEFAULT,
@@ -1207,6 +1217,39 @@ pub fn decode_buffer(
     }
 }
 
+fn frames_for_audio_bytes(format: &AudioStreamBasicDescription, bytes: usize) -> u64 {
+    if format.bytes_per_frame != 0 {
+        (bytes as u64) / u64::from(format.bytes_per_frame)
+    } else if format.bytes_per_packet != 0 && format.frames_per_packet != 0 {
+        (bytes as u64 / u64::from(format.bytes_per_packet))
+            .saturating_mul(u64::from(format.frames_per_packet))
+    } else {
+        0
+    }
+}
+
+fn record_audio_queue_underrun(
+    host_object: &mut AudioQueueHostObject,
+    in_aq: AudioQueueRef,
+    now: std::time::Instant,
+) {
+    host_object.underruns = host_object.underruns.saturating_add(1);
+    let should_log = host_object
+        .last_underrun_log
+        .map_or(true, |last| now.duration_since(last) >= std::time::Duration::from_secs(1));
+    if should_log {
+        log!(
+            "AudioQueue underrun: queue={:?} callbacks={} requested_frames={} supplied_frames={} underruns={}",
+            in_aq,
+            host_object.callbacks,
+            host_object.requested_frames,
+            host_object.supplied_frames,
+            host_object.underruns,
+        );
+        host_object.last_underrun_log = Some(now);
+    }
+}
+
 fn prime_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
     let (state, context) =
         State::get_with_context(&mut env.framework_state, &mut env.openal_manager);
@@ -1348,8 +1391,11 @@ fn prime_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
             next_buffer.audio_data.cast(),
             next_buffer.audio_data_byte_size,
         );
+        let supplied_frames = frames_for_audio_bytes(&host_object.format, data.len());
+        host_object.supplied_frames = host_object.supplied_frames.saturating_add(supplied_frames);
 
         if data.is_empty() {
+            record_audio_queue_underrun(host_object, in_aq, std::time::Instant::now());
             host_object.al_unused_buffers.push(next_al_buffer);
             log!("Warning: audio queue {:?}: decoder returned no PCM data; stopping refill for this tick.", in_aq);
             break;
@@ -1456,14 +1502,18 @@ pub fn handle_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
         }
     });
 
-    let &mut AudioQueueHostObject {
-        callback_proc,
-        callback_user_data,
-        is_running,
-        ..
-    } = host_object;
+    let callback_proc = host_object.callback_proc;
+    let callback_user_data = host_object.callback_user_data;
+    let is_running = host_object.is_running;
 
     for buffer_ref in buffers_to_reuse.drain(..) {
+        let buffer_size = env.mem.read(buffer_ref).audio_data_byte_size;
+        if let Some(queue) = State::get(&mut env.framework_state).audio_queues.get_mut(&in_aq) {
+            queue.callbacks = queue.callbacks.saturating_add(1);
+            queue.requested_frames = queue
+                .requested_frames
+                .saturating_add(frames_for_audio_bytes(&queue.format, buffer_size as usize));
+        }
         log_dbg!(
             "Recyling buffer {:?} for queue {:?}. Calling callback {:?} with user data {:?}.",
             buffer_ref,
@@ -1935,6 +1985,11 @@ pub fn AudioQueueNewInput(
         al_unused_buffers: Vec::new(),
         aq_is_running_proc: None,
         aq_is_running_user_data: None,
+        callbacks: 0,
+        requested_frames: 0,
+        supplied_frames: 0,
+        underruns: 0,
+        last_underrun_log: None,
         is_running_handler: false,
         is_input: false,
         input_delay: 0,

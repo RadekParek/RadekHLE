@@ -144,7 +144,7 @@ fn failure_diagnostics(
     echo!("ARM64 failure stack: {}", stack_dump(memory, context.sp));
     echo!("ARM64 failure call stack: {}", call_stack_dump(memory, context));
     echo!("ARM64 failure mappings: {}", mapping_dump(memory));
-    echo!("ARM64 failure module={} last_imported_symbol={} last_successful_host_callback={} last_objc_selector={} host_dispatches={} objc_messages={} metal_commands={}", runtime_state.current_module.as_deref().unwrap_or("<unknown>"), runtime_state.last_symbol.as_deref().unwrap_or("<none>"), runtime_state.last_successful_symbol.as_deref().unwrap_or("<none>"), runtime_state.last_selector.as_deref().unwrap_or("<none>"), runtime_state.host_dispatches, runtime_state.objc_messages, runtime_state.metal_commands);
+    echo!("ARM64 failure module={} last_imported_symbol={} last_successful_host_callback={} last_objc_selector={} host_dispatches={} objc_messages={} metal_commands={} reached_unimplemented={:?}", runtime_state.current_module.as_deref().unwrap_or("<unknown>"), runtime_state.last_symbol.as_deref().unwrap_or("<none>"), runtime_state.last_successful_symbol.as_deref().unwrap_or("<none>"), runtime_state.last_selector.as_deref().unwrap_or("<none>"), runtime_state.host_dispatches, runtime_state.objc_messages, runtime_state.metal_commands, runtime_state.reached_unimplemented_symbols);
 }
 
 fn put_string(mem: &mut Mem64, cursor: &mut u64, value: &str) -> Result<u64, String> {
@@ -566,7 +566,13 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 ));
             }
             value if value == SVC_THREAD_EXIT as i32 || value == SVC_RETURN_TO_HOST as i32 => {
-                echo!("ARM64 runtime returned from entry point");
+                echo!(
+                    "ARM64 runtime returned from entry point: application_main_active={} application_main_calls={} boot_screen_reached={} last_selector={}",
+                    runtime_state.application_main_is_active(),
+                    runtime_state.application_main_calls,
+                    runtime_state.boot_screen_reached,
+                    runtime_state.last_selector.as_deref().unwrap_or("<none>"),
+                );
                 return Ok(());
             }
             value if value >= SVC_HOST_BASE as i32 => {
@@ -643,15 +649,19 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                     cpu.clear_halt(A64_HALT_USER_DEFINED3);
                 }
                 if runtime_state.take_boot_screen_request() {
-                    echo!("ARM64 observed the app's UIApplication bootstrap hook; continuing guest execution");
+                    echo!(
+                        "ARM64 observed UIApplication bootstrap: application_main_active={} application_main_calls={}; continuing guest execution",
+                        runtime_state.application_main_is_active(),
+                        runtime_state.application_main_calls,
+                    );
                 }
                 if let Some(window) = window.as_mut() {
                     window.poll_for_events(&options);
                 }
                 if !handled {
-                    let first = runtime_state.unimplemented_symbols.insert(symbol.to_owned());
+                    let first = runtime_state.mark_unimplemented_reached(symbol);
                     if first {
-                        echo!("Warning: ARM64 host function {} is not implemented; returning zero", symbol);
+                        echo!("Warning: ARM64 reached unresolved host function {} at pc={:#x} lr={:#x} sp={:#x}; returning zero", symbol, context.pc, context.regs[30], context.sp);
                     }
                 }
                 if host_dispatches > MAX_HOST_DISPATCHES {

@@ -107,6 +107,10 @@ pub struct AudioComponentInstanceHostObject {
     pub last_render_time: Option<Instant>,
     pub al_source: Option<ALuint>,
     pub is_running_handler: bool,
+    pub render_callbacks: u64,
+    pub rendered_frames: u64,
+    pub render_underruns: u64,
+    pub last_underrun_log: Option<Instant>,
 
     // --- 3D Mixer State ---
     pub is_3d_mixer: bool,
@@ -138,6 +142,10 @@ impl Default for AudioComponentInstanceHostObject {
             last_render_time: None,
             al_source: None,
             is_running_handler: false,
+            render_callbacks: 0,
+            rendered_frames: 0,
+            render_underruns: 0,
+            last_underrun_log: None,
             is_3d_mixer: false,
             mixer_buses: HashMap::new(),
         }
