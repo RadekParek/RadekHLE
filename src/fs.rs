@@ -809,9 +809,8 @@ impl Fs {
     ) -> (Fs, GuestPathBuf) {
         const FAKE_UUID: &str = "00000000-0000-0000-0000-000000000000";
         let home_directory = APPLICATIONS.join(FAKE_UUID);
-        let working_directory = GuestPathBuf::from("/".to_string());
-
         let bundle_guest_path = home_directory.join(&bundle_dir_name);
+        let working_directory = bundle_guest_path.clone();
 
         let directories = ["Documents", "Library", "tmp"];
         let host_path_directories = directories.map(|dir| {
