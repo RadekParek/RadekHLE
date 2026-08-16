@@ -23,6 +23,7 @@ const A64_HALT_USER_DEFINED3: u32 = 0x0400_0000;
 const STARTUP_TRACE_INSTRUCTIONS: u64 = 10_000;
 const STALL_THRESHOLD: u64 = 512;
 const EXECUTION_SLICE_TICKS: u64 = 1_000;
+const ARM64_BOOTSTRAP_GRACE_SLICES: u32 = 8;
 
 fn sign_extend(value: u64, bits: u32) -> i64 {
     let shift = 64 - bits;
@@ -126,6 +127,39 @@ fn mapping_dump(memory: &Mem64) -> String {
         .map(|region| format!("{:#x}..{:#x} ({} bytes)", region.base, region.base.saturating_add(region.size), region.size))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn display_boot_screen(
+    bundle: &Bundle,
+    fs: &Fs,
+    device_family: DeviceFamily,
+    window: &mut crate::window::Window,
+) -> bool {
+    let launch_image_path = bundle.launch_image_path(fs, device_family);
+    if let Ok(bytes) = fs.read(&launch_image_path) {
+        if let Ok(image) = crate::image::Image::from_bytes(&bytes) {
+            window.display_compatibility_image(
+                image,
+                crate::window::DeviceOrientation::Portrait,
+            );
+            echo!("ARM64 boot screen reached: displaying {}", launch_image_path.as_str());
+            return true;
+        }
+    }
+    match bundle.load_icon(fs) {
+        Ok(image) => {
+            window.display_compatibility_image(
+                image,
+                crate::window::DeviceOrientation::Portrait,
+            );
+            echo!("ARM64 boot/logo fallback: displaying the app icon");
+            true
+        }
+        Err(error) => {
+            log!("ARM64 boot screen: no usable launch image or icon: {}", error);
+            false
+        }
+    }
 }
 
 fn failure_diagnostics(
@@ -465,6 +499,8 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     let mut trace_count = 0_u64;
     let mut previous_pcs = VecDeque::with_capacity(20);
     let mut previous_branches = VecDeque::with_capacity(20);
+    let mut bootstrap_grace_slices = 0u32;
+    let mut bootstrap_displayed = false;
     echo!("ARM64 execution transition: normal mode uses Dynarmic Run with {}-tick slices; instruction tracing limit={}", EXECUTION_SLICE_TICKS, trace_limit);
     verify_abi(&context, "entry");
     verify_guest_mappings(&memory, context.pc, context.sp);
@@ -566,6 +602,17 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 ));
             }
             value if value == SVC_THREAD_EXIT as i32 || value == SVC_RETURN_TO_HOST as i32 => {
+                if runtime_state.application_main_is_active() && !bootstrap_displayed {
+                    echo!(
+                        "ARM64 guest entry returned while UIApplicationMain is active; presenting compatibility boot state before ending startup"
+                    );
+                    if let Some(window) = window.as_mut() {
+                        bootstrap_displayed = display_boot_screen(&bundle, &fs, device_family, window);
+                    }
+                    if bootstrap_displayed {
+                        runtime_state.mark_boot_screen_reached();
+                    }
+                }
                 echo!(
                     "ARM64 runtime returned from entry point: application_main_active={} application_main_calls={} boot_screen_reached={} last_selector={}",
                     runtime_state.application_main_is_active(),
@@ -638,6 +685,9 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                     );
                     if let Some(window) = window.as_mut() {
                         window.present_compatibility_frame(runtime_state.clear_color);
+                        if runtime_state.application_main_is_active() {
+                            runtime_state.mark_boot_screen_reached();
+                        }
                     }
                 }
                 if let Some(transfer_pc) = runtime_state.take_guest_transfer() {
@@ -655,8 +705,30 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                         runtime_state.application_main_calls,
                     );
                 }
+                if runtime_state.take_application_bootstrap_request() {
+                    bootstrap_grace_slices = ARM64_BOOTSTRAP_GRACE_SLICES;
+                    if !bootstrap_displayed {
+                        if let Some(window) = window.as_mut() {
+                            bootstrap_displayed = display_boot_screen(&bundle, &fs, device_family, window);
+                            if bootstrap_displayed {
+                                runtime_state.mark_boot_screen_reached();
+                            }
+                        }
+                    }
+                    echo!(
+                        "ARM64 application lifecycle bootstrap observed: displayed_boot_state={} grace_slices={}",
+                        bootstrap_displayed,
+                        bootstrap_grace_slices,
+                    );
+                }
                 if let Some(window) = window.as_mut() {
                     window.poll_for_events(&options);
+                }
+                if bootstrap_grace_slices > 0 {
+                    bootstrap_grace_slices -= 1;
+                    if let Some(window) = window.as_mut() {
+                        window.poll_for_events(&options);
+                    }
                 }
                 if !handled {
                     let first = runtime_state.mark_unimplemented_reached(symbol);

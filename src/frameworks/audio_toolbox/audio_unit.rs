@@ -80,6 +80,7 @@ unsafe impl SafeRead for AudioBufferList<1> {}
 unsafe impl SafeRead for AudioBufferList<2> {}
 
 #[repr(C, packed)]
+#[derive(Copy, Clone)]
 pub struct AudioBuffer {
     pub number_channels: u32,
     pub data_byte_size: u32,
@@ -1388,8 +1389,18 @@ pub fn render_audio_unit(env: &mut Environment, audio_unit: AudioUnit) {
         ),
     );
 
+    let written_bytes = {
+        let list = if has_input_format {
+            let list = env.mem.read::<AudioBufferList<1>, true>(audio_buffer_list.cast());
+            list.buffers[0]
+        } else {
+            let list = env.mem.read::<AudioBufferList<2>, true>(audio_buffer_list.cast());
+            list.buffers[0]
+        };
+        list.data_byte_size.min(buffer_size)
+    };
     let (al_fmt, _, processed) =
-        decode_buffer(&env.mem, &stream_format, buffer1_data.cast(), buffer_size);
+        decode_buffer(&env.mem, &stream_format, buffer1_data.cast(), written_bytes);
     {
         let context = env
             .framework_state
@@ -1436,6 +1447,8 @@ pub fn render_audio_unit(env: &mut Environment, audio_unit: AudioUnit) {
         .get_mut(&audio_unit)
     {
         obj.last_render_time = Some(now);
+        obj.render_callbacks = obj.render_callbacks.saturating_add(1);
+        obj.rendered_frames = obj.rendered_frames.saturating_add(u64::from(frames));
         obj.is_running_handler = false;
     }
 }

@@ -70,6 +70,7 @@ pub struct RuntimeState {
     pub boot_screen_reached: bool,
     pub application_main_active: bool,
     pub application_main_calls: u64,
+    pub application_bootstrap_requested: bool,
     pub clear_color: [f32; 4],
     pub last_selector: Option<String>,
     pub last_symbol: Option<String>,
@@ -103,6 +104,7 @@ impl RuntimeState {
             boot_screen_reached: false,
             application_main_active: false,
             application_main_calls: 0,
+            application_bootstrap_requested: false,
             clear_color: [0.0, 0.0, 0.0, 1.0],
             last_selector: None,
             last_symbol: None,
@@ -129,6 +131,14 @@ impl RuntimeState {
 
     pub fn application_main_is_active(&self) -> bool {
         self.application_main_active
+    }
+
+    pub fn take_application_bootstrap_request(&mut self) -> bool {
+        std::mem::take(&mut self.application_bootstrap_requested)
+    }
+
+    pub fn mark_boot_screen_reached(&mut self) {
+        self.boot_screen_reached = true;
     }
 
     pub fn mark_unimplemented_reached(&mut self, symbol: &str) -> bool {
@@ -549,7 +559,9 @@ fn objc_send(
     }
     let result = match selector.as_str() {
         "runUIApplicationMainWithArgc:argv:" if receiver == 0 => {
-            state.boot_screen_reached = true;
+            state.application_main_active = true;
+            state.application_main_calls = state.application_main_calls.saturating_add(1);
+            state.application_bootstrap_requested = true;
             state.present_requested = true;
             0
         }
@@ -1231,12 +1243,12 @@ pub fn dispatch(
             Ok(true)
         }
         "UIApplicationMain" => {
-            state.boot_screen_reached = true;
-            state.present_requested = true;
             state.application_main_active = true;
             state.application_main_calls = state.application_main_calls.saturating_add(1);
+            state.application_bootstrap_requested = true;
+            state.present_requested = true;
             echo!(
-                "ARM64 UIApplicationMain entered the compatibility application lifecycle; the host run loop will remain active after guest main returns"
+                "ARM64 UIApplicationMain entered the compatibility application lifecycle; bootstrap will be presented before guest entry returns"
             );
             return_value(context, 0);
             Ok(true)

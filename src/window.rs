@@ -2210,6 +2210,13 @@ impl Window {
         gl_ins
     }
 
+    pub fn display_compatibility_image(&mut self, image: Image, orientation: DeviceOrientation) {
+        self.device_orientation = orientation;
+        self.splash_image = Some(image);
+        self.splash_image_is_orientation_specific = false;
+        self.display_splash();
+    }
+
     fn display_splash(&mut self) {
         assert!(self.splash_image.is_some());
 
