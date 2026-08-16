@@ -1397,7 +1397,21 @@ pub fn render_audio_unit(env: &mut Environment, audio_unit: AudioUnit) {
             let list = env.mem.read::<AudioBufferList<2>, true>(audio_buffer_list.cast());
             list.buffers[0]
         };
-        list.data_byte_size.min(buffer_size)
+        let channels = list.number_channels;
+        let bytes_per_frame = stream_format.bytes_per_frame;
+        let written = list.data_byte_size.min(buffer_size);
+        if written == 0 {
+            log_dbg!(
+                "AudioUnit render callback returned no data: unit={:?} frames={} requested_bytes={} sample_rate={} channels={} bytes_per_frame={}",
+                audio_unit,
+                frames,
+                buffer_size,
+                sample_rate,
+                channels,
+                bytes_per_frame,
+            );
+        }
+        written
     };
     let (al_fmt, _, processed) =
         decode_buffer(&env.mem, &stream_format, buffer1_data.cast(), written_bytes);

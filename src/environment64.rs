@@ -162,6 +162,42 @@ fn display_boot_screen(
     }
 }
 
+fn run_arm64_application_lifecycle(
+    window: &mut Option<Box<crate::window::Window>>,
+    options: &Options,
+) {
+    if window.is_none() {
+        echo!("ARM64 application lifecycle: headless mode has no host event loop; returning after bootstrap");
+        return;
+    }
+
+    echo!("ARM64 application lifecycle: guest entry returned after UIApplicationMain; entering the host run loop");
+    loop {
+        let Some(window) = window.as_mut() else {
+            return;
+        };
+        window.poll_for_events(options);
+        while let Some(event) = window.pop_event() {
+            match event {
+                crate::window::Event::Quit | crate::window::Event::AppWillTerminate => {
+                    echo!("ARM64 application lifecycle: termination event received");
+                    return;
+                }
+                crate::window::Event::AppWillResignActive
+                | crate::window::Event::AppDidEnterBackground
+                | crate::window::Event::AppWillEnterForeground
+                | crate::window::Event::AppDidBecomeActive
+                | crate::window::Event::TouchesDown(_)
+                | crate::window::Event::TouchesMove(_)
+                | crate::window::Event::TouchesUp(_)
+                | crate::window::Event::EnterDebugger
+                | crate::window::Event::TextInput(_) => {}
+            }
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 fn failure_diagnostics(
     memory: &Mem64,
     context: &touchHLE_DynarmicA64Context,
@@ -602,20 +638,29 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 ));
             }
             value if value == SVC_THREAD_EXIT as i32 || value == SVC_RETURN_TO_HOST as i32 => {
-                if runtime_state.application_main_is_active() && !bootstrap_displayed {
+                if runtime_state.application_main_is_active() {
+                    if !bootstrap_displayed {
+                        echo!(
+                            "ARM64 guest entry returned while UIApplicationMain is active; presenting compatibility boot state before continuing the application lifecycle"
+                        );
+                        if let Some(window) = window.as_mut() {
+                            bootstrap_displayed = display_boot_screen(&bundle, &fs, device_family, window);
+                        }
+                        if bootstrap_displayed {
+                            runtime_state.mark_boot_screen_reached();
+                        }
+                    }
                     echo!(
-                        "ARM64 guest entry returned while UIApplicationMain is active; presenting compatibility boot state before ending startup"
+                        "ARM64 runtime returned from entry point: application_main_active=true application_main_calls={} boot_screen_reached={} last_selector={}; guest lifecycle continues on the host run loop",
+                        runtime_state.application_main_calls,
+                        runtime_state.boot_screen_reached,
+                        runtime_state.last_selector.as_deref().unwrap_or("<none>"),
                     );
-                    if let Some(window) = window.as_mut() {
-                        bootstrap_displayed = display_boot_screen(&bundle, &fs, device_family, window);
-                    }
-                    if bootstrap_displayed {
-                        runtime_state.mark_boot_screen_reached();
-                    }
+                    run_arm64_application_lifecycle(&mut window, &options);
+                    return Ok(());
                 }
                 echo!(
-                    "ARM64 runtime returned from entry point: application_main_active={} application_main_calls={} boot_screen_reached={} last_selector={}",
-                    runtime_state.application_main_is_active(),
+                    "ARM64 runtime returned from entry point: application_main_active=false application_main_calls={} boot_screen_reached={} last_selector={}",
                     runtime_state.application_main_calls,
                     runtime_state.boot_screen_reached,
                     runtime_state.last_selector.as_deref().unwrap_or("<none>"),
