@@ -32,6 +32,9 @@ const A64_KIND_UI_SCREEN: u64 = 21;
 const A64_KIND_UNITY_FRAMEWORK: u64 = 22;
 const A64_KIND_NUMBER: u64 = 23;
 const A64_KIND_APPLICATION: u64 = 24;
+const A64_KIND_DISPLAY_LINK: u64 = 25;
+const A64_KIND_RUN_LOOP: u64 = 26;
+const A64_KIND_THREAD: u64 = 27;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum A64GraphicsBackend {
@@ -94,6 +97,9 @@ pub struct RuntimeState {
     pub application_view_controller: Option<u64>,
     pub main_nib_name: Option<String>,
     pub launch_callback_return_pc: Option<u64>,
+    pub application_return_stub: Option<u64>,
+    pub application_launch_return_stub: Option<u64>,
+    pub application_active_return_stub: Option<u64>,
     pub pending_application_did_become_active: bool,
 }
 
@@ -137,6 +143,9 @@ impl RuntimeState {
             application_view_controller: None,
             main_nib_name: None,
             launch_callback_return_pc: None,
+            application_return_stub: None,
+            application_launch_return_stub: None,
+            application_active_return_stub: None,
             pending_application_did_become_active: false,
         }
     }
@@ -250,6 +259,7 @@ fn materialize_custom_constant(mem: &mut Mem64, symbol: &str) -> Option<u64> {
 pub fn can_dispatch(symbol: &str) -> bool {
     let symbol = name(symbol);
     match symbol {
+        "ARM64_application_return" | "ARM64_application_launch_return" | "ARM64_application_active_return" => true,
         "malloc" | "calloc" | "valloc" | "posix_memalign" | "free"
         | "malloc_zone_free" | "realloc" | "malloc_zone_realloc" | "memcpy"
         | "memmove" | "memcpy_chk" | "memmove_chk" | "memset" | "bzero"
@@ -275,6 +285,8 @@ pub fn can_dispatch(symbol: &str) -> bool {
         | "pthread_mutex_unlock" | "pthread_mutex_init" | "pthread_mutex_destroy"
         | "pthread_once" | "pthread_key_create" | "pthread_getspecific" | "pthread_setspecific"
         | "pthread_self" | "sched_yield" | "abort" | "exit" | "_exit"
+        | "_Znwm" | "_Znam" | "_ZdlPv" | "_ZdaPv"
+        | "__Znwm" | "__Znam" | "__ZdlPv" | "__ZdaPv"
         | "NSLog" | "NSLogv" | "os_log" | "os_logv" | "UIApplicationMain" | "dyld_stub_binder"
         | "CFConstantStringClassReference" | "__CFConstantStringClassReference"
         | "MTLCreateSystemDefaultDevice" | "vkEnumerateInstanceVersion"
@@ -422,6 +434,12 @@ fn objc_object(mem: &mut Mem64, kind: u64) -> Result<u64, String> {
     Ok(address)
 }
 
+fn objc_object_with_size(mem: &mut Mem64, kind: u64, size: u64) -> Result<u64, String> {
+    let address = mem.alloc_zeroed(size.max(A64_OBJECT_SIZE)).map_err(str::to_owned)?;
+    mem.write_u64(address, kind).map_err(str::to_owned)?;
+    Ok(address)
+}
+
 fn objc_kind(mem: &Mem64, address: u64) -> Option<u64> {
     (address != 0 && mem.allocation_size(address).is_some())
         .then(|| mem.read_u64(address).ok())
@@ -536,6 +554,9 @@ fn objc_class_kind(mem: &Mem64, class_name: u64) -> u64 {
         Some(b"UIDevice") => A64_KIND_UI_DEVICE,
         Some(b"UIScreen") => A64_KIND_UI_SCREEN,
         Some(b"UIApplication") => A64_KIND_APPLICATION,
+        Some(b"CADisplayLink") => A64_KIND_DISPLAY_LINK,
+        Some(b"NSRunLoop") | Some(b"CFRunLoop") => A64_KIND_RUN_LOOP,
+        Some(b"NSThread") => A64_KIND_THREAD,
         Some(b"NSBundle") => A64_KIND_BUNDLE,
         Some(b"UnityFramework") => A64_KIND_UNITY_FRAMEWORK,
         _ => A64_KIND_GENERIC,
@@ -581,6 +602,15 @@ fn objc_send(
     let class_method = kind == A64_KIND_CLASS;
     let application_accessor = state.application_delegate == Some(receiver)
         && matches!(selector.as_str(), "window" | "viewController");
+    if selector == "platform" && receiver != 0 {
+        let platform = objc_field(mem, receiver, 0x158);
+        if platform == 0 {
+            let platform = objc_object_with_size(mem, A64_KIND_GENERIC, 32)?;
+            set_objc_field(mem, platform, 16, platform + 24);
+            set_objc_field(mem, receiver, 0x158, platform);
+            log!("ARM64 initialized empty platform list for {} at {:#x}", receiver_class_name(mem, receiver, A64_KIND_GENERIC).as_deref().unwrap_or("<unknown>"), platform);
+        }
+    }
     if !application_accessor
         && !matches!(selector.as_str(), "alloc" | "new" | "init" | "self" | "retain" | "autorelease" | "copy" | "mutableCopy" | "release" | "class" | "respondsToSelector:" | "isKindOfClass:" | "hasUnifiedMemory")
         && transfer_guest_method(mem, context, state, &selector, class_method)
@@ -598,6 +628,20 @@ fn objc_send(
         "init" | "self" | "retain" | "autorelease" | "copy" | "mutableCopy" => receiver,
         "window" if state.application_delegate == Some(receiver) => state.application_window.unwrap_or(0),
         "viewController" if state.application_delegate == Some(receiver) => state.application_view_controller.unwrap_or(0),
+        "platform" if receiver != 0 => objc_string(mem, "iPhone5,1")?,
+        "currentThread" if kind == A64_KIND_CLASS => objc_object(mem, A64_KIND_THREAD)?,
+        "currentRunLoop" if kind == A64_KIND_THREAD => objc_object(mem, A64_KIND_RUN_LOOP)?,
+        "displayLinkWithTarget:selector:" if kind == A64_KIND_CLASS => objc_object(mem, A64_KIND_DISPLAY_LINK)?,
+        "setFrameInterval:" if kind == A64_KIND_DISPLAY_LINK => {
+            set_objc_field(mem, receiver, 56, context.regs[2]);
+            0
+        }
+        "addToRunLoop:forMode:" if kind == A64_KIND_DISPLAY_LINK => 0,
+        "startAnimation" | "invalidate" if kind == A64_KIND_DISPLAY_LINK => 0,
+        "setDisplayLink:" if state.application_delegate == Some(receiver) => {
+            set_objc_field(mem, receiver, 80, context.regs[2]);
+            0
+        }
         "release" => 0,
         "class" => receiver,
         "respondsToSelector:" | "isKindOfClass:" | "hasUnifiedMemory" => 1,
@@ -868,10 +912,16 @@ fn objc_class_for_name(mem: &mut Mem64, state: &mut RuntimeState, name: &str) ->
 
 fn objc_instance_for_class(mem: &mut Mem64, state: &mut RuntimeState, name: &str) -> Result<u64, String> {
     let class = objc_class_for_name(mem, state, name)?;
-    let object = objc_object(mem, objc_class_kind(mem, {
+    let instance_size = state
+        .objc_classes
+        .iter()
+        .find(|class_info| class_info.name == name)
+        .map(|class_info| class_info.instance_size)
+        .unwrap_or(A64_OBJECT_SIZE);
+    let object = objc_object_with_size(mem, objc_class_kind(mem, {
         let name_pointer = objc_field(mem, class, 56);
         name_pointer
-    }))?;
+    }), instance_size)?;
     set_objc_field(mem, object, 48, class);
     Ok(object)
 }
@@ -916,7 +966,7 @@ fn transfer_guest_method(
     let Some(address) = guest_method(state, &class_name, selector, class_method) else {
         return false;
     };
-    log!("ARM64 guest Objective-C transfer: {}{} -> {:#x}", if class_method { "+" } else { "-" }, selector, address);
+    log!("ARM64 guest Objective-C transfer: {}{} on {} -> {:#x}", if class_method { "+" } else { "-" }, selector, class_name, address);
     state.guest_transfer_pc = Some(address);
     true
 }
@@ -963,34 +1013,44 @@ pub fn dispatch(
     state.host_dispatches = state.host_dispatches.saturating_add(1);
     let symbol = name(symbol);
     state.last_symbol = Some(symbol.to_owned());
-    if state.host_dispatches <= 128 || state.host_dispatches.is_power_of_two() {
-        log_dbg!(
-            "ARM64 host dispatch #{}: symbol={} backend={} iOS={}.{}.{}",
-            state.host_dispatches,
-            symbol,
-            state.graphics_backend.label(),
-            state.ios_version.0,
-            state.ios_version.1,
-            state.ios_version.2
-        );
-    }
-    if symbol == "objc_msgSend"
-        && state.pending_application_did_become_active
-        && state.launch_callback_return_pc == Some(context.regs[30])
-    {
+    if symbol == "ARM64_application_launch_return" {
+        state.pending_application_did_become_active = false;
         if let (Some(delegate), Some(application)) = (state.application_delegate, state.application_object) {
-            let selector = selector_pointer(mem, "applicationDidBecomeActive:")?;
-            state.pending_application_did_become_active = false;
-            context.regs[0] = delegate;
-            context.regs[1] = selector;
-            context.regs[2] = application;
-            if let Some(address) = guest_method(state, &receiver_class_name(mem, delegate, A64_KIND_GENERIC).unwrap_or_default(), "applicationDidBecomeActive:", false) {
+            let class_name = receiver_class_name(mem, delegate, A64_KIND_GENERIC).unwrap_or_default();
+            if let Some(address) = guest_method(state, &class_name, "applicationDidBecomeActive:", false) {
+                let selector = selector_pointer(mem, "applicationDidBecomeActive:")?;
+                context.regs[0] = delegate;
+                context.regs[1] = selector;
+                context.regs[2] = application;
+                if let Some(return_stub) = state.application_active_return_stub {
+                    context.regs[30] = return_stub;
+                }
                 state.guest_transfer_pc = Some(address);
                 log!("ARM64 lifecycle transfer: applicationDidBecomeActive: -> {:#x}", address);
                 return Ok(true);
             }
         }
+        if let Some(return_stub) = state.application_return_stub {
+            context.regs[30] = return_stub;
+        }
+        log!("ARM64 lifecycle callback completed: no guest applicationDidBecomeActive: implementation");
+        return Ok(true);
+    }
+    if symbol == "ARM64_application_return" {
         state.pending_application_did_become_active = false;
+        if let Some(return_pc) = state.launch_callback_return_pc {
+            context.regs[30] = return_pc;
+        }
+        log!("ARM64 lifecycle callback completed: returning from UIApplicationMain to guest caller");
+        return Ok(true);
+    }
+    if symbol == "ARM64_application_active_return" {
+        state.pending_application_did_become_active = false;
+        if let Some(return_stub) = state.application_return_stub {
+            context.regs[30] = return_stub;
+        }
+        log!("ARM64 lifecycle callback completed: applicationDidBecomeActive:");
+        return Ok(true);
     }
     match symbol {
         "malloc" | "calloc" | "valloc" | "posix_memalign" => {
@@ -1012,11 +1072,16 @@ pub fn dispatch(
             }
             Ok(true)
         }
-        "free" | "malloc_zone_free" => {
+        "free" | "malloc_zone_free" | "_ZdlPv" | "_ZdaPv" | "__ZdlPv" | "__ZdaPv" => {
             if context.regs[0] != 0 {
                 mem.free(context.regs[0]);
             }
             return_value(context, 0);
+            Ok(true)
+        }
+        "_Znwm" | "_Znam" | "__Znwm" | "__Znam" => {
+            let address = mem.alloc_zeroed(context.regs[0]).map_err(str::to_owned)?;
+            return_value(context, address);
             Ok(true)
         }
         "objc_release" => {
@@ -1401,7 +1466,10 @@ pub fn dispatch(
                     state.guest_transfer_pc = Some(address);
                     state.launch_callback_return_pc = Some(context.regs[30]);
                     state.pending_application_did_become_active = true;
-                    log!("ARM64 UIApplicationMain transferring to {} application:didFinishLaunchingWithOptions: at {:#x}", delegate_name, address);
+                    if let Some(return_stub) = state.application_launch_return_stub {
+                        context.regs[30] = return_stub;
+                    }
+                    log!("ARM64 UIApplicationMain transferring to {} application:didFinishLaunchingWithOptions: at {:#x}; callback return is intercepted for lifecycle continuation", delegate_name, address);
                 }
             }
             echo!("ARM64 UIApplicationMain entered the compatibility application lifecycle; guest application delegate dispatch is active");

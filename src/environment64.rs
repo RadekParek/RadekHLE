@@ -452,7 +452,16 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     let (sp, argv_ptr, envp_ptr, apple_ptr) = prepare_stack(&mut memory, &argv, &[], &apple)?;
 
     let return_stub = write_svc_stub(&mut memory, SVC_RETURN_TO_HOST)?;
+    let application_return_stub = write_svc_stub(&mut memory, SVC_HOST_BASE + 0x7ffd)?;
+    let application_launch_return_stub = write_svc_stub(&mut memory, SVC_HOST_BASE + 0x7ffe)?;
+    let application_active_return_stub = write_svc_stub(&mut memory, SVC_HOST_BASE + 0x7fff)?;
+    runtime_state.application_return_stub = Some(application_return_stub);
+    runtime_state.application_launch_return_stub = Some(application_launch_return_stub);
+    runtime_state.application_active_return_stub = Some(application_active_return_stub);
     let mut host_stubs = HashMap::new();
+    host_stubs.insert((SVC_HOST_BASE + 0x7ffd) as i32, ("ARM64_application_return".to_owned(), "ARM64_application_return"));
+    host_stubs.insert((SVC_HOST_BASE + 0x7ffe) as i32, ("ARM64_application_launch_return".to_owned(), "ARM64_application_launch_return"));
+    host_stubs.insert((SVC_HOST_BASE + 0x7fff) as i32, ("ARM64_application_active_return".to_owned(), "ARM64_application_active_return"));
     let mut stub_by_symbol: HashMap<String, (u32, u64)> = HashMap::new();
     let mut unresolved = Vec::new();
     let mut materialized_imports = 0usize;

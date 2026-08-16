@@ -36,6 +36,7 @@ pub struct ObjCMethod64 {
 pub struct ObjCClass64 {
     pub name: String,
     pub superclass: Option<String>,
+    pub instance_size: u64,
     pub instance_methods: Vec<ObjCMethod64>,
     pub class_methods: Vec<ObjCMethod64>,
 }
@@ -138,11 +139,14 @@ fn parse_objc_classes(memory: &Mem64, sections: &[Section64], slide: u64) -> Vec
             let superclass = read_guest_u64(memory, class_ptr + 8)
                 .and_then(|address| read_guest_u64(memory, address + 32))
                 .and_then(|address| guest_c_string(memory, read_guest_u64(memory, (address & !7) + 24)?));
+            let instance_size = read_guest_u64(memory, data + 8)
+                .map(|value| u64::from(value as u32).clamp(96, 1024 * 1024))
+                .unwrap_or(96);
             let instance_methods = parse_objc_methods(memory, read_guest_u64(memory, data + 32)?, slide);
             let metaclass = read_guest_u64(memory, class_ptr)?;
             let metaclass_data = read_guest_u64(memory, metaclass + 32).unwrap_or(0) & !7;
             let class_methods = parse_objc_methods(memory, read_guest_u64(memory, metaclass_data + 32).unwrap_or(0), slide);
-            Some(ObjCClass64 { name, superclass, instance_methods, class_methods })
+            Some(ObjCClass64 { name, superclass, instance_size, instance_methods, class_methods })
         })
         .collect()
 }
