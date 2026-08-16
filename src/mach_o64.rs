@@ -26,6 +26,20 @@ pub struct Section64 {
     pub size: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct ObjCMethod64 {
+    pub name: String,
+    pub address: Guest64Addr,
+}
+
+#[derive(Debug, Clone)]
+pub struct ObjCClass64 {
+    pub name: String,
+    pub superclass: Option<String>,
+    pub instance_methods: Vec<ObjCMethod64>,
+    pub class_methods: Vec<ObjCMethod64>,
+}
+
 #[derive(Debug)]
 pub struct MachO64 {
     pub architecture: Architecture,
@@ -38,6 +52,7 @@ pub struct MachO64 {
     pub last_segment_end: Guest64Addr,
     pub memory: Mem64,
     pub sections: Vec<Section64>,
+    pub objc_classes: Vec<ObjCClass64>,
 }
 
 fn command_bytes<'a>(bytes: &'a [u8], offset: u32, size: u32) -> Result<&'a [u8], String> {
@@ -77,6 +92,59 @@ fn add_signed(base: u64, offset: i64) -> Result<u64, String> {
     } else {
         base.checked_sub(offset.unsigned_abs()).ok_or("ARM64 address underflows".into())
     }
+}
+
+fn read_guest_u64(memory: &Mem64, address: u64) -> Option<u64> {
+    memory.read_u64(address).ok()
+}
+
+fn guest_c_string(memory: &Mem64, address: u64) -> Option<String> {
+    let length = memory.cstr_len(address, 1024 * 1024).ok()?;
+    String::from_utf8(memory.read_bytes(address, length).ok()?).ok()
+}
+
+fn parse_objc_methods(memory: &Mem64, list: u64, slide: u64) -> Vec<ObjCMethod64> {
+    if list == 0 {
+        return Vec::new();
+    }
+    let Some(entsize) = read_guest_u64(memory, list).map(|value| value as u32) else {
+        return Vec::new();
+    };
+    let Some(count) = read_guest_u64(memory, list + 4).map(|value| value as u32) else {
+        return Vec::new();
+    };
+    let entry_size = u64::from(entsize.max(24));
+    let count = count.min(4096);
+    (0..count)
+        .filter_map(|index| {
+            let entry = list.checked_add(8)?.checked_add(u64::from(index).checked_mul(entry_size)?)?;
+            let name = guest_c_string(memory, read_guest_u64(memory, entry)?)?;
+            let address = read_guest_u64(memory, entry + 16)?.checked_add(slide)?;
+            Some(ObjCMethod64 { name, address })
+        })
+        .collect()
+}
+
+fn parse_objc_classes(memory: &Mem64, sections: &[Section64], slide: u64) -> Vec<ObjCClass64> {
+    let Some(classlist) = sections.iter().find(|section| section.name == "__objc_classlist") else {
+        return Vec::new();
+    };
+    let count = (classlist.size / 8).min(4096);
+    (0..count)
+        .filter_map(|index| {
+            let class_ptr = classlist.address.checked_add(index * 8).and_then(|address| read_guest_u64(memory, address))?;
+            let data = read_guest_u64(memory, class_ptr + 32)? & !7;
+            let name = guest_c_string(memory, read_guest_u64(memory, data + 24)?)?;
+            let superclass = read_guest_u64(memory, class_ptr + 8)
+                .and_then(|address| read_guest_u64(memory, address + 32))
+                .and_then(|address| guest_c_string(memory, read_guest_u64(memory, (address & !7) + 24)?));
+            let instance_methods = parse_objc_methods(memory, read_guest_u64(memory, data + 32)?, slide);
+            let metaclass = read_guest_u64(memory, class_ptr)?;
+            let metaclass_data = read_guest_u64(memory, metaclass + 32).unwrap_or(0) & !7;
+            let class_methods = parse_objc_methods(memory, read_guest_u64(memory, metaclass_data + 32).unwrap_or(0), slide);
+            Some(ObjCClass64 { name, superclass, instance_methods, class_methods })
+        })
+        .collect()
 }
 
 fn parse_chained_fixups(
@@ -398,6 +466,8 @@ impl MachO64 {
             }
         }
 
+        let objc_classes = parse_objc_classes(&memory, &sections, slide);
+
         Ok(Self {
             architecture: Architecture::Arm64,
             name,
@@ -409,6 +479,7 @@ impl MachO64 {
             last_segment_end,
             memory,
             sections,
+            objc_classes,
         })
     }
 }

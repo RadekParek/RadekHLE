@@ -7,11 +7,13 @@ const NZCV_C: u32 = 1 << 29;
 const NZCV_V: u32 = 1 << 28;
 
 #[derive(Debug)]
-pub struct A64Interpreter;
+pub struct A64Interpreter {
+    reservation: Option<(u64, u128)>,
+}
 
 impl A64Interpreter {
     pub fn new() -> Self {
-        Self
+        Self { reservation: None }
     }
 
     pub fn run_or_step(&mut self, memory: &mut Mem64, context: &mut touchHLE_DynarmicA64Context, ticks: Option<&mut u64>) -> i32 {
@@ -45,7 +47,7 @@ impl A64Interpreter {
         result
     }
 
-    fn step(&self, memory: &mut Mem64, context: &mut touchHLE_DynarmicA64Context) -> i32 {
+    fn step(&mut self, memory: &mut Mem64, context: &mut touchHLE_DynarmicA64Context) -> i32 {
         let pc = context.pc;
         let instruction = match memory.read_code_u32(pc) {
             Ok(instruction) => instruction,
@@ -72,7 +74,7 @@ impl A64Interpreter {
         }
     }
 
-    fn execute(&self, memory: &mut Mem64, context: &mut touchHLE_DynarmicA64Context, instruction: u32) -> Result<Option<u32>, InterpreterError> {
+    fn execute(&mut self, memory: &mut Mem64, context: &mut touchHLE_DynarmicA64Context, instruction: u32) -> Result<Option<u32>, InterpreterError> {
         let pc = context.pc;
         if instruction & 0xffe0_001f == 0xd400_0001 {
             context.pc = pc.wrapping_add(4);
@@ -150,6 +152,11 @@ impl A64Interpreter {
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
+        if instruction & 0x1f80_0000 == 0x1200_0000 {
+            self.execute_logical_immediate(context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
         if instruction & 0x1f80_0000 == 0x1280_0000 {
             self.execute_move_wide(context, instruction)?;
             context.pc = pc.wrapping_add(4);
@@ -197,8 +204,18 @@ impl A64Interpreter {
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
-        if instruction & 0x3b20_0c00 == 0x3800_0000 {
+        if instruction & 0x3e00_0000 == 0x0800_0000 {
+            self.execute_exclusive(memory, context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
+        if instruction & 0x3b20_0000 == 0x3800_0000 {
             self.execute_load_store_unscaled(memory, context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
+        if instruction & 0x3b20_0000 == 0x3820_0000 {
+            self.execute_load_store_register(memory, context, instruction)?;
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
@@ -213,6 +230,46 @@ impl A64Interpreter {
             return Ok(None);
         }
         Err(InterpreterError::Undefined)
+    }
+
+    fn execute_logical_immediate(&self, context: &mut touchHLE_DynarmicA64Context, instruction: u32) -> Result<(), InterpreterError> {
+        let sf = instruction >> 31 != 0;
+        let width = if sf { 64 } else { 32 };
+        let n = ((instruction >> 22) & 1) as u32;
+        let immr = ((instruction >> 16) & 0x3f) as u32;
+        let imms = ((instruction >> 10) & 0x3f) as u32;
+        let combined = (n << 6) | ((!imms) & 0x3f);
+        let len = 31 - combined.leading_zeros();
+        if len < 1 || (!sf && len > 5) {
+            return Err(InterpreterError::Undefined);
+        }
+        let element_size = 1u32 << len;
+        let levels = element_size - 1;
+        let s = imms & levels;
+        let r = immr & levels;
+        let ones = if s + 1 == 64 { u64::MAX } else { (1u64 << (s + 1)) - 1 };
+        let element_mask = if element_size == 64 { u64::MAX } else { (1u64 << element_size) - 1 };
+        let rotated = ((ones >> r) | (ones << (element_size - r))) & element_mask;
+        let mut mask = 0u64;
+        let mut shift = 0;
+        while shift < width {
+            mask |= rotated << shift;
+            shift += element_size;
+        }
+        let left = read_reg(context, ((instruction >> 5) & 31) as usize, sf);
+        let value = match (instruction >> 29) & 3 {
+            0 => left & mask,
+            1 => left | mask,
+            2 => left ^ mask,
+            3 => {
+                let result = left & mask;
+                set_flags(context, result, false, false, sf);
+                result
+            }
+            _ => unreachable!(),
+        };
+        set_reg(context, (instruction & 31) as usize, value, sf);
+        Ok(())
     }
 
     fn execute_move_wide(&self, context: &mut touchHLE_DynarmicA64Context, instruction: u32) -> Result<(), InterpreterError> {
@@ -339,11 +396,90 @@ impl A64Interpreter {
         Ok(())
     }
 
-    fn execute_load_store_unsigned(&self, memory: &mut Mem64, context: &mut touchHLE_DynarmicA64Context, instruction: u32) -> Result<(), InterpreterError> {
+    fn execute_exclusive(&mut self, memory: &mut Mem64, context: &mut touchHLE_DynarmicA64Context, instruction: u32) -> Result<(), InterpreterError> {
         let size = 1u64 << ((instruction >> 30) & 3);
         let load = instruction & 0x0040_0000 != 0;
+        let address = read_sp_or_reg(context, ((instruction >> 5) & 31) as usize, true);
+        let rt = (instruction & 31) as usize;
+        let rs = ((instruction >> 16) & 31) as usize;
+        if load {
+            let value = read_memory_value(memory, address, size)?;
+            set_reg(context, rt, value as u64, size == 8);
+            self.reservation = Some((address, value));
+        } else {
+            let success = self.reservation.take().is_some_and(|(reserved, expected)| {
+                reserved == address && read_memory_value(memory, address, size).ok() == Some(expected)
+            });
+            if success {
+                let value = read_reg(context, rs, size == 8);
+                let result = match size {
+                    1 => memory.write_u8(address, value as u8),
+                    2 => memory.write_u16(address, value as u16),
+                    4 => memory.write_u32(address, value as u32),
+                    8 => memory.write_u64(address, value),
+                    _ => unreachable!(),
+                };
+                result.map_err(|error| InterpreterError::Memory(error, address))?;
+            }
+            set_reg(context, rs, u64::from(!success), false);
+        }
+        Ok(())
+    }
+
+    fn execute_load_store_unsigned(&self, memory: &mut Mem64, context: &mut touchHLE_DynarmicA64Context, instruction: u32) -> Result<(), InterpreterError> {
+        let size = 1u64 << ((instruction >> 30) & 3);
+        let opcode = instruction & 0xffc0_0000;
+        let signed_load = matches!(opcode, 0x3980_0000 | 0x7980_0000 | 0xb980_0000);
+        let load = instruction & 0x0040_0000 != 0 || signed_load;
         let address = read_sp_or_reg(context, ((instruction >> 5) & 31) as usize, true).wrapping_add(((instruction >> 10) & 0xfff) as u64 * size);
-        self.load_store(memory, context, instruction, address, size, load)
+        if signed_load {
+            let value = match size {
+                1 => memory.read_u8(address).map(|value| (value as i8 as i64) as u64),
+                2 => memory.read_u16(address).map(|value| (value as i16 as i64) as u64),
+                4 => memory.read_u32(address).map(|value| (value as i32 as i64) as u64),
+                8 => memory.read_u64(address),
+                _ => unreachable!(),
+            }.map_err(|error| InterpreterError::Memory(error, address))?;
+            set_reg(context, (instruction & 31) as usize, value, instruction & 0x8000_0000 != 0);
+            Ok(())
+        } else {
+            self.load_store(memory, context, instruction, address, size, load)
+        }
+    }
+
+    fn execute_load_store_register(&self, memory: &mut Mem64, context: &mut touchHLE_DynarmicA64Context, instruction: u32) -> Result<(), InterpreterError> {
+        let size = 1u64 << ((instruction >> 30) & 3);
+        let load = instruction & 0x0040_0000 != 0;
+        let signed = instruction & 0x0000_0800 != 0;
+        let base = read_sp_or_reg(context, ((instruction >> 5) & 31) as usize, true);
+        let index = read_reg(context, ((instruction >> 16) & 31) as usize, true);
+        let extend = (instruction >> 13) & 7;
+        let mut offset = match extend {
+            2 | 6 => (index as i32 as i64) as u64,
+            3 | 7 => index,
+            0 => index as u8 as u64,
+            1 => index as u16 as u64,
+            4 => index as u32 as u64,
+            5 => index,
+            _ => index,
+        };
+        if instruction & 0x0000_1000 != 0 {
+            offset = offset.wrapping_shl(size.trailing_zeros());
+        }
+        let address = base.wrapping_add(offset);
+        if load && signed {
+            let value = match size {
+                1 => memory.read_u8(address).map(|value| (value as i8 as i64) as u64),
+                2 => memory.read_u16(address).map(|value| (value as i16 as i64) as u64),
+                4 => memory.read_u32(address).map(|value| (value as i32 as i64) as u64),
+                8 => memory.read_u64(address),
+                _ => unreachable!(),
+            }.map_err(|error| InterpreterError::Memory(error, address))?;
+            set_reg(context, (instruction & 31) as usize, value, true);
+            Ok(())
+        } else {
+            self.load_store(memory, context, instruction, address, size, load)
+        }
     }
 
     fn execute_load_store_unscaled(&self, memory: &mut Mem64, context: &mut touchHLE_DynarmicA64Context, instruction: u32) -> Result<(), InterpreterError> {
@@ -413,6 +549,17 @@ enum InterpreterError {
     Memory(&'static str, u64),
     Undefined,
     Breakpoint,
+}
+
+fn read_memory_value(memory: &Mem64, address: u64, size: u64) -> Result<u128, InterpreterError> {
+    match size {
+        1 => memory.read_u8(address).map(u128::from),
+        2 => memory.read_u16(address).map(u128::from),
+        4 => memory.read_u32(address).map(u128::from),
+        8 => memory.read_u64(address).map(u128::from),
+        _ => unreachable!(),
+    }
+    .map_err(|error| InterpreterError::Memory(error, address))
 }
 
 fn sign_extend(value: u64, bits: u32) -> i64 {

@@ -411,6 +411,8 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     runtime_state.bundle_identifier = bundle.bundle_identifier().to_owned();
     runtime_state.bundle_path = bundle.bundle_path().as_str().to_owned();
     runtime_state.bundle_name = bundle.bundle_name().to_owned();
+    runtime_state.objc_classes = executable.objc_classes.clone();
+    echo!("ARM64 Objective-C metadata: {} guest classes loaded", runtime_state.objc_classes.len());
     load_embedded_unity_framework(&bundle, &fs, &mut memory, &mut runtime_state)?;
     let mut window = if options.headless {
         None
@@ -735,7 +737,8 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                         }
                     }
                 }
-                if let Some(transfer_pc) = runtime_state.take_guest_transfer() {
+                let guest_transfer = runtime_state.take_guest_transfer();
+                if let Some(transfer_pc) = guest_transfer {
                     echo!("ARM64 continuing guest execution at transferred Objective-C method {:#x}", transfer_pc);
                     context.pc = transfer_pc;
                     cpu.load_context(&context);
@@ -793,7 +796,9 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                         runtime_state.graphics_backend.label()
                     );
                 }
-                context.pc = context.regs[30];
+                if guest_transfer.is_none() {
+                    context.pc = context.regs[30];
+                }
                 no_progress_slices = 0;
                 no_progress_since = Instant::now();
                 cpu.load_context(&context);

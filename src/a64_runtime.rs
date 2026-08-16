@@ -1,5 +1,6 @@
 use crate::a64_abi::A64Abi;
 use crate::dyld::{search_host_dylibs, HostConstant};
+use crate::mach_o64::ObjCClass64;
 use crate::mem64::Mem64;
 use crate::window::DeviceFamily;
 use touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context;
@@ -30,6 +31,7 @@ const A64_KIND_UI_DEVICE: u64 = 20;
 const A64_KIND_UI_SCREEN: u64 = 21;
 const A64_KIND_UNITY_FRAMEWORK: u64 = 22;
 const A64_KIND_NUMBER: u64 = 23;
+const A64_KIND_APPLICATION: u64 = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum A64GraphicsBackend {
@@ -84,6 +86,9 @@ pub struct RuntimeState {
     pub loaded_images: Vec<LoadedImage>,
     pub guest_transfer_pc: Option<u64>,
     pub unity_framework_instance: Option<u64>,
+    pub objc_classes: Vec<ObjCClass64>,
+    pub class_objects: HashMap<String, u64>,
+    pub application_object: Option<u64>,
 }
 
 impl RuntimeState {
@@ -118,6 +123,9 @@ impl RuntimeState {
             loaded_images: Vec::new(),
             guest_transfer_pc: None,
             unity_framework_instance: None,
+            objc_classes: Vec::new(),
+            class_objects: HashMap::new(),
+            application_object: None,
         }
     }
 
@@ -515,6 +523,7 @@ fn objc_class_kind(mem: &Mem64, class_name: u64) -> u64 {
         Some(b"MTLDepthStencilState") => A64_KIND_DEPTH_STENCIL,
         Some(b"UIDevice") => A64_KIND_UI_DEVICE,
         Some(b"UIScreen") => A64_KIND_UI_SCREEN,
+        Some(b"UIApplication") => A64_KIND_APPLICATION,
         Some(b"NSBundle") => A64_KIND_BUNDLE,
         Some(b"UnityFramework") => A64_KIND_UNITY_FRAMEWORK,
         _ => A64_KIND_GENERIC,
@@ -556,6 +565,12 @@ fn objc_send(
     if matches!(selector.as_str(), "commit" | "presentDrawable:") {
         state.frame_serial = state.frame_serial.saturating_add(1);
         state.present_requested = true;
+    }
+    let class_method = kind == A64_KIND_CLASS;
+    if !matches!(selector.as_str(), "alloc" | "new" | "init" | "self" | "retain" | "autorelease" | "copy" | "mutableCopy" | "release" | "class" | "respondsToSelector:" | "isKindOfClass:" | "hasUnifiedMemory")
+        && transfer_guest_method(mem, context, state, &selector, class_method)
+    {
+        return Ok(());
     }
     let result = match selector.as_str() {
         "runUIApplicationMainWithArgc:argv:" if receiver == 0 => {
@@ -800,7 +815,14 @@ fn objc_send(
             set_objc_field(mem, receiver, offset, value);
             0
         }
-        "alloc" | "new" if kind == A64_KIND_CLASS => objc_object(mem, objc_class_kind(mem, class_name))?,
+        "alloc" | "new" if kind == A64_KIND_CLASS => {
+            let class_name_text = objc_text(mem, class_name).and_then(|bytes| String::from_utf8(bytes).ok()).unwrap_or_default();
+            let object = objc_instance_for_class(mem, state, &class_name_text)?;
+            if class_name_text == "UIApplication" {
+                state.application_object = Some(object);
+            }
+            object
+        }
         _ => 0,
     };
     if state.guest_transfer_pc.is_none() {
@@ -814,6 +836,74 @@ fn objc_class(mem: &mut Mem64, name: u64) -> Result<u64, String> {
     set_objc_field(mem, object, 56, name);
     Ok(object)
 }
+fn objc_class_for_name(mem: &mut Mem64, state: &mut RuntimeState, name: &str) -> Result<u64, String> {
+    if let Some(&class) = state.class_objects.get(name) {
+        return Ok(class);
+    }
+    let bytes = name.as_bytes();
+    let pointer = mem.alloc_zeroed(bytes.len() as u64 + 1).map_err(str::to_owned)?;
+    mem.write_bytes(pointer, bytes).map_err(str::to_owned)?;
+    mem.write_u8(pointer + bytes.len() as u64, 0).map_err(str::to_owned)?;
+    let class = objc_class(mem, pointer)?;
+    state.class_objects.insert(name.to_owned(), class);
+    Ok(class)
+}
+
+fn objc_instance_for_class(mem: &mut Mem64, state: &mut RuntimeState, name: &str) -> Result<u64, String> {
+    let class = objc_class_for_name(mem, state, name)?;
+    let object = objc_object(mem, objc_class_kind(mem, {
+        let name_pointer = objc_field(mem, class, 56);
+        name_pointer
+    }))?;
+    set_objc_field(mem, object, 48, class);
+    Ok(object)
+}
+
+fn receiver_class_name(mem: &Mem64, receiver: u64, kind: u64) -> Option<String> {
+    let class = if kind == A64_KIND_CLASS { receiver } else { objc_field(mem, receiver, 48) };
+    objc_text(mem, objc_field(mem, class, 56)).and_then(|bytes| String::from_utf8(bytes).ok())
+}
+
+fn guest_method(state: &RuntimeState, class_name: &str, selector: &str, class_method: bool) -> Option<u64> {
+    let mut current = Some(class_name.to_owned());
+    for _ in 0..32 {
+        let name = current?;
+        let class = state.objc_classes.iter().find(|class| class.name == name)?;
+        let methods = if class_method { &class.class_methods } else { &class.instance_methods };
+        if let Some(method) = methods.iter().find(|method| method.name == selector) {
+            return Some(method.address);
+        }
+        current = class.superclass.clone();
+    }
+    None
+}
+
+fn selector_pointer(mem: &mut Mem64, selector: &str) -> Result<u64, String> {
+    let bytes = selector.as_bytes();
+    let pointer = mem.alloc_zeroed(bytes.len() as u64 + 1).map_err(str::to_owned)?;
+    mem.write_bytes(pointer, bytes).map_err(str::to_owned)?;
+    mem.write_u8(pointer + bytes.len() as u64, 0).map_err(str::to_owned)?;
+    Ok(pointer)
+}
+
+fn transfer_guest_method(
+    mem: &Mem64,
+    context: &mut touchHLE_DynarmicA64Context,
+    state: &mut RuntimeState,
+    selector: &str,
+    class_method: bool,
+) -> bool {
+    let Some(class_name) = receiver_class_name(mem, context.regs[0], if class_method { A64_KIND_CLASS } else { A64_KIND_GENERIC }) else {
+        return false;
+    };
+    let Some(address) = guest_method(state, &class_name, selector, class_method) else {
+        return false;
+    };
+    log!("ARM64 guest Objective-C transfer: {}{} -> {:#x}", if class_method { "+" } else { "-" }, selector, address);
+    state.guest_transfer_pc = Some(address);
+    true
+}
+
 
 pub fn materialize_import(mem: &mut Mem64, symbol: &str) -> Result<Option<u64>, String> {
     if let Some(value) = materialize_host_constant(mem, symbol)? {
@@ -1247,10 +1337,29 @@ pub fn dispatch(
             state.application_main_calls = state.application_main_calls.saturating_add(1);
             state.application_bootstrap_requested = true;
             state.present_requested = true;
-            echo!(
-                "ARM64 UIApplicationMain entered the compatibility application lifecycle; bootstrap will be presented before guest entry returns"
-            );
-            return_value(context, 0);
+            let application = state.application_object.unwrap_or(objc_instance_for_class(mem, state, "UIApplication")?);
+            state.application_object = Some(application);
+            let delegate_name = if context.regs[3] != 0 {
+                objc_text(mem, context.regs[3]).and_then(|bytes| String::from_utf8(bytes).ok())
+            } else {
+                state.objc_classes.iter().find(|class| guest_method(state, &class.name, "application:didFinishLaunchingWithOptions:", false).is_some()).map(|class| class.name.clone())
+            };
+            if let Some(delegate_name) = delegate_name {
+                let delegate = objc_instance_for_class(mem, state, &delegate_name)?;
+                let selector = selector_pointer(mem, "application:didFinishLaunchingWithOptions:")?;
+                context.regs[0] = delegate;
+                context.regs[1] = selector;
+                context.regs[2] = application;
+                context.regs[3] = 0;
+                if let Some(address) = guest_method(state, &delegate_name, "application:didFinishLaunchingWithOptions:", false) {
+                    state.guest_transfer_pc = Some(address);
+                    log!("ARM64 UIApplicationMain transferring to {} application:didFinishLaunchingWithOptions: at {:#x}", delegate_name, address);
+                }
+            }
+            echo!("ARM64 UIApplicationMain entered the compatibility application lifecycle; guest application delegate dispatch is active");
+            if state.guest_transfer_pc.is_none() {
+                return_value(context, 0);
+            }
             Ok(true)
         }
         "dyld_stub_binder" => {
