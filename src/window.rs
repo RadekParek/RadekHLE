@@ -2550,10 +2550,6 @@ impl Window {
         self.on_main_stack
     }
 
-    pub fn quit_requested(&mut self) -> bool {
-        matches!(self.pop_event(), Some(Event::Quit | Event::AppWillTerminate))
-    }
-
     /// Toggle FPS counter at runtime.
     pub fn set_show_fps_counter(&mut self, enabled: bool) {
         self.show_fps_counter.set(enabled);
