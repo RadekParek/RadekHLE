@@ -634,6 +634,9 @@ fn objc_send(
         context.regs[4],
         context.regs[5]
     );
+    if matches!(selector.as_str(), "displayLinkWithTarget:selector:" | "setFrameInterval:" | "addToRunLoop:forMode:" | "setDisplayLink:") {
+        log!("ARM64 display-link message: receiver={:#x} kind={} class_name={:#x} selector={} x2={:#x} x3={:#x}", receiver, kind, class_name, selector, context.regs[2], context.regs[3]);
+    }
     if matches!(selector.as_str(), "commit" | "waitUntilCompleted" | "presentDrawable:" | "endEncoding") {
         state.metal_commands = state.metal_commands.saturating_add(1);
     }
@@ -673,13 +676,14 @@ fn objc_send(
         "platform" if receiver != 0 => objc_string(mem, "iPhone5,1")?,
         "currentThread" if kind == A64_KIND_CLASS => objc_object(mem, A64_KIND_THREAD)?,
         "currentRunLoop" if kind == A64_KIND_THREAD => objc_object(mem, A64_KIND_RUN_LOOP)?,
-        "displayLinkWithTarget:selector:" if kind == A64_KIND_CLASS => {
+        "displayLinkWithTarget:selector:" if kind == A64_KIND_CLASS || kind == A64_KIND_UI_SCREEN => {
             let object = objc_object(mem, A64_KIND_DISPLAY_LINK)?;
             state.display_link_object = Some(object);
             state.display_link_target = Some(context.regs[2]);
             state.display_link_selector = Some(context.regs[3]);
             state.display_link_scheduled = false;
             state.display_link_callback_returned = true;
+            echo!("ARM64 display-link created: object={:#x} target={:#x} selector={:#x}", object, context.regs[2], context.regs[3]);
             object
         }
         "setFrameInterval:" if kind == A64_KIND_DISPLAY_LINK => {
@@ -690,6 +694,7 @@ fn objc_send(
         "addToRunLoop:forMode:" if kind == A64_KIND_DISPLAY_LINK => {
             state.display_link_scheduled = true;
             state.display_link_callback_returned = true;
+            echo!("ARM64 display-link scheduled: object={:#x} run_loop={:#x} mode={:#x}", receiver, context.regs[2], context.regs[3]);
             0
         }
         "startAnimation" | "invalidate" if kind == A64_KIND_DISPLAY_LINK => 0,
@@ -1032,6 +1037,7 @@ pub fn schedule_display_link_callback(
     state: &mut RuntimeState,
 ) -> Result<bool, String> {
     if !state.display_link_scheduled || !state.display_link_callback_returned {
+        log_dbg!("ARM64 display-link callback not ready: scheduled={} returned={} callbacks={}", state.display_link_scheduled, state.display_link_callback_returned, state.display_link_callbacks);
         return Ok(false);
     }
     let (Some(target), Some(selector_pointer), Some(display_link), Some(return_stub)) = (
@@ -1046,6 +1052,7 @@ pub fn schedule_display_link_callback(
         .and_then(|bytes| String::from_utf8(bytes).ok())
         .unwrap_or_default();
     let Some(class_name) = receiver_class_name(mem, target, A64_KIND_GENERIC) else {
+        log!("ARM64 display-link callback target has no class: target={:#x} selector={}", target, selector);
         return Ok(false);
     };
     let Some(address) = guest_method(state, &class_name, &selector, false) else {
