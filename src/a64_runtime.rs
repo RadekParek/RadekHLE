@@ -95,6 +95,7 @@ pub struct RuntimeState {
     pub application_delegate: Option<u64>,
     pub application_window: Option<u64>,
     pub application_view_controller: Option<u64>,
+    pub application_view: Option<u64>,
     pub main_nib_name: Option<String>,
     pub launch_callback_return_pc: Option<u64>,
     pub application_return_stub: Option<u64>,
@@ -150,6 +151,7 @@ impl RuntimeState {
             application_delegate: None,
             application_window: None,
             application_view_controller: None,
+            application_view: None,
             main_nib_name: None,
             launch_callback_return_pc: None,
             application_return_stub: None,
@@ -673,6 +675,8 @@ fn objc_send(
         "init" | "self" | "retain" | "autorelease" | "copy" | "mutableCopy" => receiver,
         "window" if state.application_delegate == Some(receiver) => state.application_window.unwrap_or(0),
         "viewController" if state.application_delegate == Some(receiver) => state.application_view_controller.unwrap_or(0),
+        "view" if state.application_delegate == Some(receiver) => state.application_view.unwrap_or(0),
+        "view" if state.application_view_controller == Some(receiver) => state.application_view.unwrap_or(0),
         "platform" if receiver != 0 => objc_string(mem, "iPhone5,1")?,
         "currentThread" if kind == A64_KIND_CLASS => objc_object(mem, A64_KIND_THREAD)?,
         "currentRunLoop" if kind == A64_KIND_THREAD => objc_object(mem, A64_KIND_RUN_LOOP)?,
@@ -977,7 +981,8 @@ fn objc_instance_for_class(mem: &mut Mem64, state: &mut RuntimeState, name: &str
         .iter()
         .find(|class_info| class_info.name == name)
         .map(|class_info| class_info.instance_size)
-        .unwrap_or(A64_OBJECT_SIZE);
+        .unwrap_or(A64_OBJECT_SIZE)
+        .max(0x180);
     let object = objc_object_with_size(mem, objc_class_kind(mem, {
         let name_pointer = objc_field(mem, class, 56);
         name_pointer
@@ -1558,8 +1563,10 @@ pub fn dispatch(
                         .find(|name| name.to_ascii_lowercase().contains("viewcontroller"))
                         .map(str::to_owned);
                     state.application_window = Some(objc_object(mem, A64_KIND_GENERIC)?);
+                    state.application_view = Some(objc_object(mem, A64_KIND_GENERIC)?);
                     if let Some(view_controller_name) = view_controller_name {
-                        state.application_view_controller = Some(objc_instance_for_class(mem, state, &view_controller_name)?);
+                        let view_controller = objc_instance_for_class(mem, state, &view_controller_name)?;
+                        state.application_view_controller = Some(view_controller);
                     }
                 }
                 let selector = selector_pointer(mem, "application:didFinishLaunchingWithOptions:")?;
