@@ -416,18 +416,8 @@ impl A64Cpu {
                 A64Backend::Interpreter(A64Interpreter::new())
             }
             crate::options::Arm64Backend::Auto => {
-                let use_interpreter = false;
-                if use_interpreter {
-                    echo!("ARM64 backend selected: interpreter (explicit compatibility fallback)");
-                    A64Backend::Interpreter(A64Interpreter::new())
-                } else {
-                    echo!("ARM64 backend selected: Dynarmic JIT (desktop default; use --arm64-backend=interpreter for compatibility diagnostics)");
-                    A64Backend::Jit {
-                        wrapper: unsafe { touchHLE_DynarmicA64Wrapper_new() },
-                        interpreter: A64Interpreter::new(),
-                        disabled: false,
-                    }
-                }
+                echo!("ARM64 backend selected: interpreter (compatibility default; use --arm64-backend=jit to opt in)");
+                A64Backend::Interpreter(A64Interpreter::new())
             }
             crate::options::Arm64Backend::Jit => {
                 echo!("ARM64 backend selected: Dynarmic JIT (single-instruction compatibility stepping with interpreter fallback)");
@@ -448,8 +438,10 @@ impl A64Cpu {
     }
 
     pub fn load_context(&mut self, context: &touchHLE_DynarmicA64Context) {
-        if let A64Backend::Jit { wrapper, .. } = self.backend {
-            unsafe { touchHLE_DynarmicA64Wrapper_load_context(wrapper, context) }
+        if let A64Backend::Jit { wrapper, disabled, .. } = self.backend {
+            if !disabled {
+                unsafe { touchHLE_DynarmicA64Wrapper_load_context(wrapper, context) }
+            }
         }
     }
 
