@@ -101,6 +101,15 @@ pub struct RuntimeState {
     pub application_launch_return_stub: Option<u64>,
     pub application_active_return_stub: Option<u64>,
     pub pending_application_did_become_active: bool,
+    pub display_link_object: Option<u64>,
+    pub display_link_target: Option<u64>,
+    pub display_link_selector: Option<u64>,
+    pub display_link_scheduled: bool,
+    pub display_link_frame_interval: u64,
+    pub display_link_return_stub: Option<u64>,
+    pub display_link_callbacks: u64,
+    pub display_link_callback_returned: bool,
+    pub guest_yield_requested: bool,
 }
 
 impl RuntimeState {
@@ -147,6 +156,15 @@ impl RuntimeState {
             application_launch_return_stub: None,
             application_active_return_stub: None,
             pending_application_did_become_active: false,
+            display_link_object: None,
+            display_link_target: None,
+            display_link_selector: None,
+            display_link_scheduled: false,
+            display_link_frame_interval: 1,
+            display_link_return_stub: None,
+            display_link_callbacks: 0,
+            display_link_callback_returned: false,
+            guest_yield_requested: false,
         }
     }
 
@@ -176,6 +194,30 @@ impl RuntimeState {
 
     pub fn take_guest_transfer(&mut self) -> Option<u64> {
         self.guest_transfer_pc.take()
+    }
+
+    pub fn take_display_link_callback(&mut self) -> Option<(u64, u64, u64)> {
+        if !self.display_link_scheduled || self.display_link_callback_returned {
+            return None;
+        }
+        Some((self.display_link_target?, self.display_link_selector?, self.display_link_object?))
+    }
+
+    pub fn mark_display_link_callback_started(&mut self) {
+        self.display_link_callbacks = self.display_link_callbacks.saturating_add(1);
+        self.display_link_callback_returned = false;
+    }
+
+    pub fn mark_display_link_callback_returned(&mut self) {
+        self.display_link_callback_returned = true;
+    }
+
+    pub fn display_link_is_scheduled(&self) -> bool {
+        self.display_link_scheduled
+    }
+
+    pub fn take_guest_yield(&mut self) -> bool {
+        std::mem::take(&mut self.guest_yield_requested)
     }
 
     pub fn resolve_image_symbol(&self, candidates: &[&str]) -> Option<u64> {
@@ -631,12 +673,25 @@ fn objc_send(
         "platform" if receiver != 0 => objc_string(mem, "iPhone5,1")?,
         "currentThread" if kind == A64_KIND_CLASS => objc_object(mem, A64_KIND_THREAD)?,
         "currentRunLoop" if kind == A64_KIND_THREAD => objc_object(mem, A64_KIND_RUN_LOOP)?,
-        "displayLinkWithTarget:selector:" if kind == A64_KIND_CLASS => objc_object(mem, A64_KIND_DISPLAY_LINK)?,
+        "displayLinkWithTarget:selector:" if kind == A64_KIND_CLASS => {
+            let object = objc_object(mem, A64_KIND_DISPLAY_LINK)?;
+            state.display_link_object = Some(object);
+            state.display_link_target = Some(context.regs[2]);
+            state.display_link_selector = Some(context.regs[3]);
+            state.display_link_scheduled = false;
+            state.display_link_callback_returned = true;
+            object
+        }
         "setFrameInterval:" if kind == A64_KIND_DISPLAY_LINK => {
-            set_objc_field(mem, receiver, 56, context.regs[2]);
+            state.display_link_frame_interval = context.regs[2].max(1);
+            set_objc_field(mem, receiver, 56, context.regs[2].max(1));
             0
         }
-        "addToRunLoop:forMode:" if kind == A64_KIND_DISPLAY_LINK => 0,
+        "addToRunLoop:forMode:" if kind == A64_KIND_DISPLAY_LINK => {
+            state.display_link_scheduled = true;
+            state.display_link_callback_returned = true;
+            0
+        }
         "startAnimation" | "invalidate" if kind == A64_KIND_DISPLAY_LINK => 0,
         "setDisplayLink:" if state.application_delegate == Some(receiver) => {
             set_objc_field(mem, receiver, 80, context.regs[2]);
@@ -971,6 +1026,42 @@ fn transfer_guest_method(
     true
 }
 
+pub fn schedule_display_link_callback(
+    mem: &mut Mem64,
+    context: &mut touchHLE_DynarmicA64Context,
+    state: &mut RuntimeState,
+) -> Result<bool, String> {
+    if !state.display_link_scheduled || !state.display_link_callback_returned {
+        return Ok(false);
+    }
+    let (Some(target), Some(selector_pointer), Some(display_link), Some(return_stub)) = (
+        state.display_link_target,
+        state.display_link_selector,
+        state.display_link_object,
+        state.display_link_return_stub,
+    ) else {
+        return Ok(false);
+    };
+    let selector = c_string(mem, selector_pointer)
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .unwrap_or_default();
+    let Some(class_name) = receiver_class_name(mem, target, A64_KIND_GENERIC) else {
+        return Ok(false);
+    };
+    let Some(address) = guest_method(state, &class_name, &selector, false) else {
+        log!("ARM64 display-link callback selector {} is not implemented on {}", selector, class_name);
+        return Ok(false);
+    };
+    context.regs[0] = target;
+    context.regs[1] = selector_pointer;
+    context.regs[2] = display_link;
+    context.regs[30] = return_stub;
+    state.mark_display_link_callback_started();
+    state.guest_transfer_pc = Some(address);
+    log!("ARM64 display-link callback #{}: {} on {} -> {:#x}", state.display_link_callbacks, selector, class_name, address);
+    Ok(true)
+}
+
 
 pub fn materialize_import(mem: &mut Mem64, symbol: &str) -> Result<Option<u64>, String> {
     if let Some(value) = materialize_host_constant(mem, symbol)? {
@@ -1050,6 +1141,13 @@ pub fn dispatch(
             context.regs[30] = return_stub;
         }
         log!("ARM64 lifecycle callback completed: applicationDidBecomeActive:");
+        return Ok(true);
+    }
+    if symbol == "ARM64_display_link_return" {
+        state.mark_display_link_callback_returned();
+        state.guest_yield_requested = true;
+        return_value(context, 0);
+        log_dbg!("ARM64 display-link callback returned: callbacks={} selector={}", state.display_link_callbacks, state.last_selector.as_deref().unwrap_or("<none>"));
         return Ok(true);
     }
     match symbol {

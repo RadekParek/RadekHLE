@@ -1,4 +1,4 @@
-use crate::a64_runtime::{dispatch, materialize_import, A64GraphicsBackend, LoadedImage, RuntimeState};
+use crate::a64_runtime::{dispatch, materialize_import, schedule_display_link_callback, A64GraphicsBackend, LoadedImage, RuntimeState};
 use crate::bundle::Bundle;
 use crate::cpu::A64Cpu;
 use crate::fs::Fs;
@@ -455,10 +455,13 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     let application_return_stub = write_svc_stub(&mut memory, SVC_HOST_BASE + 0x7ffd)?;
     let application_launch_return_stub = write_svc_stub(&mut memory, SVC_HOST_BASE + 0x7ffe)?;
     let application_active_return_stub = write_svc_stub(&mut memory, SVC_HOST_BASE + 0x7fff)?;
+    let display_link_return_stub = write_svc_stub(&mut memory, SVC_HOST_BASE + 0x7ffc)?;
     runtime_state.application_return_stub = Some(application_return_stub);
     runtime_state.application_launch_return_stub = Some(application_launch_return_stub);
     runtime_state.application_active_return_stub = Some(application_active_return_stub);
+    runtime_state.display_link_return_stub = Some(display_link_return_stub);
     let mut host_stubs = HashMap::new();
+    host_stubs.insert((SVC_HOST_BASE + 0x7ffc) as i32, ("ARM64_display_link_return".to_owned(), "ARM64_display_link_return"));
     host_stubs.insert((SVC_HOST_BASE + 0x7ffd) as i32, ("ARM64_application_return".to_owned(), "ARM64_application_return"));
     host_stubs.insert((SVC_HOST_BASE + 0x7ffe) as i32, ("ARM64_application_launch_return".to_owned(), "ARM64_application_launch_return"));
     host_stubs.insert((SVC_HOST_BASE + 0x7fff) as i32, ("ARM64_application_active_return".to_owned(), "ARM64_application_active_return"));
@@ -668,6 +671,17 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                         runtime_state.boot_screen_reached,
                         runtime_state.last_selector.as_deref().unwrap_or("<none>"),
                     );
+                    if schedule_display_link_callback(&mut memory, &mut context, &mut runtime_state)? {
+                        if let Some(transfer_pc) = runtime_state.take_guest_transfer() {
+                            echo!("ARM64 starting scheduled display-link guest callback at {:#x}", transfer_pc);
+                            context.pc = transfer_pc;
+                            cpu.load_context(&context);
+                            cpu.clear_halt(A64_HALT_USER_DEFINED1);
+                            cpu.clear_halt(A64_HALT_USER_DEFINED2);
+                            cpu.clear_halt(A64_HALT_USER_DEFINED3);
+                            continue;
+                        }
+                    }
                     run_arm64_application_lifecycle(&mut window, &options);
                     return Ok(());
                 }
@@ -808,6 +822,19 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 }
                 if guest_transfer.is_none() {
                     context.pc = context.regs[30];
+                }
+                let callback_scheduled = schedule_display_link_callback(&mut memory, &mut context, &mut runtime_state)?;
+                if let Some(transfer_pc) = runtime_state.take_guest_transfer() {
+                    echo!(
+                        "ARM64 scheduling next display-link guest callback at {:#x} (scheduled={})",
+                        transfer_pc,
+                        callback_scheduled,
+                    );
+                    context.pc = transfer_pc;
+                    cpu.load_context(&context);
+                    cpu.clear_halt(A64_HALT_USER_DEFINED1);
+                    cpu.clear_halt(A64_HALT_USER_DEFINED2);
+                    cpu.clear_halt(A64_HALT_USER_DEFINED3);
                 }
                 no_progress_slices = 0;
                 no_progress_since = Instant::now();
