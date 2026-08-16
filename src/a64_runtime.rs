@@ -156,7 +156,8 @@ impl RuntimeState {
 }
 
 fn name(symbol: &str) -> &str {
-    symbol.trim_start_matches('_')
+    let symbol = symbol.trim_start_matches('_');
+    symbol.strip_prefix('_').unwrap_or(symbol)
 }
 
 fn materialize_host_constant(mem: &mut Mem64, symbol: &str) -> Result<Option<u64>, String> {
@@ -204,7 +205,6 @@ fn materialize_custom_constant(mem: &mut Mem64, symbol: &str) -> Option<u64> {
 
 pub fn can_dispatch(symbol: &str) -> bool {
     let symbol = name(symbol);
-    let symbol = symbol.strip_prefix('_').unwrap_or(symbol);
     match symbol {
         "malloc" | "calloc" | "valloc" | "posix_memalign" | "free"
         | "malloc_zone_free" | "realloc" | "malloc_zone_realloc" | "memcpy"
@@ -829,7 +829,6 @@ pub fn dispatch(
 ) -> Result<bool, String> {
     state.host_dispatches = state.host_dispatches.saturating_add(1);
     let symbol = name(symbol);
-    let symbol = symbol.strip_prefix('_').unwrap_or(symbol);
     state.last_symbol = Some(symbol.to_owned());
     if state.host_dispatches <= 128 || state.host_dispatches.is_power_of_two() {
         log_dbg!(
