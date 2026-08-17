@@ -501,17 +501,33 @@ fn objc_object_with_size(mem: &mut Mem64, kind: u64, size: u64) -> Result<u64, S
 }
 
 fn objc_kind(mem: &Mem64, address: u64) -> Option<u64> {
-    (address != 0 && mem.allocation_size(address).is_some())
-        .then(|| mem.read_u64(address).ok())
-        .flatten()
+    if address == 0 || mem.allocation_size(address).is_none() {
+        return None;
+    }
+    let first_word = mem.read_u64(address).ok()?;
+    if (1..=A64_KIND_GENERIC).contains(&first_word) {
+        return Some(first_word);
+    }
+    let class = if first_word != 0 && mem.allocation_size(first_word).is_some() {
+        first_word
+    } else {
+        objc_field(mem, address, 48)
+    };
+    let class_name = objc_field(mem, class, 56);
+    Some(objc_class_kind(mem, class_name))
 }
 
 fn objc_field(mem: &Mem64, object: u64, offset: u64) -> u64 {
+    if object == 0 || mem.allocation_size(object).is_none() {
+        return 0;
+    }
     mem.read_u64(object.saturating_add(offset)).unwrap_or(0)
 }
 
 fn set_objc_field(mem: &mut Mem64, object: u64, offset: u64, value: u64) {
-    let _ = mem.write_u64(object.saturating_add(offset), value);
+    if object != 0 && mem.allocation_size(object).is_some() {
+        let _ = mem.write_u64(object.saturating_add(offset), value);
+    }
 }
 
 fn guest_ivar_offset(
@@ -773,7 +789,19 @@ fn objc_send(
     state.objc_messages = state.objc_messages.saturating_add(1);
     state.last_selector = Some(selector.clone());
     let kind = objc_kind(mem, receiver).unwrap_or(A64_KIND_GENERIC);
-    let class_name = objc_field(mem, receiver, 56);
+    let receiver_class = if kind == A64_KIND_CLASS {
+        receiver
+    } else if receiver != 0 && mem.allocation_size(receiver).is_some() {
+        let first_word = mem.read_u64(receiver).unwrap_or(0);
+        if first_word != 0 && mem.allocation_size(first_word).is_some() {
+            first_word
+        } else {
+            objc_field(mem, receiver, 48)
+        }
+    } else {
+        0
+    };
+    let class_name = objc_field(mem, receiver_class, 56);
 
     if selector == "runUIApplicationMainWithArgc:argv:" && receiver == 0 {
         echo!("ARM64 Objective-C bootstrap call used a nil receiver; returning zero and continuing startup");
@@ -939,7 +967,7 @@ fn objc_send(
             0
         }
         "release" => 0,
-        "class" => receiver,
+        "class" => receiver_class,
         "respondsToSelector:" | "isKindOfClass:" | "hasUnifiedMemory" => 1,
         "status" if kind == A64_KIND_COMMAND_BUFFER => 4,
         "error" if kind == A64_KIND_COMMAND_BUFFER => 0,
@@ -1199,7 +1227,7 @@ fn objc_send(
 }
 
 fn objc_class(mem: &mut Mem64, name: u64) -> Result<u64, String> {
-    let object = objc_object(mem, A64_KIND_CLASS)?;
+    let object = objc_object_with_size(mem, A64_KIND_CLASS, 0xb0)?;
     set_objc_field(mem, object, 56, name);
     Ok(object)
 }
@@ -1212,6 +1240,17 @@ fn objc_class_for_name(mem: &mut Mem64, state: &mut RuntimeState, name: &str) ->
     mem.write_bytes(pointer, bytes).map_err(str::to_owned)?;
     mem.write_u8(pointer + bytes.len() as u64, 0).map_err(str::to_owned)?;
     let class = objc_class(mem, pointer)?;
+    if name == "EAGLView" {
+        if let Some(method) = guest_method(state, name, "presentFramebuffer", false) {
+            set_objc_field(mem, class, 0x98, method);
+            log!(
+                "ARM64 initialized EAGLView class dispatch slot: class={:#x} slot={:#x} presentFramebuffer={:#x}",
+                class,
+                0x98,
+                method,
+            );
+        }
+    }
     state.class_objects.insert(name.to_owned(), class);
     Ok(class)
 }
@@ -1229,7 +1268,7 @@ fn objc_instance_for_class(mem: &mut Mem64, state: &mut RuntimeState, name: &str
         let name_pointer = objc_field(mem, class, 56);
         name_pointer
     }), instance_size)?;
-    set_objc_field(mem, object, 48, class);
+    mem.write_u64(object, class).map_err(str::to_owned)?;
     initialize_guest_ivars(mem, state, name, object)?;
     Ok(object)
 }
@@ -1253,7 +1292,16 @@ fn initialize_guest_ivars(mem: &mut Mem64, state: &RuntimeState, class_name: &st
 }
 
 fn receiver_class_name(mem: &Mem64, receiver: u64, kind: u64) -> Option<String> {
-    let class = if kind == A64_KIND_CLASS { receiver } else { objc_field(mem, receiver, 48) };
+    let class = if kind == A64_KIND_CLASS {
+        receiver
+    } else {
+        let first_word = mem.read_u64(receiver).ok().unwrap_or(0);
+        if first_word != 0 && mem.allocation_size(first_word).is_some() {
+            first_word
+        } else {
+            objc_field(mem, receiver, 48)
+        }
+    };
     objc_text(mem, objc_field(mem, class, 56)).and_then(|bytes| String::from_utf8(bytes).ok())
 }
 
@@ -1826,7 +1874,7 @@ pub fn dispatch(
                         .find(|name| name.to_ascii_lowercase().contains("viewcontroller"))
                         .map(str::to_owned);
                     let window = objc_object(mem, A64_KIND_VIEW)?;
-                    let view = objc_object_with_size(mem, A64_KIND_EAGL_VIEW, 128)?;
+                    let view = objc_instance_for_class(mem, state, "EAGLView")?;
                     state.application_window = Some(window);
                     state.application_view = Some(view);
                     initialize_eagl_view(mem, state, view)?;
