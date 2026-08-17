@@ -572,6 +572,20 @@ fn set_guest_ivar_f64(
 ) -> Result<bool, String> {
     set_guest_ivar_u64(mem, state, class_name, object, ivar_name, value.to_bits())
 }
+fn set_guest_ivar_u64_aliases(
+    mem: &mut Mem64,
+    state: &RuntimeState,
+    class_name: &str,
+    object: u64,
+    ivar_names: &[&str],
+    value: u64,
+) -> Result<bool, String> {
+    let mut mapped = false;
+    for ivar_name in ivar_names {
+        mapped |= set_guest_ivar_u64(mem, state, class_name, object, ivar_name, value)?;
+    }
+    Ok(mapped)
+}
 
 fn initialize_eagl_view(mem: &mut Mem64, state: &mut RuntimeState, view: u64) -> Result<(), String> {
     let context = if let Some(context) = state.graphics_context {
@@ -581,17 +595,17 @@ fn initialize_eagl_view(mem: &mut Mem64, state: &mut RuntimeState, view: u64) ->
         state.graphics_context = Some(context);
         context
     };
-    let class_name = "EAGLView";
-    let context_mapped = set_guest_ivar_u64(mem, state, class_name, view, "context", context)?;
-    let framebuffer_mapped = set_guest_ivar_u32(mem, state, class_name, view, "defaultFramebuffer", 1)?;
-    let renderbuffer_mapped = set_guest_ivar_u32(mem, state, class_name, view, "colorRenderbuffer", 1)?;
-    let width_mapped = set_guest_ivar_u32(mem, state, class_name, view, "framebufferWidth", state.screen_width)?;
-    let height_mapped = set_guest_ivar_u32(mem, state, class_name, view, "framebufferHeight", state.screen_height)?;
-    let depth_mapped = set_guest_ivar_u32(mem, state, class_name, view, "_depthRenderBuffer", 0)?;
+    let class_name = receiver_class_name(mem, view, A64_KIND_EAGL_VIEW).unwrap_or_else(|| "EAGLView".to_owned());
+    let context_mapped = set_guest_ivar_u64(mem, state, &class_name, view, "context", context)?;
+    let framebuffer_mapped = set_guest_ivar_u32(mem, state, &class_name, view, "defaultFramebuffer", 1)?;
+    let renderbuffer_mapped = set_guest_ivar_u32(mem, state, &class_name, view, "colorRenderbuffer", 1)?;
+    let width_mapped = set_guest_ivar_u32(mem, state, &class_name, view, "framebufferWidth", state.screen_width)?;
+    let height_mapped = set_guest_ivar_u32(mem, state, &class_name, view, "framebufferHeight", state.screen_height)?;
+    let depth_mapped = set_guest_ivar_u32(mem, state, &class_name, view, "_depthRenderBuffer", 0)?;
     let scale_mapped = set_guest_ivar_f64(
         mem,
         state,
-        class_name,
+        &class_name,
         view,
         "viewScale",
         state.device_family.scale_factor() as f64,
@@ -765,7 +779,7 @@ fn objc_send(
     }
     let class_method = kind == A64_KIND_CLASS;
     let application_accessor = state.application_delegate == Some(receiver)
-        && matches!(selector.as_str(), "window" | "viewController");
+        && matches!(selector.as_str(), "window" | "viewController" | "view");
     if selector == "platform" && receiver != 0 {
         let platform = objc_field(mem, receiver, 0x158);
         if platform == 0 {
@@ -1737,7 +1751,21 @@ pub fn dispatch(
                     if let Some(view_controller_name) = view_controller_name {
                         let view_controller = objc_instance_for_class(mem, state, &view_controller_name)?;
                         if let Some(context) = state.graphics_context {
-                            set_guest_ivar_u64(mem, state, &view_controller_name, view_controller, "context", context)?;
+                            let context_mapped = set_guest_ivar_u64_aliases(
+                                mem,
+                                state,
+                                &view_controller_name,
+                                view_controller,
+                                &["context", "_context"],
+                                context,
+                            )?;
+                            log!(
+                                "ARM64 initialized view-controller context: class={} object={:#x} context={:#x} mapped={}",
+                                view_controller_name,
+                                view_controller,
+                                context,
+                                context_mapped,
+                            );
                         }
                         state.application_view_controller = Some(view_controller);
                     }
