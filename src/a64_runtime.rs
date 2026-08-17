@@ -510,8 +510,67 @@ fn set_objc_field(mem: &mut Mem64, object: u64, offset: u64, value: u64) {
     let _ = mem.write_u64(object.saturating_add(offset), value);
 }
 
-fn set_objc_u32_field(mem: &mut Mem64, object: u64, offset: u64, value: u32) {
-    let _ = mem.write_u32(object.saturating_add(offset), value);
+fn guest_ivar_offset(
+    mem: &Mem64,
+    state: &RuntimeState,
+    class_name: &str,
+    ivar_name: &str,
+) -> Option<u64> {
+    let mut current = Some(class_name.to_owned());
+    while let Some(name) = current {
+        let class_info = state.objc_classes.iter().find(|class| class.name == name)?;
+        if let Some(ivar) = class_info.ivars.iter().find(|ivar| ivar.name == ivar_name) {
+            let offset = mem.read_u32(ivar.offset_address).ok()? as u64;
+            if (8..0x100000).contains(&offset) {
+                return Some(offset);
+            }
+        }
+        current = class_info.superclass.clone();
+    }
+    None
+}
+
+fn set_guest_ivar_u64(
+    mem: &mut Mem64,
+    state: &RuntimeState,
+    class_name: &str,
+    object: u64,
+    ivar_name: &str,
+    value: u64,
+) -> Result<bool, String> {
+    let Some(offset) = guest_ivar_offset(mem, state, class_name, ivar_name) else {
+        return Ok(false);
+    };
+    mem.write_u64(object.checked_add(offset).ok_or("ARM64 ivar address overflows")?, value)
+        .map_err(str::to_owned)?;
+    Ok(true)
+}
+
+fn set_guest_ivar_u32(
+    mem: &mut Mem64,
+    state: &RuntimeState,
+    class_name: &str,
+    object: u64,
+    ivar_name: &str,
+    value: u32,
+) -> Result<bool, String> {
+    let Some(offset) = guest_ivar_offset(mem, state, class_name, ivar_name) else {
+        return Ok(false);
+    };
+    mem.write_u32(object.checked_add(offset).ok_or("ARM64 ivar address overflows")?, value)
+        .map_err(str::to_owned)?;
+    Ok(true)
+}
+
+fn set_guest_ivar_f64(
+    mem: &mut Mem64,
+    state: &RuntimeState,
+    class_name: &str,
+    object: u64,
+    ivar_name: &str,
+    value: f64,
+) -> Result<bool, String> {
+    set_guest_ivar_u64(mem, state, class_name, object, ivar_name, value.to_bits())
 }
 
 fn initialize_eagl_view(mem: &mut Mem64, state: &mut RuntimeState, view: u64) -> Result<(), String> {
@@ -522,15 +581,27 @@ fn initialize_eagl_view(mem: &mut Mem64, state: &mut RuntimeState, view: u64) ->
         state.graphics_context = Some(context);
         context
     };
-    set_objc_field(mem, view, 120, context);
-    set_objc_u32_field(mem, view, 92, state.screen_width);
-    set_objc_u32_field(mem, view, 96, state.screen_height);
-    set_objc_u32_field(mem, view, 100, 1);
-    set_objc_u32_field(mem, view, 104, 1);
-    set_objc_u32_field(mem, view, 108, 0);
-    set_objc_field(mem, view, 112, u64::from(state.device_family.scale_factor().to_bits()));
+    let class_name = "EAGLView";
+    let context_mapped = set_guest_ivar_u64(mem, state, class_name, view, "context", context)?;
+    let framebuffer_mapped = set_guest_ivar_u32(mem, state, class_name, view, "defaultFramebuffer", 1)?;
+    let renderbuffer_mapped = set_guest_ivar_u32(mem, state, class_name, view, "colorRenderbuffer", 1)?;
+    let width_mapped = set_guest_ivar_u32(mem, state, class_name, view, "framebufferWidth", state.screen_width)?;
+    let height_mapped = set_guest_ivar_u32(mem, state, class_name, view, "framebufferHeight", state.screen_height)?;
+    let depth_mapped = set_guest_ivar_u32(mem, state, class_name, view, "_depthRenderBuffer", 0)?;
+    let scale_mapped = set_guest_ivar_f64(mem, state, class_name, view, "viewScale", state.device_family.scale_factor())?;
     state.application_eagl_view = Some(view);
-    log!("ARM64 initialized EAGLView framebuffer: view={:#x} context={:#x} framebuffer=1 renderbuffer=1 size={}x{}", view, context, state.screen_width, state.screen_height);
+    log!(
+        "ARM64 initialized EAGLView framebuffer: view={:#x} context={:#x} mapped=context:{} framebuffer:{} renderbuffer:{} size={}x{} depth:{} scale:{}",
+        view,
+        context,
+        context_mapped,
+        framebuffer_mapped,
+        renderbuffer_mapped,
+        state.screen_width,
+        state.screen_height,
+        depth_mapped,
+        scale_mapped,
+    );
     Ok(())
 }
 
@@ -714,8 +785,9 @@ fn objc_send(
         "init" | "self" | "retain" | "autorelease" | "copy" | "mutableCopy" => receiver,
         "createFramebuffer" if kind == A64_KIND_EAGL_VIEW => { initialize_eagl_view(mem, state, receiver)?; 0 }
         "deleteFramebuffer" if kind == A64_KIND_EAGL_VIEW => {
-            set_objc_u32_field(mem, receiver, 100, 0);
-            set_objc_u32_field(mem, receiver, 104, 0);
+            let class_name = receiver_class_name(mem, receiver, A64_KIND_GENERIC).unwrap_or_else(|| "EAGLView".to_owned());
+            set_guest_ivar_u32(mem, state, &class_name, receiver, "defaultFramebuffer", 0)?;
+            set_guest_ivar_u32(mem, state, &class_name, receiver, "colorRenderbuffer", 0)?;
             0
         }
         "window" if state.application_delegate == Some(receiver) => state.application_window.unwrap_or(0),
@@ -723,6 +795,20 @@ fn objc_send(
         "view" if state.application_delegate == Some(receiver) => state.application_view.unwrap_or(0),
         "view" if state.application_view_controller == Some(receiver) => state.application_view.unwrap_or(0),
         "view" if state.application_view == Some(receiver) => state.application_eagl_view.unwrap_or(0),
+        "context" if state.application_view_controller == Some(receiver) || state.application_eagl_view == Some(receiver) => {
+            let class_name = receiver_class_name(mem, receiver, A64_KIND_GENERIC).unwrap_or_else(|| "EAGLView".to_owned());
+            guest_ivar_offset(mem, state, &class_name, "context")
+                .and_then(|offset| mem.read_u64(receiver.checked_add(offset).ok()?).ok())
+                .unwrap_or(0)
+        }
+        "setContext:" if state.application_view_controller == Some(receiver) || state.application_eagl_view == Some(receiver) => {
+            let class_name = receiver_class_name(mem, receiver, A64_KIND_GENERIC).unwrap_or_else(|| "EAGLView".to_owned());
+            if let Some(offset) = guest_ivar_offset(mem, state, &class_name, "context") {
+                mem.write_u64(receiver.checked_add(offset).ok_or("ARM64 context ivar address overflows")?, context.regs[2]).map_err(str::to_owned)?;
+            }
+            state.graphics_context = Some(context.regs[2]);
+            0
+        }
         "platform" if receiver != 0 => objc_string(mem, "iPhone5,1")?,
         "currentThread" if kind == A64_KIND_CLASS => objc_object(mem, A64_KIND_THREAD)?,
         "currentRunLoop" if kind == A64_KIND_THREAD => objc_object(mem, A64_KIND_RUN_LOOP)?,
@@ -1643,6 +1729,9 @@ pub fn dispatch(
                     initialize_eagl_view(mem, state, view)?;
                     if let Some(view_controller_name) = view_controller_name {
                         let view_controller = objc_instance_for_class(mem, state, &view_controller_name)?;
+                        if let Some(context) = state.graphics_context {
+                            set_guest_ivar_u64(mem, state, &view_controller_name, view_controller, "context", context)?;
+                        }
                         state.application_view_controller = Some(view_controller);
                     }
                 }
