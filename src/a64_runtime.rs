@@ -505,7 +505,7 @@ fn objc_kind(mem: &Mem64, address: u64) -> Option<u64> {
         return None;
     }
     let first_word = mem.read_u64(address).ok()?;
-    if (1..=A64_KIND_GENERIC).contains(&first_word) {
+    if (1..=A64_KIND_CONTEXT).contains(&first_word) {
         return Some(first_word);
     }
     let class = if first_word != 0 && mem.allocation_size(first_word).is_some() {
@@ -829,8 +829,27 @@ fn objc_send(
         state.present_requested = true;
     }
     let class_method = kind == A64_KIND_CLASS;
-    let application_accessor = state.application_delegate == Some(receiver)
-        && matches!(selector.as_str(), "window" | "viewController" | "view");
+    let view_controller_receiver = state.application_view_controller == Some(receiver)
+        || receiver_class_name(mem, receiver, kind)
+            .is_some_and(|name| name.to_ascii_lowercase().contains("viewcontroller"));
+    let application_accessor = (state.application_delegate == Some(receiver)
+        && matches!(selector.as_str(), "window" | "viewController" | "view"))
+        || (view_controller_receiver && matches!(selector.as_str(), "view" | "context"));
+    if selector == "view" && receiver != 0 && (view_controller_receiver || state.application_view_controller == Some(receiver)) {
+        let view = state.application_view.unwrap_or(0);
+        if view != 0 {
+            set_objc_field(mem, receiver, A64_UIVIEWCONTROLLER_VIEW_IVAR, view);
+        }
+        log!(
+            "ARM64 controller view bridge: receiver={:#x} class={} result={:#x} application_view={:#x}",
+            receiver,
+            receiver_class_name(mem, receiver, kind).as_deref().unwrap_or("<unknown>"),
+            view,
+            state.application_view.unwrap_or(0),
+        );
+        return_value(context, view);
+        return Ok(());
+    }
     if selector == "platform" && receiver != 0 {
         let platform = objc_field(mem, receiver, 0x158);
         if platform == 0 {
@@ -865,16 +884,21 @@ fn objc_send(
         "window" if state.application_delegate == Some(receiver) => state.application_window.unwrap_or(0),
         "viewController" if state.application_delegate == Some(receiver) => state.application_view_controller.unwrap_or(0),
         "view" if state.application_delegate == Some(receiver) => state.application_view.unwrap_or(0),
-        "view" if state.application_view_controller == Some(receiver) => {
-            let view = objc_field(mem, receiver, A64_UIVIEWCONTROLLER_VIEW_IVAR);
-            let view = if view != 0 {
-                view
-            } else {
-                state.application_view.unwrap_or(0)
-            };
-            log_dbg!(
-                "ARM64 view getter: receiver={:#x} view_ivar={:#x} result={:#x}",
+        "view" if view_controller_receiver => {
+            let mut view = objc_field(mem, receiver, A64_UIVIEWCONTROLLER_VIEW_IVAR);
+            if view == 0 {
+                view = state.application_view.unwrap_or(0);
+                if view != 0 {
+                    set_objc_field(mem, receiver, A64_UIVIEWCONTROLLER_VIEW_IVAR, view);
+                }
+            }
+            if view != 0 && state.application_view_controller.is_none() {
+                state.application_view_controller = Some(receiver);
+            }
+            log!(
+                "ARM64 view getter: receiver={:#x} class={} view_ivar={:#x} result={:#x}",
                 receiver,
+                receiver_class_name(mem, receiver, kind).as_deref().unwrap_or("<unknown>"),
                 A64_UIVIEWCONTROLLER_VIEW_IVAR,
                 view,
             );
