@@ -35,6 +35,9 @@ const A64_KIND_APPLICATION: u64 = 24;
 const A64_KIND_DISPLAY_LINK: u64 = 25;
 const A64_KIND_RUN_LOOP: u64 = 26;
 const A64_KIND_THREAD: u64 = 27;
+const A64_KIND_VIEW: u64 = 28;
+const A64_KIND_EAGL_VIEW: u64 = 29;
+const A64_KIND_CONTEXT: u64 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum A64GraphicsBackend {
@@ -67,6 +70,8 @@ pub struct RuntimeState {
     pub ios_version: (i32, i32, i32),
     pub graphics_backend: A64GraphicsBackend,
     pub device_family: DeviceFamily,
+    pub screen_width: u32,
+    pub screen_height: u32,
     pub host_dispatches: u64,
     pub objc_messages: u64,
     pub metal_commands: u64,
@@ -96,6 +101,8 @@ pub struct RuntimeState {
     pub application_window: Option<u64>,
     pub application_view_controller: Option<u64>,
     pub application_view: Option<u64>,
+    pub application_eagl_view: Option<u64>,
+    pub graphics_context: Option<u64>,
     pub main_nib_name: Option<String>,
     pub launch_callback_return_pc: Option<u64>,
     pub application_return_stub: Option<u64>,
@@ -119,10 +126,13 @@ impl RuntimeState {
         graphics_backend: A64GraphicsBackend,
         device_family: DeviceFamily,
     ) -> Self {
+        let (screen_width, screen_height) = device_family.portrait_size();
         Self {
             ios_version,
             graphics_backend,
             device_family,
+            screen_width: screen_width as u32,
+            screen_height: screen_height as u32,
             host_dispatches: 0,
             objc_messages: 0,
             metal_commands: 0,
@@ -152,6 +162,8 @@ impl RuntimeState {
             application_window: None,
             application_view_controller: None,
             application_view: None,
+            application_eagl_view: None,
+            graphics_context: None,
             main_nib_name: None,
             launch_callback_return_pc: None,
             application_return_stub: None,
@@ -498,6 +510,30 @@ fn set_objc_field(mem: &mut Mem64, object: u64, offset: u64, value: u64) {
     let _ = mem.write_u64(object.saturating_add(offset), value);
 }
 
+fn set_objc_u32_field(mem: &mut Mem64, object: u64, offset: u64, value: u32) {
+    let _ = mem.write_u32(object.saturating_add(offset), value);
+}
+
+fn initialize_eagl_view(mem: &mut Mem64, state: &mut RuntimeState, view: u64) -> Result<(), String> {
+    let context = if let Some(context) = state.graphics_context {
+        context
+    } else {
+        let context = objc_object(mem, A64_KIND_CONTEXT)?;
+        state.graphics_context = Some(context);
+        context
+    };
+    set_objc_field(mem, view, 120, context);
+    set_objc_u32_field(mem, view, 92, state.screen_width);
+    set_objc_u32_field(mem, view, 96, state.screen_height);
+    set_objc_u32_field(mem, view, 100, 1);
+    set_objc_u32_field(mem, view, 104, 1);
+    set_objc_u32_field(mem, view, 108, 0);
+    set_objc_field(mem, view, 112, u64::from(state.device_family.scale_factor().to_bits()));
+    state.application_eagl_view = Some(view);
+    log!("ARM64 initialized EAGLView framebuffer: view={:#x} context={:#x} framebuffer=1 renderbuffer=1 size={}x{}", view, context, state.screen_width, state.screen_height);
+    Ok(())
+}
+
 fn objc_string_append(mem: &mut Mem64, left: u64, right: u64) -> Result<u64, String> {
     let mut bytes = objc_text(mem, left).unwrap_or_default();
     bytes.extend(objc_text(mem, right).unwrap_or_default());
@@ -601,6 +637,9 @@ fn objc_class_kind(mem: &Mem64, class_name: u64) -> u64 {
         Some(b"CADisplayLink") => A64_KIND_DISPLAY_LINK,
         Some(b"NSRunLoop") | Some(b"CFRunLoop") => A64_KIND_RUN_LOOP,
         Some(b"NSThread") => A64_KIND_THREAD,
+        Some(b"EAGLView") => A64_KIND_EAGL_VIEW,
+        Some(b"EAGLContext") => A64_KIND_CONTEXT,
+        Some(b"UIView") | Some(b"UIWindow") => A64_KIND_VIEW,
         Some(b"NSBundle") => A64_KIND_BUNDLE,
         Some(b"UnityFramework") => A64_KIND_UNITY_FRAMEWORK,
         _ => A64_KIND_GENERIC,
@@ -673,10 +712,17 @@ fn objc_send(
             0
         }
         "init" | "self" | "retain" | "autorelease" | "copy" | "mutableCopy" => receiver,
+        "createFramebuffer" if kind == A64_KIND_EAGL_VIEW => { initialize_eagl_view(mem, state, receiver)?; 0 }
+        "deleteFramebuffer" if kind == A64_KIND_EAGL_VIEW => {
+            set_objc_u32_field(mem, receiver, 100, 0);
+            set_objc_u32_field(mem, receiver, 104, 0);
+            0
+        }
         "window" if state.application_delegate == Some(receiver) => state.application_window.unwrap_or(0),
         "viewController" if state.application_delegate == Some(receiver) => state.application_view_controller.unwrap_or(0),
         "view" if state.application_delegate == Some(receiver) => state.application_view.unwrap_or(0),
         "view" if state.application_view_controller == Some(receiver) => state.application_view.unwrap_or(0),
+        "view" if state.application_view == Some(receiver) => state.application_eagl_view.unwrap_or(0),
         "platform" if receiver != 0 => objc_string(mem, "iPhone5,1")?,
         "currentThread" if kind == A64_KIND_CLASS => objc_object(mem, A64_KIND_THREAD)?,
         "currentRunLoop" if kind == A64_KIND_THREAD => objc_object(mem, A64_KIND_RUN_LOOP)?,
@@ -702,6 +748,15 @@ fn objc_send(
             0
         }
         "startAnimation" | "invalidate" if kind == A64_KIND_DISPLAY_LINK => 0,
+        "setFramebuffer" if state.application_eagl_view == Some(receiver) || kind == A64_KIND_EAGL_VIEW => {
+            initialize_eagl_view(mem, state, receiver)?;
+            0
+        }
+        "presentFramebuffer" if kind == A64_KIND_EAGL_VIEW => {
+            state.present_requested = true;
+            state.frame_serial = state.frame_serial.saturating_add(1);
+            0
+        }
         "setDisplayLink:" if state.application_delegate == Some(receiver) => {
             set_objc_field(mem, receiver, 80, context.regs[2]);
             0
@@ -988,7 +1043,26 @@ fn objc_instance_for_class(mem: &mut Mem64, state: &mut RuntimeState, name: &str
         name_pointer
     }), instance_size)?;
     set_objc_field(mem, object, 48, class);
+    initialize_guest_ivars(mem, state, name, object)?;
     Ok(object)
+}
+
+fn initialize_guest_ivars(mem: &mut Mem64, state: &RuntimeState, class_name: &str, object: u64) -> Result<(), String> {
+    let mut current = Some(class_name.to_owned());
+    while let Some(name) = current {
+        let Some(class_info) = state.objc_classes.iter().find(|class_info| class_info.name == name) else {
+            break;
+        };
+        for ivar in &class_info.ivars {
+            let offset = mem.read_u32(ivar.offset_address).map_err(str::to_owned)? as u64;
+            if offset < 8 || offset >= 0x100000 {
+                continue;
+            }
+            mem.write_u64(object.checked_add(offset).ok_or("ARM64 ivar address overflows")?, 0).map_err(str::to_owned)?;
+        }
+        current = class_info.superclass.clone();
+    }
+    Ok(())
 }
 
 fn receiver_class_name(mem: &Mem64, receiver: u64, kind: u64) -> Option<String> {
@@ -1562,8 +1636,11 @@ pub fn dispatch(
                         .map(|class| class.name.as_str())
                         .find(|name| name.to_ascii_lowercase().contains("viewcontroller"))
                         .map(str::to_owned);
-                    state.application_window = Some(objc_object(mem, A64_KIND_GENERIC)?);
-                    state.application_view = Some(objc_object(mem, A64_KIND_GENERIC)?);
+                    let window = objc_object(mem, A64_KIND_VIEW)?;
+                    let view = objc_object_with_size(mem, A64_KIND_EAGL_VIEW, 128)?;
+                    state.application_window = Some(window);
+                    state.application_view = Some(view);
+                    initialize_eagl_view(mem, state, view)?;
                     if let Some(view_controller_name) = view_controller_name {
                         let view_controller = objc_instance_for_class(mem, state, &view_controller_name)?;
                         state.application_view_controller = Some(view_controller);

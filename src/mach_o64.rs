@@ -39,6 +39,13 @@ pub struct ObjCClass64 {
     pub instance_size: u64,
     pub instance_methods: Vec<ObjCMethod64>,
     pub class_methods: Vec<ObjCMethod64>,
+    pub ivars: Vec<ObjCIvar64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ObjCIvar64 {
+    pub name: String,
+    pub offset_address: Guest64Addr,
 }
 
 #[derive(Debug)]
@@ -147,10 +154,35 @@ fn parse_objc_classes(memory: &Mem64, sections: &[Section64], slide: u64) -> Vec
                 .map(|value| u64::from(value as u32).clamp(96, 1024 * 1024))
                 .unwrap_or(96);
             let instance_methods = parse_objc_methods(memory, read_guest_u64(memory, data + 32)?, slide);
+            let ivars = parse_objc_ivars(memory, read_guest_u64(memory, data + 48).unwrap_or(0));
             let metaclass = read_guest_u64(memory, class_ptr)?;
             let metaclass_data = read_guest_u64(memory, metaclass + 32).unwrap_or(0) & !7;
             let class_methods = parse_objc_methods(memory, read_guest_u64(memory, metaclass_data + 32).unwrap_or(0), slide);
-            Some(ObjCClass64 { name, superclass, instance_size, instance_methods, class_methods })
+            Some(ObjCClass64 { name, superclass, instance_size, instance_methods, class_methods, ivars })
+        })
+        .collect()
+}
+
+fn parse_objc_ivars(memory: &Mem64, list: u64) -> Vec<ObjCIvar64> {
+    if list == 0 {
+        return Vec::new();
+    }
+    let Some(entsize) = read_guest_u32(memory, list) else {
+        return Vec::new();
+    };
+    let Some(count) = read_guest_u32(memory, list + 4) else {
+        return Vec::new();
+    };
+    if entsize < 32 {
+        return Vec::new();
+    }
+    let count = count.min(4096);
+    (0..count)
+        .filter_map(|index| {
+            let entry = list.checked_add(8)?.checked_add(u64::from(index).checked_mul(u64::from(entsize))?)?;
+            let offset_address = read_guest_u64(memory, entry)?;
+            let name = guest_c_string(memory, read_guest_u64(memory, entry + 8)?)?;
+            Some(ObjCIvar64 { name, offset_address })
         })
         .collect()
 }
