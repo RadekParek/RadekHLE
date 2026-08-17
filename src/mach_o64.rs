@@ -95,6 +95,10 @@ fn add_signed(base: u64, offset: i64) -> Result<u64, String> {
     }
 }
 
+fn read_guest_u32(memory: &Mem64, address: u64) -> Option<u32> {
+    memory.read_u32(address).ok()
+}
+
 fn read_guest_u64(memory: &Mem64, address: u64) -> Option<u64> {
     memory.read_u64(address).ok()
 }
@@ -108,10 +112,10 @@ fn parse_objc_methods(memory: &Mem64, list: u64, slide: u64) -> Vec<ObjCMethod64
     if list == 0 {
         return Vec::new();
     }
-    let Some(entsize) = read_guest_u64(memory, list).map(|value| value as u32) else {
+    let Some(entsize) = read_guest_u32(memory, list) else {
         return Vec::new();
     };
-    let Some(count) = read_guest_u64(memory, list + 4).map(|value| value as u32) else {
+    let Some(count) = read_guest_u32(memory, list + 4) else {
         return Vec::new();
     };
     let entry_size = u64::from(entsize.max(24));

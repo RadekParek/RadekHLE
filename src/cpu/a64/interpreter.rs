@@ -224,7 +224,7 @@ impl A64Interpreter {
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
-        if instruction & 0x3a00_0000 == 0x2800_0000 {
+        if instruction & 0x3e00_0000 == 0x2800_0000 {
             self.execute_pair(memory, context, instruction)?;
             context.pc = pc.wrapping_add(4);
             return Ok(None);
