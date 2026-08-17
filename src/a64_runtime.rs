@@ -588,7 +588,14 @@ fn initialize_eagl_view(mem: &mut Mem64, state: &mut RuntimeState, view: u64) ->
     let width_mapped = set_guest_ivar_u32(mem, state, class_name, view, "framebufferWidth", state.screen_width)?;
     let height_mapped = set_guest_ivar_u32(mem, state, class_name, view, "framebufferHeight", state.screen_height)?;
     let depth_mapped = set_guest_ivar_u32(mem, state, class_name, view, "_depthRenderBuffer", 0)?;
-    let scale_mapped = set_guest_ivar_f64(mem, state, class_name, view, "viewScale", state.device_family.scale_factor())?;
+    let scale_mapped = set_guest_ivar_f64(
+        mem,
+        state,
+        class_name,
+        view,
+        "viewScale",
+        state.device_family.scale_factor() as f64,
+    )?;
     state.application_eagl_view = Some(view);
     log!(
         "ARM64 initialized EAGLView framebuffer: view={:#x} context={:#x} mapped=context:{} framebuffer:{} renderbuffer:{} size={}x{} depth:{} scale:{}",
@@ -798,7 +805,7 @@ fn objc_send(
         "context" if state.application_view_controller == Some(receiver) || state.application_eagl_view == Some(receiver) => {
             let class_name = receiver_class_name(mem, receiver, A64_KIND_GENERIC).unwrap_or_else(|| "EAGLView".to_owned());
             guest_ivar_offset(mem, state, &class_name, "context")
-                .and_then(|offset| mem.read_u64(receiver.checked_add(offset).ok()?).ok())
+                .and_then(|offset| mem.read_u64(receiver.checked_add(offset)?).ok())
                 .unwrap_or(0)
         }
         "setContext:" if state.application_view_controller == Some(receiver) || state.application_eagl_view == Some(receiver) => {
