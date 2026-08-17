@@ -1364,7 +1364,7 @@ fn transfer_guest_method(
     let Some(address) = guest_method(state, &class_name, selector, class_method) else {
         return false;
     };
-    log!("ARM64 guest Objective-C transfer: {}{} on {} -> {:#x}", if class_method { "+" } else { "-" }, selector, class_name, address);
+    log_dbg!("ARM64 guest Objective-C transfer: {}{} on {} -> {:#x}", if class_method { "+" } else { "-" }, selector, class_name, address);
     state.guest_transfer_pc = Some(address);
     true
 }
@@ -1403,7 +1403,7 @@ pub fn schedule_display_link_callback(
     context.regs[30] = return_stub;
     state.mark_display_link_callback_started();
     state.guest_transfer_pc = Some(address);
-    log!("ARM64 display-link callback #{}: {} on {} -> {:#x}", state.display_link_callbacks, selector, class_name, address);
+    log_dbg!("ARM64 display-link callback #{}: {} on {} -> {:#x}", state.display_link_callbacks, selector, class_name, address);
     Ok(true)
 }
 

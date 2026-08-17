@@ -767,7 +767,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 }
                 let guest_transfer = runtime_state.take_guest_transfer();
                 if let Some(transfer_pc) = guest_transfer {
-                    echo!("ARM64 continuing guest execution at transferred Objective-C method {:#x}", transfer_pc);
+                    log_dbg!("ARM64 continuing guest execution at transferred Objective-C method {:#x}", transfer_pc);
                     context.pc = transfer_pc;
                     cpu.load_context(&context);
                     cpu.clear_halt(A64_HALT_USER_DEFINED1);
@@ -829,7 +829,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 }
                 let callback_scheduled = schedule_display_link_callback(&mut memory, &mut context, &mut runtime_state)?;
                 if let Some(transfer_pc) = runtime_state.take_guest_transfer() {
-                    echo!(
+                    log_dbg!(
                         "ARM64 scheduling next display-link guest callback at {:#x} (scheduled={})",
                         transfer_pc,
                         callback_scheduled,
