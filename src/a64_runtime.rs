@@ -38,6 +38,7 @@ const A64_KIND_THREAD: u64 = 27;
 const A64_KIND_VIEW: u64 = 28;
 const A64_KIND_EAGL_VIEW: u64 = 29;
 const A64_KIND_CONTEXT: u64 = 30;
+const A64_UIVIEWCONTROLLER_VIEW_IVAR: u64 = 0x148;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum A64GraphicsBackend {
@@ -836,7 +837,21 @@ fn objc_send(
         "window" if state.application_delegate == Some(receiver) => state.application_window.unwrap_or(0),
         "viewController" if state.application_delegate == Some(receiver) => state.application_view_controller.unwrap_or(0),
         "view" if state.application_delegate == Some(receiver) => state.application_view.unwrap_or(0),
-        "view" if state.application_view_controller == Some(receiver) => state.application_view.unwrap_or(0),
+        "view" if state.application_view_controller == Some(receiver) => {
+            let view = objc_field(mem, receiver, A64_UIVIEWCONTROLLER_VIEW_IVAR);
+            let view = if view != 0 {
+                view
+            } else {
+                state.application_view.unwrap_or(0)
+            };
+            log_dbg!(
+                "ARM64 view getter: receiver={:#x} view_ivar={:#x} result={:#x}",
+                receiver,
+                A64_UIVIEWCONTROLLER_VIEW_IVAR,
+                view,
+            );
+            view
+        }
         "view" if state.application_view == Some(receiver) => state.application_eagl_view.unwrap_or(0),
         "context" if state.application_view_controller == Some(receiver) || state.application_eagl_view == Some(receiver) => {
             let class_name = receiver_class_name(mem, receiver, A64_KIND_GENERIC).unwrap_or_else(|| "EAGLView".to_owned());
@@ -1817,6 +1832,14 @@ pub fn dispatch(
                     initialize_eagl_view(mem, state, view)?;
                     if let Some(view_controller_name) = view_controller_name {
                         let view_controller = objc_instance_for_class(mem, state, &view_controller_name)?;
+                        set_objc_field(mem, view_controller, A64_UIVIEWCONTROLLER_VIEW_IVAR, view);
+                        log!(
+                            "ARM64 initialized UIViewController view backing ivar: class={} object={:#x} ivar={:#x} view={:#x}",
+                            view_controller_name,
+                            view_controller,
+                            A64_UIVIEWCONTROLLER_VIEW_IVAR,
+                            view,
+                        );
                         if let Some(context) = state.graphics_context {
                             let context_offsets = ["context", "_context"]
                                 .iter()
