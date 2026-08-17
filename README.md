@@ -42,6 +42,12 @@ Thank you for reading and understanding the situation.
 
 ---
 
+## Community
+
+Join the [HyperHLE Discord server](https://discord.gg/taNP4aTvd) to discuss the project and get involved.
+
+---
+
 ## Thanks
 
 We stand on the shoulders of giants. Even despite our past differences and the strict boundaries between our communities, we still acknowledge the foundational work done by the creators. Thank you to:
