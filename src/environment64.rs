@@ -122,11 +122,9 @@ fn verify_guest_mappings(memory: &Mem64, pc: u64, sp: u64) {
 }
 
 fn mapping_dump(memory: &Mem64) -> String {
-    memory
-        .mapped_regions()
-        .map(|region| format!("{:#x}..{:#x} ({} bytes)", region.base, region.base.saturating_add(region.size), region.size))
-        .collect::<Vec<_>>()
-        .join(", ")
+    let regions = memory.mapped_regions().collect::<Vec<_>>();
+    let total_bytes = regions.iter().map(|region| region.size).sum::<u64>();
+    format!("{} mapped regions, {} total bytes", regions.len(), total_bytes)
 }
 
 fn display_boot_screen(
@@ -214,7 +212,7 @@ fn failure_diagnostics(
     echo!("ARM64 failure stack: {}", stack_dump(memory, context.sp));
     echo!("ARM64 failure call stack: {}", call_stack_dump(memory, context));
     echo!("ARM64 failure mappings: {}", mapping_dump(memory));
-    echo!("ARM64 failure module={} last_imported_symbol={} last_successful_host_callback={} last_objc_selector={} host_dispatches={} objc_messages={} metal_commands={} reached_unimplemented={:?}", runtime_state.current_module.as_deref().unwrap_or("<unknown>"), runtime_state.last_symbol.as_deref().unwrap_or("<none>"), runtime_state.last_successful_symbol.as_deref().unwrap_or("<none>"), runtime_state.last_selector.as_deref().unwrap_or("<none>"), runtime_state.host_dispatches, runtime_state.objc_messages, runtime_state.metal_commands, runtime_state.reached_unimplemented_symbols);
+    echo!("ARM64 failure state: module={} last_symbol={} last_callback={} selector={} dispatches={} objc={} metal={} unresolved_reached={}", runtime_state.current_module.as_deref().unwrap_or("<unknown>"), runtime_state.last_symbol.as_deref().unwrap_or("<none>"), runtime_state.last_successful_symbol.as_deref().unwrap_or("<none>"), runtime_state.last_selector.as_deref().unwrap_or("<none>"), runtime_state.host_dispatches, runtime_state.objc_messages, runtime_state.metal_commands, runtime_state.reached_unimplemented_symbols.len());
 }
 
 fn put_string(mem: &mut Mem64, cursor: &mut u64, value: &str) -> Result<u64, String> {
@@ -471,7 +469,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     for (binding_index, binding) in executable.bindings.iter().enumerate() {
         if let Some(value) = materialize_import(&mut memory, &binding.symbol)? {
             if binding_index < 32 {
-                echo!("ARM64 materialized import #{}: {} -> {:#x}", binding_index, binding.symbol, value);
+                log_dbg!("ARM64 materialized import #{}: {} -> {:#x}", binding_index, binding.symbol, value);
             }
             memory.load_u64(binding.address, value.checked_add_signed(binding.addend).ok_or("ARM64 import address overflows")?).map_err(str::to_owned)?;
             materialized_imports += 1;
@@ -515,18 +513,13 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
         envp_ptr,
         apple_ptr,
     );
-    for symbol in unresolved.iter().take(32) {
-        echo!("  unresolved import: {}", symbol);
+    if !unresolved.is_empty() {
+        echo!("ARM64 unresolved imports: {} (details available with --log-debug)", unresolved.len());
+        for symbol in unresolved.iter().take(8) {
+            log_dbg!("ARM64 unresolved import: {}", symbol);
+        }
     }
-    if unresolved.len() > 32 {
-        echo!("  ... and {} more unresolved imports", unresolved.len() - 32);
-    }
-    for (i, binding) in executable.bindings.iter().take(16).enumerate() {
-        echo!("  {}: {} @ {:x} + {}", i, binding.symbol, binding.address, binding.addend);
-    }
-    if executable.bindings.len() > 16 {
-        echo!("  ... and {} more", executable.bindings.len() - 16);
-    }
+    log_dbg!("ARM64 first bindings: {}", executable.bindings.iter().take(16).enumerate().map(|(i, binding)| format!("{}:{}@{:x}+{}", i, binding.symbol, binding.address, binding.addend)).collect::<Vec<_>>().join(", "));
     let mut context = touchHLE_DynarmicA64Context::default();
     context.sp = sp;
     context.pc = entry;
@@ -603,9 +596,6 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             }
             -2 => {
                 failure_diagnostics(&memory, &context, &previous_pcs, &previous_branches, &runtime_state, "memory abort");
-                echo!("ARM64 memory fault: current_pc={:#x} previous_pcs={:?} branch_history={:?}", context.pc, previous_pcs, previous_branches);
-                echo!("ARM64 fault registers: {}", register_dump(&context));
-                echo!("ARM64 fault stack: {}", stack_dump(&memory, context.sp));
                 return Err(format!(
                     "ARM64 guest memory fault at pc {:#x}, sp {:#x}, lr {:#x}, fp {:#x}, x0 {:#x}, x1 {:#x}, x2 {:#x}, x3 {:#x}",
                     context.pc,
@@ -620,9 +610,6 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             }
             -3 => {
                 failure_diagnostics(&memory, &context, &previous_pcs, &previous_branches, &runtime_state, "undefined instruction");
-                echo!("ARM64 undefined instruction trace: current_pc={:#x} previous_pcs={:?} branch_history={:?}", context.pc, previous_pcs, previous_branches);
-                echo!("ARM64 undefined instruction registers: {}", register_dump(&context));
-                echo!("ARM64 undefined instruction stack: {}", stack_dump(&memory, context.sp));
                 return Err(format!(
                     "ARM64 undefined instruction at pc {:#x}, sp {:#x}, lr {:#x}, fp {:#x}, x0 {:#x}, x1 {:#x}, x2 {:#x}, x3 {:#x}",
                     context.pc,
@@ -637,9 +624,6 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             }
             -4 => {
                 failure_diagnostics(&memory, &context, &previous_pcs, &previous_branches, &runtime_state, "breakpoint");
-                echo!("ARM64 breakpoint trace: current_pc={:#x} previous_pcs={:?} branch_history={:?}", context.pc, previous_pcs, previous_branches);
-                echo!("ARM64 breakpoint registers: {}", register_dump(&context));
-                echo!("ARM64 breakpoint stack: {}", stack_dump(&memory, context.sp));
                 return Err(format!(
                     "ARM64 breakpoint at pc {:#x}, sp {:#x}, lr {:#x}, fp {:#x}, x0 {:#x}, x1 {:#x}, x2 {:#x}, x3 {:#x}",
                     context.pc,
@@ -702,9 +686,9 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                     repeated_pc = 0;
                 }
                 if repeated_pc > STALL_THRESHOLD {
-                    echo!("ARM64 execution stall detected: repeated_pc={} current_pc={:#x} previous_pcs={:?} branch_history={:?}", repeated_pc, context.pc, previous_pcs, previous_branches);
-                    echo!("ARM64 stall registers: {}", register_dump(&context));
-                    echo!("ARM64 stall stack: {}", stack_dump(&memory, context.sp));
+                    log_once_fmt!("ARM64 execution stall detected: repeated_pc={} current_pc={:#x} previous_pcs={:?} branch_history={:?} [subsequent identical stalls suppressed]", repeated_pc, context.pc, previous_pcs, previous_branches);
+                    log_once_fmt!("ARM64 stall registers: {}", register_dump(&context));
+                    log_once_fmt!("ARM64 stall stack: {}", stack_dump(&memory, context.sp));
                     return Err(format!(
                         "ARM64 runtime stalled at pc {:#x}; sp={:#x} lr={:#x} fp={:#x}; last host binding was {}; objc_messages={} metal_commands={} backend={}",
                         context.pc,
@@ -718,8 +702,8 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                     ));
                 }
                 let symbol = host_stubs.get(&value).map(|(name, _)| name.as_str()).unwrap_or("<unknown>");
-                if host_dispatches <= 128 || host_dispatches.is_power_of_two() {
-                    echo!(
+                if host_dispatches <= 16 || host_dispatches.is_power_of_two() {
+                    log_dbg!(
                         "ARM64 host binding #{}: {} pc={:#x} sp={:#x} lr={:#x} x0={:#x} x1={:#x} x2={:#x} x3={:#x} x4={:#x} x5={:#x}",
                         host_dispatches,
                         symbol,

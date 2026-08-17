@@ -343,6 +343,7 @@ pub fn can_dispatch(symbol: &str) -> bool {
         | "pthread_self" | "sched_yield" | "abort" | "exit" | "_exit"
         | "_Znwm" | "_Znam" | "_ZdlPv" | "_ZdaPv"
         | "__Znwm" | "__Znam" | "__ZdlPv" | "__ZdaPv"
+        | "Znwm" | "Znam" | "ZdlPv" | "ZdaPv" | "ZnwmRKSt9nothrow_t"
         | "NSLog" | "NSLogv" | "os_log" | "os_logv" | "UIApplicationMain" | "dyld_stub_binder"
         | "CFConstantStringClassReference" | "__CFConstantStringClassReference"
         | "MTLCreateSystemDefaultDevice" | "vkEnumerateInstanceVersion"
@@ -403,7 +404,9 @@ pub fn can_dispatch(symbol: &str) -> bool {
         | "ZNSt3__118condition_variable10notify_oneEv"
         | "ZNSt3__118condition_variable15__do_timed_waitERNS_11unique_lockINS_5mutexEEENS_6chrono10time_pointINS5_12system_clockENS5_8durationIxNS_5ratioILl1ELl1000000000EEEEEEE"
         | "ZNSt3__111this_thread9sleep_forERKNS_6chrono8durationIxNS_5ratioILl1ELl1000000000EEEEE"
+        | "ZSt9terminatev" | "Unwind_Resume" | "__Unwind_Resume"
         => true,
+        value if value.starts_with("ZNSt3__") || value.starts_with("ZNKSt3__") => true,
         _ => false,
     }
 }
@@ -1370,7 +1373,8 @@ pub fn dispatch(
             return_value(context, 0);
             Ok(true)
         }
-        "_Znwm" | "_Znam" | "__Znwm" | "__Znam" => {
+        "_Znwm" | "_Znam" | "__Znwm" | "__Znam"
+        | "Znwm" | "Znam" | "ZnwmRKSt9nothrow_t" | "__ZnwmRKSt9nothrow_t" => {
             let address = mem.alloc_zeroed(context.regs[0]).map_err(str::to_owned)?;
             return_value(context, address);
             Ok(true)
@@ -1611,7 +1615,8 @@ pub fn dispatch(
             Ok(true)
         }
         "gxx_personality_v0"
-        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev" => {
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev"
+        | "ZSt9terminatev" | "Unwind_Resume" | "__Unwind_Resume" => {
             return_value(context, 0);
             Ok(true)
         }

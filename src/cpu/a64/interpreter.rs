@@ -28,7 +28,7 @@ impl A64Interpreter {
                 let instruction = match memory.read_code_u32(pc) {
                     Ok(instruction) => instruction,
                     Err(error) => {
-                        echo!("ARM64 EXCEPTION PC={pc:#x} SP={:#x} instruction=<unreadable> address={pc:#x} reason=execute fault: {error}", context.sp);
+                        log_once_fmt!("ARM64 EXCEPTION PC={pc:#x} SP={:#x} instruction=<unreadable> address={pc:#x} reason=execute fault: {error} [subsequent identical faults suppressed]");
                         result = -2;
                         break;
                     }
@@ -52,7 +52,7 @@ impl A64Interpreter {
         let instruction = match memory.read_code_u32(pc) {
             Ok(instruction) => instruction,
             Err(error) => {
-                echo!("ARM64 EXCEPTION PC={pc:#x} SP={:#x} instruction=<unreadable> address={pc:#x} reason=execute fault: {error}", context.sp);
+                log_once_fmt!("ARM64 EXCEPTION PC={pc:#x} SP={:#x} instruction=<unreadable> address={pc:#x} reason=execute fault: {error} [subsequent identical faults suppressed]");
                 return -2;
             }
         };
@@ -60,15 +60,15 @@ impl A64Interpreter {
             Ok(Some(svc)) => svc as i32,
             Ok(None) => -1,
             Err(InterpreterError::Memory(error, address)) => {
-                echo!("ARM64 EXCEPTION PC={pc:#x} SP={:#x} instruction={instruction:#010x} address={address:#x} reason=memory fault: {error}", context.sp);
+                log_once_fmt!("ARM64 EXCEPTION PC={pc:#x} SP={:#x} instruction={instruction:#010x} address={address:#x} reason=memory fault: {error} [subsequent identical faults suppressed]");
                 -2
             }
             Err(InterpreterError::Undefined) => {
-                echo!("ARM64 EXCEPTION PC={pc:#x} SP={:#x} instruction={instruction:#010x} address=<none> reason=unimplemented ARM64 instruction", context.sp);
+                log_once_fmt!("ARM64 EXCEPTION PC={pc:#x} SP={:#x} instruction={instruction:#010x} address=<none> reason=unimplemented ARM64 instruction [subsequent identical faults suppressed]");
                 -3
             }
             Err(InterpreterError::Breakpoint) => {
-                echo!("ARM64 EXCEPTION PC={pc:#x} SP={:#x} instruction={instruction:#010x} address=<none> reason=breakpoint", context.sp);
+                log_once_fmt!("ARM64 EXCEPTION PC={pc:#x} SP={:#x} instruction={instruction:#010x} address=<none> reason=breakpoint [subsequent identical faults suppressed]");
                 -4
             }
         }
