@@ -614,9 +614,27 @@ fn initialize_eagl_view(mem: &mut Mem64, state: &mut RuntimeState, view: u64) ->
         state.device_family.scale_factor() as f64,
     )?;
     state.application_eagl_view = Some(view);
+    let view_ivar_values = [
+        "context",
+        "defaultFramebuffer",
+        "colorRenderbuffer",
+        "framebufferWidth",
+        "framebufferHeight",
+        "_depthRenderBuffer",
+        "viewScale",
+    ]
+    .iter()
+    .filter_map(|name| {
+        guest_ivar_offset(mem, state, &class_name, name).map(|offset| {
+            format!("{}@{:#x}={:#x}", name, offset, mem.read_u64(view + offset).unwrap_or(0))
+        })
+    })
+    .collect::<Vec<_>>()
+    .join(",");
     log!(
-        "ARM64 initialized EAGLView framebuffer: view={:#x} context={:#x} mapped=context:{} framebuffer:{} renderbuffer:{} size={}x{} depth:{} scale:{}",
+        "ARM64 initialized EAGLView framebuffer: view={:#x} class={} context={:#x} mapped=context:{} framebuffer:{} renderbuffer:{} size={}x{} depth:{} scale:{} ivars=[{}]",
         view,
+        class_name,
         context,
         context_mapped,
         framebuffer_mapped,
@@ -625,6 +643,7 @@ fn initialize_eagl_view(mem: &mut Mem64, state: &mut RuntimeState, view: u64) ->
         state.screen_height,
         depth_mapped,
         scale_mapped,
+        view_ivar_values,
     );
     Ok(())
 }
@@ -821,9 +840,16 @@ fn objc_send(
         "view" if state.application_view == Some(receiver) => state.application_eagl_view.unwrap_or(0),
         "context" if state.application_view_controller == Some(receiver) || state.application_eagl_view == Some(receiver) => {
             let class_name = receiver_class_name(mem, receiver, A64_KIND_GENERIC).unwrap_or_else(|| "EAGLView".to_owned());
-            guest_ivar_offset(mem, state, &class_name, "context")
+            let value = guest_ivar_offset(mem, state, &class_name, "context")
                 .and_then(|offset| mem.read_u64(receiver.checked_add(offset)?).ok())
-                .unwrap_or(0)
+                .unwrap_or(0);
+            log_dbg!(
+                "ARM64 context getter: receiver={:#x} class={} value={:#x}",
+                receiver,
+                class_name,
+                value,
+            );
+            value
         }
         "setContext:" if state.application_view_controller == Some(receiver) || state.application_eagl_view == Some(receiver) => {
             let class_name = receiver_class_name(mem, receiver, A64_KIND_GENERIC).unwrap_or_else(|| "EAGLView".to_owned());
@@ -859,7 +885,33 @@ fn objc_send(
         }
         "startAnimation" | "invalidate" if kind == A64_KIND_DISPLAY_LINK => 0,
         "setFramebuffer" if state.application_eagl_view == Some(receiver) || kind == A64_KIND_EAGL_VIEW => {
+            log!(
+                "ARM64 setFramebuffer entry: receiver={:#x} class={} context={:#x} sp={:#x} fp={:#x} lr={:#x}",
+                receiver,
+                receiver_class_name(mem, receiver, A64_KIND_GENERIC).as_deref().unwrap_or("<unknown>"),
+                state.graphics_context.unwrap_or(0),
+                context.sp,
+                context.regs[29],
+                context.regs[30],
+            );
             initialize_eagl_view(mem, state, receiver)?;
+            let class_name = receiver_class_name(mem, receiver, A64_KIND_GENERIC).unwrap_or_else(|| "EAGLView".to_owned());
+            let framebuffer = guest_ivar_offset(mem, state, &class_name, "defaultFramebuffer")
+                .and_then(|offset| mem.read_u32(receiver + offset).ok())
+                .unwrap_or(0);
+            let renderbuffer = guest_ivar_offset(mem, state, &class_name, "colorRenderbuffer")
+                .and_then(|offset| mem.read_u32(receiver + offset).ok())
+                .unwrap_or(0);
+            log!(
+                "ARM64 setFramebuffer success: receiver={:#x} context={:#x} framebuffer={} renderbuffer={} size={}x{} sp={:#x}",
+                receiver,
+                state.graphics_context.unwrap_or(0),
+                framebuffer,
+                renderbuffer,
+                state.screen_width,
+                state.screen_height,
+                context.sp,
+            );
             0
         }
         "presentFramebuffer" if kind == A64_KIND_EAGL_VIEW => {
@@ -1117,6 +1169,16 @@ fn objc_send(
     };
     if state.guest_transfer_pc.is_none() {
         return_value(context, result);
+    }
+    if selector == "setFramebuffer" {
+        log!(
+            "ARM64 Objective-C return: selector=setFramebuffer result={:#x} receiver={:#x} sp={:#x} fp={:#x} lr={:#x}",
+            result,
+            receiver,
+            context.sp,
+            context.regs[29],
+            context.regs[30],
+        );
     }
     Ok(())
 }
@@ -1756,6 +1818,13 @@ pub fn dispatch(
                     if let Some(view_controller_name) = view_controller_name {
                         let view_controller = objc_instance_for_class(mem, state, &view_controller_name)?;
                         if let Some(context) = state.graphics_context {
+                            let context_offsets = ["context", "_context"]
+                                .iter()
+                                .filter_map(|name| {
+                                    guest_ivar_offset(mem, state, &view_controller_name, name)
+                                        .map(|offset| (*name, offset))
+                                })
+                                .collect::<Vec<_>>();
                             let context_mapped = set_guest_ivar_u64_aliases(
                                 mem,
                                 state,
@@ -1764,12 +1833,25 @@ pub fn dispatch(
                                 &["context", "_context"],
                                 context,
                             )?;
+                            let context_values = context_offsets
+                                .iter()
+                                .map(|(name, offset)| {
+                                    format!(
+                                        "{}@{:#x}={:#x}",
+                                        name,
+                                        offset,
+                                        mem.read_u64(view_controller + *offset).unwrap_or(0)
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join(",");
                             log!(
-                                "ARM64 initialized view-controller context: class={} object={:#x} context={:#x} mapped={}",
+                                "ARM64 initialized view-controller context: class={} object={:#x} context={:#x} mapped={} ivars=[{}]",
                                 view_controller_name,
                                 view_controller,
                                 context,
                                 context_mapped,
+                                context_values,
                             );
                         }
                         state.application_view_controller = Some(view_controller);

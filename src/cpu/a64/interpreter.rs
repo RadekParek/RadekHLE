@@ -56,7 +56,15 @@ impl A64Interpreter {
                 return -2;
             }
         };
-        match self.execute(memory, context, instruction) {
+        let sp_before = context.sp;
+        let result = self.execute(memory, context, instruction);
+        if context.sp != sp_before {
+            log!(
+                "ARM64 interpreter SP change: pc={pc:#x} instruction={instruction:#010x} before={sp_before:#x} after={:#x}",
+                context.sp,
+            );
+        }
+        match result {
             Ok(Some(svc)) => svc as i32,
             Ok(None) => -1,
             Err(InterpreterError::Memory(error, address)) => {
@@ -302,7 +310,7 @@ impl A64Interpreter {
         let immediate = (((instruction >> 10) & 0xfff) as u64) << shift;
         let left = read_sp_or_reg(context, ((instruction >> 5) & 31) as usize, sf);
         let (value, carry, overflow) = add_sub(left, immediate, subtract, sf);
-        write_sp_or_reg(context, (instruction & 31) as usize, value, sf);
+        write_add_sub_result(context, (instruction & 31) as usize, value, sf, update_flags);
         if update_flags {
             set_flags(context, value, carry, overflow, sf);
         }
@@ -319,7 +327,7 @@ impl A64Interpreter {
         let right = shift_value(rm, shift_type, amount, sf);
         let left = read_sp_or_reg(context, ((instruction >> 5) & 31) as usize, sf);
         let (value, carry, overflow) = add_sub(left, right, subtract, sf);
-        write_sp_or_reg(context, (instruction & 31) as usize, value, sf);
+        write_add_sub_result(context, (instruction & 31) as usize, value, sf, update_flags);
         if update_flags {
             set_flags(context, value, carry, overflow, sf);
         }
@@ -585,6 +593,22 @@ fn read_sp_or_reg(context: &touchHLE_DynarmicA64Context, index: usize, sf: bool)
     if index == 31 { if sf { context.sp } else { context.sp as u32 as u64 } } else { read_reg(context, index, sf) }
 }
 
+fn write_add_sub_result(
+    context: &mut touchHLE_DynarmicA64Context,
+    index: usize,
+    value: u64,
+    sf: bool,
+    update_flags: bool,
+) {
+    if index == 31 {
+        if !update_flags {
+            context.sp = if sf { value } else { value as u32 as u64 };
+        }
+    } else {
+        set_reg(context, index, value, sf);
+    }
+}
+
 fn write_sp_or_reg(context: &mut touchHLE_DynarmicA64Context, index: usize, value: u64, sf: bool) {
     if index == 31 { context.sp = if sf { value } else { value as u32 as u64 }; } else { set_reg(context, index, value, sf); }
 }
@@ -724,6 +748,22 @@ mod tests {
         assert_eq!(context.regs[29], 0x2929_2929_2929_2929);
         assert_eq!(context.regs[30], 0x3030_3030_3030_3030);
         assert_eq!(context.sp, SP + 0x20);
+    }
+
+    #[test]
+    fn cmp_using_xzr_does_not_modify_sp() {
+        let mut memory = Mem64::new();
+        memory.map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute()).unwrap();
+        const SP: u64 = 0x7fff_fffe_fe30;
+        memory.map_zeroed_with_permissions(SP - 0x1000, 0x2000, Permissions::read_write()).unwrap();
+        memory.load_bytes(CODE, &0xeb08029fu32.to_le_bytes()).unwrap();
+        let mut context = touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context { pc: CODE, sp: SP, ..Default::default() };
+        context.regs[20] = 0x20;
+        context.regs[8] = 0x10;
+        let mut interpreter = A64Interpreter::new();
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(context.sp, SP);
+        assert!(context.pstate & (1 << 29) != 0);
     }
 
     #[test]

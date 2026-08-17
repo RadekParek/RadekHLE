@@ -92,7 +92,18 @@ fn call_stack_dump(memory: &Mem64, context: &touchHLE_DynarmicA64Context) -> Str
     if frames.is_empty() { "unavailable".to_string() } else { frames.join(" -> ") }
 }
 fn verify_abi(context: &touchHLE_DynarmicA64Context, module: &str) {
-    if context.sp & 15 != 0 {
+    if context.sp == 0 {
+        echo!(
+            "ARM64 ABI violation in {module}: SP became NULL (pc={:#x} lr={:#x} fp={:#x} x0={:#x} x1={:#x} x2={:#x} x3={:#x})",
+            context.pc,
+            context.regs[30],
+            context.regs[29],
+            context.regs[0],
+            context.regs[1],
+            context.regs[2],
+            context.regs[3],
+        );
+    } else if context.sp & 15 != 0 {
         echo!("ARM64 ABI violation in {module}: SP is not 16-byte aligned: {:#x}", context.sp);
     }
     if context.regs[8] != 0 {
@@ -719,6 +730,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                     );
                 }
                 verify_abi(&context, symbol);
+                let sp_before_dispatch = context.sp;
                 runtime_state.last_symbol = Some(symbol.to_owned());
                 let handled = match dispatch(&mut memory, &mut context, symbol, &mut runtime_state) {
                     Ok(handled) => {
@@ -730,6 +742,14 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                         return Err(format!("ARM64 host callback {} failed: {}", symbol, error));
                     }
                 };
+                if context.sp != sp_before_dispatch {
+                    log_dbg!(
+                        "ARM64 host callback changed SP: symbol={} before={:#x} after={:#x}",
+                        symbol,
+                        sp_before_dispatch,
+                        context.sp,
+                    );
+                }
                 verify_abi(&context, symbol);
                 if runtime_state.take_present_request() {
                     log_dbg!(
