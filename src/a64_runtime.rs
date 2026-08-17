@@ -602,8 +602,8 @@ fn initialize_eagl_view(mem: &mut Mem64, state: &mut RuntimeState, view: u64) ->
     let context_mapped = set_guest_ivar_u64(mem, state, &class_name, view, "context", context)?;
     let framebuffer_mapped = set_guest_ivar_u32(mem, state, &class_name, view, "defaultFramebuffer", 1)?;
     let renderbuffer_mapped = set_guest_ivar_u32(mem, state, &class_name, view, "colorRenderbuffer", 1)?;
-    let width_mapped = set_guest_ivar_u32(mem, state, &class_name, view, "framebufferWidth", state.screen_width)?;
-    let height_mapped = set_guest_ivar_u32(mem, state, &class_name, view, "framebufferHeight", state.screen_height)?;
+    let _width_mapped = set_guest_ivar_u32(mem, state, &class_name, view, "framebufferWidth", state.screen_width)?;
+    let _height_mapped = set_guest_ivar_u32(mem, state, &class_name, view, "framebufferHeight", state.screen_height)?;
     let depth_mapped = set_guest_ivar_u32(mem, state, &class_name, view, "_depthRenderBuffer", 0)?;
     let scale_mapped = set_guest_ivar_f64(
         mem,
