@@ -119,6 +119,24 @@ pub struct RuntimeState {
     pub display_link_callbacks: u64,
     pub display_link_callback_returned: bool,
     pub guest_yield_requested: bool,
+    pub arm64_current_context: Option<u64>,
+    pub arm64_gl_present_requested: bool,
+    pub arm64_gl: Option<Arm64GuestGlState>,
+    pub arm64_application_bootstrap_dispatched: bool,
+}
+
+#[derive(Debug, Default)]
+pub struct Arm64GuestGlState {
+    pub current_framebuffer: u32,
+    pub current_renderbuffer: u32,
+    pub viewport: [i32; 4],
+    pub clear_color: [f32; 4],
+    pub gl_error: u32,
+    pub draw_calls: u64,
+    pub bind_framebuffer_calls: u64,
+    pub last_bind_framebuffer_pc: u64,
+    pub last_bind_framebuffer_target: u32,
+    pub last_bind_framebuffer: u32,
 }
 
 impl RuntimeState {
@@ -180,6 +198,10 @@ impl RuntimeState {
             display_link_callbacks: 0,
             display_link_callback_returned: false,
             guest_yield_requested: false,
+            arm64_current_context: None,
+            arm64_gl_present_requested: false,
+            arm64_gl: None,
+            arm64_application_bootstrap_dispatched: false,
         }
     }
 
@@ -233,6 +255,10 @@ impl RuntimeState {
 
     pub fn take_guest_yield(&mut self) -> bool {
         std::mem::take(&mut self.guest_yield_requested)
+    }
+
+    pub fn take_guest_gl_present_request(&mut self) -> bool {
+        std::mem::take(&mut self.arm64_gl_present_requested)
     }
 
     pub fn resolve_image_symbol(&self, candidates: &[&str]) -> Option<u64> {
@@ -933,6 +959,19 @@ fn objc_send(
             }
             state.graphics_context = Some(context.regs[2]);
             0
+        }
+        "currentContext" if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"EAGLContext") => {
+            state.arm64_current_context.unwrap_or(0)
+        }
+        "setCurrentContext:" if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"EAGLContext") => {
+            state.arm64_current_context = (context.regs[2] != 0).then_some(context.regs[2]);
+            1
+        }
+        "presentRenderbuffer:" if kind == A64_KIND_CONTEXT => {
+            state.arm64_gl_present_requested = true;
+            state.present_requested = true;
+            state.frame_serial = state.frame_serial.saturating_add(1);
+            1
         }
         "platform" if receiver != 0 => objc_string(mem, "iPhone5,1")?,
         "currentThread" if kind == A64_KIND_CLASS => objc_object(mem, A64_KIND_THREAD)?,
@@ -1888,7 +1927,9 @@ pub fn dispatch(
         "UIApplicationMain" => {
             state.application_main_active = true;
             state.application_main_calls = state.application_main_calls.saturating_add(1);
-            state.application_bootstrap_requested = true;
+            if !state.arm64_application_bootstrap_dispatched {
+                state.application_bootstrap_requested = true;
+            }
             state.present_requested = true;
             let application = state.application_object.unwrap_or(objc_instance_for_class(mem, state, "UIApplication")?);
             state.application_object = Some(application);
@@ -1898,6 +1939,11 @@ pub fn dispatch(
                 state.objc_classes.iter().find(|class| guest_method(state, &class.name, "application:didFinishLaunchingWithOptions:", false).is_some()).map(|class| class.name.clone())
             };
             if let Some(delegate_name) = delegate_name {
+                if state.arm64_application_bootstrap_dispatched {
+                    return_value(context, 0);
+                    return Ok(true);
+                }
+                state.arm64_application_bootstrap_dispatched = true;
                 let delegate = objc_instance_for_class(mem, state, &delegate_name)?;
                 state.application_delegate = Some(delegate);
                 if state.main_nib_name.is_some() {
@@ -2077,9 +2123,66 @@ pub fn dispatch(
             Ok(true)
         }
         _ if symbol.starts_with("gl") || symbol.starts_with("egl") || symbol.starts_with("EAGL") => {
-            return_value(context, 0);
-            Ok(true)
+            return arm64_gl_call(mem, context, symbol, state);
         }
         _ => Ok(false),
     }
+}
+
+fn arm64_gl_call(
+    mem: &mut Mem64,
+    context: &mut touchHLE_DynarmicA64Context,
+    symbol: &str,
+    state: &mut RuntimeState,
+) -> Result<bool, String> {
+    let gl = state.arm64_gl.get_or_insert_with(|| Arm64GuestGlState {
+        viewport: [0, 0, state.screen_width as i32, state.screen_height as i32],
+        clear_color: [0.0, 0.0, 0.0, 1.0],
+        ..Arm64GuestGlState::default()
+    });
+    match symbol {
+        "glBindFramebuffer" | "glBindFramebufferOES" => {
+            gl.bind_framebuffer_calls = gl.bind_framebuffer_calls.saturating_add(1);
+            gl.last_bind_framebuffer_pc = context.pc;
+            gl.last_bind_framebuffer_target = context.regs[0] as u32;
+            gl.last_bind_framebuffer = context.regs[1] as u32;
+            gl.current_framebuffer = context.regs[1] as u32;
+            if gl.bind_framebuffer_calls <= 4 {
+                log!("ARM64 GLES framebuffer bind #{}: target={:#x} framebuffer={} pc={:#x} gl_error={:#x}", gl.bind_framebuffer_calls, gl.last_bind_framebuffer_target, gl.last_bind_framebuffer, gl.last_bind_framebuffer_pc, gl.gl_error);
+            }
+        }
+        "glBindRenderbuffer" | "glBindRenderbufferOES" => {
+            gl.current_renderbuffer = context.regs[1] as u32;
+        }
+        "glViewport" => {
+            gl.viewport = [context.regs[0] as i32, context.regs[1] as i32, context.regs[2] as i32, context.regs[3] as i32];
+        }
+        "glClearColor" => {
+            gl.clear_color = [
+                f32::from_bits(context.regs[0] as u32),
+                f32::from_bits(context.regs[1] as u32),
+                f32::from_bits(context.regs[2] as u32),
+                f32::from_bits(context.regs[3] as u32),
+            ];
+            state.clear_color = gl.clear_color;
+        }
+        "glClear" => {
+            gl.draw_calls = gl.draw_calls.saturating_add(1);
+        }
+        "glDrawArrays" | "glDrawElements" => {
+            gl.draw_calls = gl.draw_calls.saturating_add(1);
+        }
+        "glGetError" => {
+            return_value(context, gl.gl_error as u64);
+            gl.gl_error = 0;
+            return Ok(true);
+        }
+        "glCheckFramebufferStatus" => {
+            return_value(context, 0x8cd5);
+            return Ok(true);
+        }
+        _ => {}
+    }
+    return_value(context, 0);
+    Ok(true)
 }
