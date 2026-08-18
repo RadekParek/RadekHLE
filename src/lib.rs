@@ -422,7 +422,7 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
         let executable_bytes = fs
             .read(bundle.executable_path())
             .map_err(|_| "Could not read executable to detect its architecture".to_string())?;
-        mach_o::detect_architecture(&executable_bytes, options.force_32_bit).map_err(str::to_string)?
+        mach_o::detect_architecture(&executable_bytes, options.force_32_bit, options.force_64_bit).map_err(str::to_string)?
     };
     echo!("Selected executable architecture: {}", mach_o::architecture_name(architecture));
 
@@ -431,6 +431,9 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
     }
     if architecture == mach_o::MachOArchitecture::Arm64 {
         return Err("--force-32-bit was requested, but this executable is ARM64-only and cannot run in the 32-bit ARM loader".to_string());
+    }
+    if options.force_64_bit {
+        return Err("--force-64-bit was requested, but this executable has no ARM64 slice".to_string());
     }
 
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

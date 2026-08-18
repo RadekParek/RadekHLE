@@ -141,6 +141,7 @@ pub struct Options {
     pub fast_memory: bool,
     pub direct_memory_access: bool,
     pub force_32_bit: bool,
+    pub force_64_bit: bool,
     pub arm64_backend: Arm64Backend,
     pub gdb_listen_addrs: Option<Vec<SocketAddr>>,
     pub preferred_languages: Option<Vec<String>>,
@@ -229,6 +230,7 @@ impl Default for Options {
             fast_memory: true,
             direct_memory_access: true,
             force_32_bit: false,
+            force_64_bit: false,
             arm64_backend: Arm64Backend::Auto,
             gdb_listen_addrs: None,
             preferred_languages: None,
@@ -468,8 +470,14 @@ impl Options {
             self.force_composition = true;
         } else if arg == "--force-32-bit" {
             self.force_32_bit = true;
+            self.force_64_bit = false;
         } else if arg == "--disable-force-32-bit" {
             self.force_32_bit = false;
+        } else if arg == "--force-64-bit" {
+            self.force_64_bit = true;
+            self.force_32_bit = false;
+        } else if arg == "--disable-force-64-bit" {
+            self.force_64_bit = false;
         } else if let Some(value) = arg.strip_prefix("--arm64-backend=") {
             self.arm64_backend = Arm64Backend::parse(value)?;
         } else if arg == "--prefer-gles2-context" {

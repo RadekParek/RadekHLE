@@ -231,6 +231,7 @@ struct AppPickerDelegateHostObject {
     log_file: Option<bool>,
     fast_memory: Option<bool>,
     force_32_bit: Option<bool>,
+    force_64_bit: Option<bool>,
     device_model_tag: Option<i32>,
     device_model_toggle: bool,
     device_model_scroll_up: bool,
@@ -373,6 +374,10 @@ const CLASSES: ClassExports = objc_classes! {
 - (())force32Bit:(id)switch {
     let switch_state: bool = msg![env; switch isOn];
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).force_32_bit = Some(switch_state);
+}
+- (())force64Bit:(id)switch {
+    let switch_state: bool = msg![env; switch isOn];
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).force_64_bit = Some(switch_state);
 }
 - (())deviceModel:(id)sender { // UIButton*
     let tag: NSInteger = msg![env; sender tag];
@@ -728,6 +733,7 @@ fn app_picker_inner(
     let mut quick_options_log_file = true;
     let mut quick_options_fast_memory = true;
     let mut quick_options_force_32_bit = false;
+    let mut quick_options_force_64_bit = false;
     let mut quick_options_device_tag: Option<i32> = None;
     let mut quick_options_device_model_open = false;
     let mut quick_options_device_model_scroll: isize = 0;
@@ -1098,6 +1104,14 @@ fn app_picker_inner(
             quick_options_fast_memory = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.force_32_bit) {
             quick_options_force_32_bit = enabled;
+            if enabled {
+                quick_options_force_64_bit = false;
+            }
+        } else if let Some(enabled) = std::mem::take(&mut host_obj.force_64_bit) {
+            quick_options_force_64_bit = enabled;
+            if enabled {
+                quick_options_force_32_bit = false;
+            }
         } else if let Some(enabled) = std::mem::take(&mut host_obj.frame_pacing) {
             quick_options_frame_pacing = enabled;
         } else if std::mem::take(&mut host_obj.frame_generation_off) {
@@ -1187,6 +1201,8 @@ fn app_picker_inner(
     }.to_string());
     if quick_options_force_32_bit {
         option_args.push("--force-32-bit".to_string());
+    } else if quick_options_force_64_bit {
+        option_args.push("--force-64-bit".to_string());
     }
 
     if let Some(tag) = quick_options_device_tag {
@@ -2098,6 +2114,8 @@ fn setup_quick_options(
         RowKind::Switch("fastMemory:", true),
         RowKind::Label("Force 32-bit"),
         RowKind::Switch("force32Bit:", false),
+        RowKind::Label("Force 64-bit"),
+        RowKind::Switch("force64Bit:", false),
         RowKind::Label("Frame pacing"),
         RowKind::Switch("framePacing:", true),
         RowKind::Label("Show FPS"),

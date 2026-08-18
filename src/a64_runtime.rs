@@ -819,7 +819,15 @@ fn objc_send(
         context.regs[5]
     );
     if matches!(selector.as_str(), "displayLinkWithTarget:selector:" | "setFrameInterval:" | "addToRunLoop:forMode:" | "setDisplayLink:") {
-        log!("ARM64 display-link message: receiver={:#x} kind={} class_name={:#x} selector={} x2={:#x} x3={:#x}", receiver, kind, class_name, selector, context.regs[2], context.regs[3]);
+        log_once_fmt!(
+            "ARM64 display-link message: receiver={:#x} kind={} class_name={:#x} selector={} x2={:#x} x3={:#x} [repeated messages suppressed]",
+            receiver,
+            kind,
+            class_name,
+            selector,
+            context.regs[2],
+            context.regs[3],
+        );
     }
     if matches!(selector.as_str(), "commit" | "waitUntilCompleted" | "presentDrawable:" | "endEncoding") {
         state.metal_commands = state.metal_commands.saturating_add(1);
@@ -840,8 +848,8 @@ fn objc_send(
         if view != 0 {
             set_objc_field(mem, receiver, A64_UIVIEWCONTROLLER_VIEW_IVAR, view);
         }
-        log!(
-            "ARM64 controller view bridge: receiver={:#x} class={} result={:#x} application_view={:#x}",
+        log_once_fmt!(
+            "ARM64 controller view bridge: receiver={:#x} class={} result={:#x} application_view={:#x} [repeated bridge calls suppressed]",
             receiver,
             receiver_class_name(mem, receiver, kind).as_deref().unwrap_or("<unknown>"),
             view,
@@ -895,8 +903,8 @@ fn objc_send(
             if view != 0 && state.application_view_controller.is_none() {
                 state.application_view_controller = Some(receiver);
             }
-            log!(
-                "ARM64 view getter: receiver={:#x} class={} view_ivar={:#x} result={:#x}",
+            log_once_fmt!(
+                "ARM64 view getter: receiver={:#x} class={} view_ivar={:#x} result={:#x} [repeated getters suppressed]",
                 receiver,
                 receiver_class_name(mem, receiver, kind).as_deref().unwrap_or("<unknown>"),
                 A64_UIVIEWCONTROLLER_VIEW_IVAR,
@@ -952,8 +960,8 @@ fn objc_send(
         }
         "startAnimation" | "invalidate" if kind == A64_KIND_DISPLAY_LINK => 0,
         "setFramebuffer" if state.application_eagl_view == Some(receiver) || kind == A64_KIND_EAGL_VIEW => {
-            log!(
-                "ARM64 setFramebuffer entry: receiver={:#x} class={} context={:#x} sp={:#x} fp={:#x} lr={:#x}",
+            log_once_fmt!(
+                "ARM64 setFramebuffer entry: receiver={:#x} class={} context={:#x} sp={:#x} fp={:#x} lr={:#x} [repeated calls suppressed]",
                 receiver,
                 receiver_class_name(mem, receiver, A64_KIND_GENERIC).as_deref().unwrap_or("<unknown>"),
                 state.graphics_context.unwrap_or(0),
@@ -969,8 +977,8 @@ fn objc_send(
             let renderbuffer = guest_ivar_offset(mem, state, &class_name, "colorRenderbuffer")
                 .and_then(|offset| mem.read_u32(receiver + offset).ok())
                 .unwrap_or(0);
-            log!(
-                "ARM64 setFramebuffer success: receiver={:#x} context={:#x} framebuffer={} renderbuffer={} size={}x{} sp={:#x}",
+            log_once_fmt!(
+                "ARM64 setFramebuffer success: receiver={:#x} context={:#x} framebuffer={} renderbuffer={} size={}x{} sp={:#x} [repeated calls suppressed]",
                 receiver,
                 state.graphics_context.unwrap_or(0),
                 framebuffer,
@@ -1238,8 +1246,8 @@ fn objc_send(
         return_value(context, result);
     }
     if selector == "setFramebuffer" {
-        log!(
-            "ARM64 Objective-C return: selector=setFramebuffer result={:#x} receiver={:#x} sp={:#x} fp={:#x} lr={:#x}",
+        log_once_fmt!(
+            "ARM64 Objective-C return: selector=setFramebuffer result={:#x} receiver={:#x} sp={:#x} fp={:#x} lr={:#x} [repeated returns suppressed]",
             result,
             receiver,
             context.sp,
