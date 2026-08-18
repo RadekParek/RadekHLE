@@ -16,7 +16,7 @@ const SVC_THREAD_EXIT: u32 = 1;
 const SVC_RETURN_TO_HOST: u32 = 2;
 const SVC_HOST_BASE: u32 = 0x100;
 const HOST_STUB_SIZE: u64 = 8;
-const MAX_HOST_DISPATCHES: u64 = 1_000_000;
+const MAX_HOST_DISPATCHES_PER_CALLBACK: u64 = 100_000;
 const A64_HALT_USER_DEFINED1: u32 = 0x0100_0000;
 const A64_HALT_USER_DEFINED2: u32 = 0x0200_0000;
 const A64_HALT_USER_DEFINED3: u32 = 0x0400_0000;
@@ -545,6 +545,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     cpu.load_context(&context);
     let mut ticks = Some(EXECUTION_SLICE_TICKS);
     let mut host_dispatches = 0_u64;
+    let mut host_dispatches_since_callback = 0_u64;
     let mut last_pc = context.pc;
     let mut repeated_pc = 0_u64;
     let watchdog_ms = std::env::var("TOUCHHLE_ARM64_WATCHDOG_MS").ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or(2000);
@@ -690,6 +691,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             }
             value if value >= SVC_HOST_BASE as i32 => {
                 host_dispatches += 1;
+                host_dispatches_since_callback += 1;
                 if context.pc == last_pc {
                     repeated_pc += 1;
                 } else {
@@ -812,8 +814,11 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                         echo!("Warning: ARM64 reached unresolved host function {} at pc={:#x} lr={:#x} sp={:#x}; returning zero", symbol, context.pc, context.regs[30], context.sp);
                     }
                 }
-                if host_dispatches > MAX_HOST_DISPATCHES {
-                    return Err(format!("ARM64 runtime made too many host calls; last binding was {}", symbol));
+                if host_dispatches_since_callback > MAX_HOST_DISPATCHES_PER_CALLBACK {
+                    return Err(format!(
+                        "ARM64 runtime made too many host calls within one guest callback; last binding was {}",
+                        symbol
+                    ));
                 }
                 if host_dispatches.is_power_of_two() {
                     log_dbg!(
@@ -827,18 +832,21 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 if guest_transfer.is_none() {
                     context.pc = context.regs[30];
                 }
-                let callback_scheduled = schedule_display_link_callback(&mut memory, &mut context, &mut runtime_state)?;
-                if let Some(transfer_pc) = runtime_state.take_guest_transfer() {
-                    log_dbg!(
-                        "ARM64 scheduling next display-link guest callback at {:#x} (scheduled={})",
-                        transfer_pc,
-                        callback_scheduled,
-                    );
-                    context.pc = transfer_pc;
-                    cpu.load_context(&context);
-                    cpu.clear_halt(A64_HALT_USER_DEFINED1);
-                    cpu.clear_halt(A64_HALT_USER_DEFINED2);
-                    cpu.clear_halt(A64_HALT_USER_DEFINED3);
+                if runtime_state.take_guest_yield() {
+                    host_dispatches_since_callback = 0;
+                    let callback_scheduled = schedule_display_link_callback(&mut memory, &mut context, &mut runtime_state)?;
+                    if let Some(transfer_pc) = runtime_state.take_guest_transfer() {
+                        log_dbg!(
+                            "ARM64 scheduling next display-link guest callback at {:#x} (scheduled={})",
+                            transfer_pc,
+                            callback_scheduled,
+                        );
+                        context.pc = transfer_pc;
+                        cpu.load_context(&context);
+                        cpu.clear_halt(A64_HALT_USER_DEFINED1);
+                        cpu.clear_halt(A64_HALT_USER_DEFINED2);
+                        cpu.clear_halt(A64_HALT_USER_DEFINED3);
+                    }
                 }
                 no_progress_slices = 0;
                 no_progress_since = Instant::now();
