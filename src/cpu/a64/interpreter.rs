@@ -58,9 +58,9 @@ impl A64Interpreter {
         };
         let sp_before = context.sp;
         let result = self.execute(memory, context, instruction);
-        if context.sp != sp_before {
+        if context.sp != sp_before && (context.sp.abs_diff(sp_before) > 0x1000 || pc == 0x1000eb360) {
             log_dbg!(
-                "ARM64 interpreter SP change: pc={pc:#x} instruction={instruction:#010x} before={sp_before:#x} after={:#x}",
+                "ARM64 interpreter stack transition: pc={pc:#x} instruction={instruction:#010x} before={sp_before:#x} after={:#x}",
                 context.sp,
             );
         }

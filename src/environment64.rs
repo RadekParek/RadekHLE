@@ -415,7 +415,19 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             A64GraphicsBackend::MetalCompatibility
         }
     };
-    let mut runtime_state = RuntimeState::new(ios_version, graphics_backend, device_family);
+    let orientation = if options.initial_orientation == crate::window::DeviceOrientation::Portrait
+        && !bundle.supported_interface_orientations().iter().any(|orientation| *orientation == "UIInterfaceOrientationPortrait")
+    {
+        bundle.supported_interface_orientations().iter().find_map(|orientation| match *orientation {
+            "UIInterfaceOrientationLandscapeLeft" => Some(crate::window::DeviceOrientation::LandscapeRight),
+            "UIInterfaceOrientationLandscapeRight" => Some(crate::window::DeviceOrientation::LandscapeLeft),
+            "UIInterfaceOrientationPortraitUpsideDown" => Some(crate::window::DeviceOrientation::PortraitUpsideDown),
+            _ => None,
+        }).unwrap_or(crate::window::DeviceOrientation::Portrait)
+    } else {
+        options.initial_orientation
+    };
+    let mut runtime_state = RuntimeState::new(ios_version, graphics_backend, device_family, orientation);
     runtime_state.current_module = Some(executable.name.clone());
     runtime_state.bundle_identifier = bundle.bundle_identifier().to_owned();
     runtime_state.bundle_path = bundle.bundle_path().as_str().to_owned();
@@ -430,6 +442,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
         let mut window_options = options.clone();
         window_options.device_family = Some(device_family);
         window_options.host_screen_size = Some(device_family.portrait_size());
+        window_options.initial_orientation = orientation;
         if graphics_backend == A64GraphicsBackend::MetalCompatibility {
             window_options.graphics_api = crate::options::GraphicsApi::GLES20;
             window_options.prefer_gles2_context = true;
@@ -734,7 +747,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 verify_abi(&context, symbol);
                 let sp_before_dispatch = context.sp;
                 runtime_state.last_symbol = Some(symbol.to_owned());
-                let handled = match dispatch(&mut memory, &mut context, symbol, &mut runtime_state) {
+                let handled = match dispatch(&mut memory, &mut context, symbol, &mut runtime_state, window.as_deref_mut()) {
                     Ok(handled) => {
                         runtime_state.last_successful_symbol = Some(symbol.to_owned());
                         handled
@@ -778,8 +791,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 }
                 if runtime_state.take_boot_screen_request() {
                     echo!(
-                        "ARM64 observed UIApplication bootstrap: application_main_active={} application_main_calls={}; continuing guest execution",
-                        runtime_state.application_main_is_active(),
+                        "ARM64 application bootstrap lifecycle active: application_main_calls={}; guest execution continuing",
                         runtime_state.application_main_calls,
                     );
                 }

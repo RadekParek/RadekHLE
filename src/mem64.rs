@@ -197,6 +197,15 @@ impl Mem64 {
         let size = usize::try_from(size).map_err(|_| "64-bit read is too large for this host")?;
         Ok(self.slice_with_access(base, size, AccessType::Read)?.to_vec())
     }
+    pub fn host_ptr(&self, base: Guest64Addr, size: Guest64USize) -> Result<*const u8, &'static str> {
+        let size = usize::try_from(size).map_err(|_| "64-bit host pointer size is too large")?;
+        Ok(self.slice_with_access(base, size, AccessType::Read)?.as_ptr())
+    }
+
+    pub fn host_ptr_mut(&mut self, base: Guest64Addr, size: Guest64USize) -> Result<*mut u8, &'static str> {
+        let size = usize::try_from(size).map_err(|_| "64-bit mutable host pointer size is too large")?;
+        Ok(self.slice_mut_with_access(base, size, AccessType::Write)?.as_mut_ptr())
+    }
 
     pub fn allocation_size(&self, address: Guest64Addr) -> Option<Guest64USize> {
         self.allocations.get(&address).copied()

@@ -2,7 +2,7 @@ use crate::a64_abi::A64Abi;
 use crate::dyld::{search_host_dylibs, HostConstant};
 use crate::mach_o64::ObjCClass64;
 use crate::mem64::Mem64;
-use crate::window::DeviceFamily;
+use crate::window::{DeviceFamily, DeviceOrientation, Window};
 use touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context;
 use std::collections::{HashMap, HashSet};
 
@@ -71,6 +71,7 @@ pub struct RuntimeState {
     pub ios_version: (i32, i32, i32),
     pub graphics_backend: A64GraphicsBackend,
     pub device_family: DeviceFamily,
+    pub orientation: DeviceOrientation,
     pub screen_width: u32,
     pub screen_height: u32,
     pub host_dispatches: u64,
@@ -79,6 +80,7 @@ pub struct RuntimeState {
     pub frame_serial: u64,
     pub present_requested: bool,
     pub boot_screen_reached: bool,
+    pub boot_screen_notification_pending: bool,
     pub application_main_active: bool,
     pub application_main_calls: u64,
     pub application_bootstrap_requested: bool,
@@ -137,6 +139,9 @@ pub struct Arm64GuestGlState {
     pub last_bind_framebuffer_pc: u64,
     pub last_bind_framebuffer_target: u32,
     pub last_bind_framebuffer: u32,
+    pub array_buffer_binding: u32,
+    pub element_array_buffer_binding: u32,
+    pub strings: HashMap<u32, u64>,
 }
 
 impl RuntimeState {
@@ -144,12 +149,18 @@ impl RuntimeState {
         ios_version: (i32, i32, i32),
         graphics_backend: A64GraphicsBackend,
         device_family: DeviceFamily,
+        orientation: DeviceOrientation,
     ) -> Self {
-        let (screen_width, screen_height) = device_family.portrait_size();
+        let (portrait_width, portrait_height) = device_family.portrait_size();
+        let (screen_width, screen_height) = match orientation {
+            DeviceOrientation::Portrait | DeviceOrientation::PortraitUpsideDown => (portrait_width, portrait_height),
+            DeviceOrientation::LandscapeLeft | DeviceOrientation::LandscapeRight => (portrait_height, portrait_width),
+        };
         Self {
             ios_version,
             graphics_backend,
             device_family,
+            orientation,
             screen_width: screen_width as u32,
             screen_height: screen_height as u32,
             host_dispatches: 0,
@@ -158,6 +169,7 @@ impl RuntimeState {
             frame_serial: 0,
             present_requested: false,
             boot_screen_reached: false,
+            boot_screen_notification_pending: false,
             application_main_active: false,
             application_main_calls: 0,
             application_bootstrap_requested: false,
@@ -210,7 +222,7 @@ impl RuntimeState {
     }
 
     pub fn take_boot_screen_request(&mut self) -> bool {
-        std::mem::take(&mut self.boot_screen_reached)
+        std::mem::take(&mut self.boot_screen_notification_pending)
     }
 
     pub fn application_main_is_active(&self) -> bool {
@@ -222,7 +234,10 @@ impl RuntimeState {
     }
 
     pub fn mark_boot_screen_reached(&mut self) {
-        self.boot_screen_reached = true;
+        if !self.boot_screen_reached {
+            self.boot_screen_reached = true;
+            self.boot_screen_notification_pending = true;
+        }
     }
 
     pub fn mark_unimplemented_reached(&mut self, symbol: &str) -> bool {
@@ -727,9 +742,13 @@ fn objc_ui_device(mem: &mut Mem64, family: DeviceFamily) -> Result<u64, String> 
     Ok(object)
 }
 
-fn objc_ui_screen(mem: &mut Mem64, family: DeviceFamily) -> Result<u64, String> {
+fn objc_ui_screen(mem: &mut Mem64, family: DeviceFamily, orientation: DeviceOrientation) -> Result<u64, String> {
     let object = objc_object(mem, A64_KIND_UI_SCREEN)?;
-    let (width, height) = family.portrait_size();
+    let (portrait_width, portrait_height) = family.portrait_size();
+    let (width, height) = match orientation {
+        DeviceOrientation::Portrait | DeviceOrientation::PortraitUpsideDown => (portrait_width, portrait_height),
+        DeviceOrientation::LandscapeLeft | DeviceOrientation::LandscapeRight => (portrait_height, portrait_width),
+    };
     set_objc_field(mem, object, 56, width as u64);
     set_objc_field(mem, object, 64, height as u64);
     set_objc_field(mem, object, 72, family.scale_factor().to_bits() as u64);
@@ -751,13 +770,18 @@ fn write_screen_rect(
     mem: &mut Mem64,
     context: &mut touchHLE_DynarmicA64Context,
     family: DeviceFamily,
+    orientation: DeviceOrientation,
     scale: f64,
 ) -> Result<(), String> {
     let result = context.regs[8];
     if result == 0 || mem.allocation_size(result).is_none() {
         return Ok(());
     }
-    let (width, height) = family.portrait_size();
+    let (portrait_width, portrait_height) = family.portrait_size();
+    let (width, height) = match orientation {
+        DeviceOrientation::Portrait | DeviceOrientation::PortraitUpsideDown => (portrait_width, portrait_height),
+        DeviceOrientation::LandscapeLeft | DeviceOrientation::LandscapeRight => (portrait_height, portrait_width),
+    };
     for (offset, value) in [
         (0, 0.0),
         (8, 0.0),
@@ -1048,7 +1072,7 @@ fn objc_send(
             objc_ui_device(mem, state.device_family)?
         }
         "mainScreen" if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"UIScreen") => {
-            objc_ui_screen(mem, state.device_family)?
+            objc_ui_screen(mem, state.device_family, state.orientation)?
         }
         "bundleIdentifier" if kind == A64_KIND_BUNDLE => objc_field(mem, receiver, 64),
         "bundlePath" | "resourcePath" if kind == A64_KIND_BUNDLE => objc_field(mem, receiver, 56),
@@ -1095,11 +1119,11 @@ fn objc_send(
             u64::from(state.device_family.is_ipad())
         }
         "bounds" | "applicationFrame" if kind == A64_KIND_UI_SCREEN => {
-            write_screen_rect(mem, context, state.device_family, 1.0)?;
+            write_screen_rect(mem, context, state.device_family, state.orientation, 1.0)?;
             0
         }
         "nativeBounds" if kind == A64_KIND_UI_SCREEN => {
-            write_screen_rect(mem, context, state.device_family, state.device_family.scale_factor() as f64)?;
+            write_screen_rect(mem, context, state.device_family, state.orientation, state.device_family.scale_factor() as f64)?;
             0
         }
         "scale" | "nativeScale" if kind == A64_KIND_UI_SCREEN => {
@@ -1492,6 +1516,7 @@ pub fn dispatch(
     context: &mut touchHLE_DynarmicA64Context,
     symbol: &str,
     state: &mut RuntimeState,
+    window: Option<&mut Window>,
 ) -> Result<bool, String> {
     state.host_dispatches = state.host_dispatches.saturating_add(1);
     let symbol = name(symbol);
@@ -2123,10 +2148,80 @@ pub fn dispatch(
             Ok(true)
         }
         _ if symbol.starts_with("gl") || symbol.starts_with("egl") || symbol.starts_with("EAGL") => {
-            return arm64_gl_call(mem, context, symbol, state);
+            return arm64_gl_call(mem, context, symbol, state, window);
         }
         _ => Ok(false),
     }
+}
+
+fn arm64_float_arg(context: &touchHLE_DynarmicA64Context, index: usize) -> f32 {
+    f32::from_bits(context.vectors[index][0] as u32)
+}
+
+fn arm64_const_ptr(mem: &Mem64, address: u64, size: u64) -> Result<*const std::ffi::c_void, String> {
+    if address == 0 {
+        Ok(std::ptr::null())
+    } else {
+        mem.host_ptr(address, size).map(|pointer| pointer.cast()).map_err(str::to_owned)
+    }
+}
+
+fn arm64_mut_ptr(mem: &mut Mem64, address: u64, size: u64) -> Result<*mut std::ffi::c_void, String> {
+    if address == 0 {
+        Ok(std::ptr::null_mut())
+    } else {
+        mem.host_ptr_mut(address, size).map(|pointer| pointer.cast()).map_err(str::to_owned)
+    }
+}
+
+fn arm64_cstring(mem: &Mem64, address: u64) -> Result<std::ffi::CString, String> {
+    if address == 0 {
+        return Ok(std::ffi::CString::default());
+    }
+    let length = mem.cstr_len(address, MAX_CSTRING).map_err(str::to_owned)?;
+    let bytes = mem.read_bytes(address, length).map_err(str::to_owned)?;
+    std::ffi::CString::new(bytes).map_err(|_| "ARM64 guest string contains an embedded NUL".to_owned())
+}
+
+fn arm64_host_gl(window: Option<&mut Window>, call: impl FnOnce(&mut dyn crate::gles::GLES)) {
+    if let Some(window) = window {
+        let mut gl = window.make_internal_gl_ctx_current();
+        call(gl.as_mut());
+    }
+}
+
+fn arm64_framebuffer_host_id(id: u32) -> u32 {
+    id.saturating_sub(1)
+}
+
+fn arm64_renderbuffer_host_id(id: u32) -> u32 {
+    id.saturating_sub(1)
+}
+
+fn arm64_texture_data_size(width: u32, height: u32, format: u32, type_: u32) -> u64 {
+    let components = match format {
+        0x1907 => 3,
+        0x1908 => 4,
+        0x1909 | 0x190A => 1,
+        _ => 4,
+    };
+    let bytes_per_component = match type_ {
+        0x1401 => 1,
+        0x1403 | 0x1405 => 2,
+        _ => 4,
+    };
+    u64::from(width).saturating_mul(u64::from(height)).saturating_mul(components).saturating_mul(bytes_per_component)
+}
+
+fn arm64_copy_host_string(mem: &mut Mem64, pointer: *const u8) -> Result<u64, String> {
+    if pointer.is_null() {
+        return Ok(0);
+    }
+    let bytes = unsafe { std::ffi::CStr::from_ptr(pointer.cast()) }.to_bytes();
+    let guest = mem.alloc_zeroed(bytes.len() as u64 + 1).map_err(str::to_owned)?;
+    mem.write_bytes(guest, bytes).map_err(str::to_owned)?;
+    mem.write_u8(guest + bytes.len() as u64, 0).map_err(str::to_owned)?;
+    Ok(guest)
 }
 
 fn arm64_gl_call(
@@ -2134,6 +2229,7 @@ fn arm64_gl_call(
     context: &mut touchHLE_DynarmicA64Context,
     symbol: &str,
     state: &mut RuntimeState,
+    window: Option<&mut Window>,
 ) -> Result<bool, String> {
     let gl = state.arm64_gl.get_or_insert_with(|| Arm64GuestGlState {
         viewport: [0, 0, state.screen_width as i32, state.screen_height as i32],
@@ -2141,45 +2237,248 @@ fn arm64_gl_call(
         ..Arm64GuestGlState::default()
     });
     match symbol {
+        "glGetError" => {
+            let mut error = gl.gl_error;
+            arm64_host_gl(window, |host| error = unsafe { host.GetError() as u32 });
+            gl.gl_error = 0;
+            return_value(context, u64::from(error));
+        }
+        "glGetString" => {
+            let name = context.regs[0] as u32;
+            if let Some(&value) = gl.strings.get(&name) {
+                return_value(context, value);
+                return Ok(true);
+            }
+            let mut host_string = std::ptr::null();
+            arm64_host_gl(window, |host| host_string = unsafe { host.GetString(name as _) });
+            let value = arm64_copy_host_string(mem, host_string.cast())?;
+            gl.strings.insert(name, value);
+            return_value(context, value);
+        }
         "glBindFramebuffer" | "glBindFramebufferOES" => {
             gl.bind_framebuffer_calls = gl.bind_framebuffer_calls.saturating_add(1);
             gl.last_bind_framebuffer_pc = context.pc;
             gl.last_bind_framebuffer_target = context.regs[0] as u32;
             gl.last_bind_framebuffer = context.regs[1] as u32;
             gl.current_framebuffer = context.regs[1] as u32;
-            if gl.bind_framebuffer_calls <= 4 {
-                log!("ARM64 GLES framebuffer bind #{}: target={:#x} framebuffer={} pc={:#x} gl_error={:#x}", gl.bind_framebuffer_calls, gl.last_bind_framebuffer_target, gl.last_bind_framebuffer, gl.last_bind_framebuffer_pc, gl.gl_error);
-            }
+            let target = context.regs[0] as _;
+            let framebuffer = arm64_framebuffer_host_id(context.regs[1] as u32);
+            arm64_host_gl(window, |host| unsafe {
+                if symbol.ends_with("OES") { host.BindFramebufferOES(target, framebuffer) } else { host.BindFramebuffer(target, framebuffer) }
+            });
+            log_once_fmt!(
+                "ARM64 GLES framebuffer binding active: target={:#x} framebuffer={} pc={:#x} gl_error={:#x} [repeated binds suppressed]",
+                gl.last_bind_framebuffer_target,
+                gl.last_bind_framebuffer,
+                gl.last_bind_framebuffer_pc,
+                gl.gl_error,
+            );
         }
         "glBindRenderbuffer" | "glBindRenderbufferOES" => {
             gl.current_renderbuffer = context.regs[1] as u32;
+            let target = context.regs[0] as _;
+            let renderbuffer = arm64_renderbuffer_host_id(context.regs[1] as u32);
+            arm64_host_gl(window, |host| unsafe {
+                if symbol.ends_with("OES") { host.BindRenderbufferOES(target, renderbuffer) } else { host.BindRenderbuffer(target, renderbuffer) }
+            });
+        }
+        "glGenFramebuffers" | "glGenFramebuffersOES" | "glGenRenderbuffers" | "glGenRenderbuffersOES" => {
+            let count = context.regs[0] as i32;
+            let output = context.regs[1];
+            let size = u64::try_from(count.max(0)).unwrap_or(0).saturating_mul(4);
+            let pointer = arm64_mut_ptr(mem, output, size)?;
+            let mut values = vec![0u32; count.max(0) as usize];
+            arm64_host_gl(window, |host| unsafe {
+                if symbol.contains("Framebuffers") {
+                    host.GenFramebuffers(count, values.as_mut_ptr());
+                } else {
+                    host.GenRenderbuffers(count, values.as_mut_ptr());
+                }
+            });
+            for value in &mut values { *value = value.saturating_add(1); }
+            if !pointer.is_null() {
+                let bytes = unsafe { std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), size as usize) };
+                mem.write_bytes(output, bytes).map_err(str::to_owned)?;
+            }
+        }
+        "glDeleteFramebuffers" | "glDeleteFramebuffersOES" | "glDeleteRenderbuffers" | "glDeleteRenderbuffersOES" => {
+            let count = context.regs[0] as i32;
+            let input = context.regs[1];
+            let mut values = Vec::with_capacity(count.max(0) as usize);
+            for index in 0..count.max(0) { values.push(mem.read_u32(input + index as u64 * 4).map_err(str::to_owned)? .saturating_sub(1)); }
+            arm64_host_gl(window, |host| unsafe {
+                if symbol.contains("Framebuffers") {
+                    host.DeleteFramebuffers(count, values.as_ptr());
+                } else {
+                    host.DeleteRenderbuffers(count, values.as_ptr());
+                }
+            });
+        }
+        "glCheckFramebufferStatus" | "glCheckFramebufferStatusOES" => {
+            let target = context.regs[0] as _;
+            let mut status = 0x8cd5u32;
+            arm64_host_gl(window, |host| unsafe {
+                status = if symbol.ends_with("OES") { host.CheckFramebufferStatusOES(target) as u32 } else { host.CheckFramebufferStatus(target) as u32 };
+            });
+            return_value(context, u64::from(status));
+            return Ok(true);
+        }
+        "glRenderbufferStorageOES" | "glRenderbufferStorage" => {
+            let target = context.regs[0] as _;
+            let internalformat = context.regs[1] as _;
+            let width = context.regs[2] as i32;
+            let height = context.regs[3] as i32;
+            arm64_host_gl(window, |host| unsafe {
+                if symbol.ends_with("OES") { host.RenderbufferStorageOES(target, internalformat, width, height) } else { host.RenderbufferStorage(target, internalformat, width, height) }
+            });
+        }
+        "glFramebufferRenderbuffer" | "glFramebufferRenderbufferOES" => {
+            let target = context.regs[0] as _;
+            let attachment = context.regs[1] as _;
+            let renderbuffer_target = context.regs[2] as _;
+            let renderbuffer = arm64_renderbuffer_host_id(context.regs[3] as u32);
+            arm64_host_gl(window, |host| unsafe {
+                if symbol.ends_with("OES") { host.FramebufferRenderbufferOES(target, attachment, renderbuffer_target, renderbuffer) } else { host.FramebufferRenderbuffer(target, attachment, renderbuffer_target, renderbuffer) }
+            });
         }
         "glViewport" => {
             gl.viewport = [context.regs[0] as i32, context.regs[1] as i32, context.regs[2] as i32, context.regs[3] as i32];
+            arm64_host_gl(window, |host| unsafe { host.Viewport(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _, context.regs[3] as _) });
         }
+        "glScissor" => arm64_host_gl(window, |host| unsafe { host.Scissor(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _, context.regs[3] as _) }),
         "glClearColor" => {
-            gl.clear_color = [
-                f32::from_bits(context.regs[0] as u32),
-                f32::from_bits(context.regs[1] as u32),
-                f32::from_bits(context.regs[2] as u32),
-                f32::from_bits(context.regs[3] as u32),
-            ];
+            gl.clear_color = [arm64_float_arg(context, 0), arm64_float_arg(context, 1), arm64_float_arg(context, 2), arm64_float_arg(context, 3)];
             state.clear_color = gl.clear_color;
+            arm64_host_gl(window, |host| unsafe { host.ClearColor(arm64_float_arg(context, 0), arm64_float_arg(context, 1), arm64_float_arg(context, 2), arm64_float_arg(context, 3)) });
         }
         "glClear" => {
             gl.draw_calls = gl.draw_calls.saturating_add(1);
+            arm64_host_gl(window, |host| unsafe { host.Clear(context.regs[0] as _) });
         }
-        "glDrawArrays" | "glDrawElements" => {
+        "glClearStencil" => arm64_host_gl(window, |host| unsafe { host.ClearStencil(context.regs[0] as _) }),
+        "glEnable" => arm64_host_gl(window, |host| unsafe { host.Enable(context.regs[0] as _) }),
+        "glDisable" => arm64_host_gl(window, |host| unsafe { host.Disable(context.regs[0] as _) }),
+        "glBlendFunc" => arm64_host_gl(window, |host| unsafe { host.BlendFunc(context.regs[0] as _, context.regs[1] as _) }),
+        "glColorMask" => arm64_host_gl(window, |host| unsafe { host.ColorMask(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _, context.regs[3] as _) }),
+        "glCullFace" => arm64_host_gl(window, |host| unsafe { host.CullFace(context.regs[0] as _) }),
+        "glDepthFunc" => arm64_host_gl(window, |host| unsafe { host.DepthFunc(context.regs[0] as _) }),
+        "glDepthMask" => arm64_host_gl(window, |host| unsafe { host.DepthMask(context.regs[0] as _) }),
+        "glDepthRangef" => arm64_host_gl(window, |host| unsafe { host.DepthRangef(arm64_float_arg(context, 0), arm64_float_arg(context, 1)) }),
+        "glPolygonOffset" => arm64_host_gl(window, |host| unsafe { host.PolygonOffset(arm64_float_arg(context, 0), arm64_float_arg(context, 1)) }),
+        "glStencilFunc" => arm64_host_gl(window, |host| unsafe { host.StencilFunc(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _) }),
+        "glStencilMask" => arm64_host_gl(window, |host| unsafe { host.StencilMask(context.regs[0] as _) }),
+        "glStencilOp" => arm64_host_gl(window, |host| unsafe { host.StencilOp(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _) }),
+        "glActiveTexture" => arm64_host_gl(window, |host| unsafe { host.ActiveTexture(context.regs[0] as _) }),
+        "glBindTexture" => arm64_host_gl(window, |host| unsafe { host.BindTexture(context.regs[0] as _, context.regs[1] as _) }),
+        "glTexParameteri" => arm64_host_gl(window, |host| unsafe { host.TexParameteri(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _) }),
+        "glGenBuffers" | "glGenTextures" => {
+            let count = context.regs[0] as i32;
+            let output = context.regs[1];
+            let pointer = arm64_mut_ptr(mem, output, u64::try_from(count.max(0)).unwrap_or(0).saturating_mul(4))?;
+            arm64_host_gl(window, |host| unsafe {
+                if symbol == "glGenBuffers" { host.GenBuffers(count, pointer.cast()) } else { host.GenTextures(count, pointer.cast()) }
+            });
+        }
+        "glDeleteBuffers" | "glDeleteTextures" => {
+            let count = context.regs[0] as i32;
+            let input = arm64_const_ptr(mem, context.regs[1], u64::try_from(count.max(0)).unwrap_or(0).saturating_mul(4))?;
+            arm64_host_gl(window, |host| unsafe {
+                if symbol == "glDeleteBuffers" { host.DeleteBuffers(count, input.cast()) } else { host.DeleteTextures(count, input.cast()) }
+            });
+        }
+        "glBindBuffer" => {
+            let target = context.regs[0] as u32;
+            let buffer = context.regs[1] as u32;
+            if target == 0x8892 { gl.array_buffer_binding = buffer; }
+            if target == 0x8893 { gl.element_array_buffer_binding = buffer; }
+            arm64_host_gl(window, |host| unsafe { host.BindBuffer(target as _, buffer as _) });
+        }
+        "glBufferData" => {
+            let size = context.regs[1];
+            let data = arm64_const_ptr(mem, context.regs[2], size)?;
+            arm64_host_gl(window, |host| unsafe { host.BufferData(context.regs[0] as _, size as _, data, context.regs[3] as _) });
+        }
+        "glCreateShader" => { let mut value = 0; arm64_host_gl(window, |host| value = unsafe { host.CreateShader(context.regs[0] as _) }); return_value(context, u64::from(value)); }
+        "glCreateProgram" => { let mut value = 0; arm64_host_gl(window, |host| value = unsafe { host.CreateProgram() }); return_value(context, u64::from(value)); }
+        "glDeleteProgram" => arm64_host_gl(window, |host| unsafe { host.DeleteProgram(context.regs[0] as _) }),
+        "glCompileShader" => arm64_host_gl(window, |host| unsafe { host.CompileShader(context.regs[0] as _) }),
+        "glAttachShader" => arm64_host_gl(window, |host| unsafe { host.AttachShader(context.regs[0] as _, context.regs[1] as _) }),
+        "glLinkProgram" => arm64_host_gl(window, |host| unsafe { host.LinkProgram(context.regs[0] as _) }),
+        "glUseProgram" => arm64_host_gl(window, |host| unsafe { host.UseProgram(context.regs[0] as _) }),
+        "glGetAttribLocation" | "glGetUniformLocation" => {
+            let name = arm64_cstring(mem, context.regs[1])?;
+            let mut value = -1;
+            arm64_host_gl(window, |host| unsafe { value = if symbol == "glGetAttribLocation" { host.GetAttribLocation(context.regs[0] as _, name.as_ptr()) } else { host.GetUniformLocation(context.regs[0] as _, name.as_ptr()) } });
+            return_value(context, value as i64 as u64);
+            return Ok(true);
+        }
+        "glShaderSource" => {
+            let count = context.regs[1] as i32;
+            let mut sources = Vec::new();
+            let mut pointers = Vec::new();
+            for index in 0..count.max(0) {
+                let pointer = mem.read_u64(context.regs[2] + index as u64 * 8).map_err(str::to_owned)?;
+                let length = if context.regs[3] == 0 { -1 } else { mem.read_u32(context.regs[3] + index as u64 * 4).map_err(str::to_owned)? as i32 };
+                let bytes = if length < 0 { arm64_cstring(mem, pointer)?.into_bytes() } else { mem.read_bytes(pointer, length as u64).map_err(str::to_owned)? };
+                sources.push(std::ffi::CString::new(bytes).map_err(|_| "ARM64 shader source contains an embedded NUL".to_owned())?);
+                pointers.push(sources.last().unwrap().as_ptr());
+            }
+            arm64_host_gl(window, |host| unsafe { host.ShaderSource(context.regs[0] as _, count, pointers.as_ptr(), std::ptr::null()) });
+        }
+        "glGetShaderiv" | "glGetProgramiv" => {
+            let pointer = arm64_mut_ptr(mem, context.regs[2], 4)?;
+            arm64_host_gl(window, |host| unsafe { if symbol == "glGetShaderiv" { host.GetShaderiv(context.regs[0] as _, context.regs[1] as _, pointer.cast()) } else { host.GetProgramiv(context.regs[0] as _, context.regs[1] as _, pointer.cast()) } });
+        }
+        "glEnableVertexAttribArray" => arm64_host_gl(window, |host| unsafe { host.EnableVertexAttribArray(context.regs[0] as _) }),
+        "glUniform2iv" | "glUniform3iv" | "glUniform4iv" => {
+            let components = match symbol { "glUniform2iv" => 2, "glUniform3iv" => 3, _ => 4 };
+            let pointer = arm64_const_ptr(mem, context.regs[2], context.regs[1].saturating_mul(components * 4))?;
+            arm64_host_gl(window, |host| unsafe {
+                match symbol { "glUniform2iv" => host.Uniform2iv(context.regs[0] as _, context.regs[1] as _, pointer.cast()), "glUniform3iv" => host.Uniform3iv(context.regs[0] as _, context.regs[1] as _, pointer.cast()), _ => host.Uniform4iv(context.regs[0] as _, context.regs[1] as _, pointer.cast()) }
+            });
+        }
+        "glVertexAttribPointer" => {
+            let pointer = if gl.array_buffer_binding == 0 { arm64_const_ptr(mem, context.regs[5], 1)? } else { context.regs[5] as usize as *const std::ffi::c_void };
+            arm64_host_gl(window, |host| unsafe { host.VertexAttribPointer(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _, context.regs[3] as _, context.regs[4] as _, pointer) });
+        }
+        "glUniform1fv" | "glUniform2fv" | "glUniform3fv" | "glUniform4fv" => {
+            let components = match symbol { "glUniform1fv" => 1, "glUniform2fv" => 2, "glUniform3fv" => 3, _ => 4 };
+            let pointer = arm64_const_ptr(mem, context.regs[2], context.regs[1].saturating_mul(components * 4))?;
+            arm64_host_gl(window, |host| unsafe {
+                match symbol { "glUniform1fv" => host.Uniform1fv(context.regs[0] as _, context.regs[1] as _, pointer.cast()), "glUniform2fv" => host.Uniform2fv(context.regs[0] as _, context.regs[1] as _, pointer.cast()), "glUniform3fv" => host.Uniform3fv(context.regs[0] as _, context.regs[1] as _, pointer.cast()), _ => host.Uniform4fv(context.regs[0] as _, context.regs[1] as _, pointer.cast()) }
+            });
+        }
+        "glUniform1iv" => { let pointer = arm64_const_ptr(mem, context.regs[2], context.regs[1].saturating_mul(4))?; arm64_host_gl(window, |host| unsafe { host.Uniform1iv(context.regs[0] as _, context.regs[1] as _, pointer.cast()) }); }
+        "glUniformMatrix2fv" | "glUniformMatrix3fv" => {
+            let components = if symbol == "glUniformMatrix2fv" { 4 } else { 9 };
+            let pointer = arm64_const_ptr(mem, context.regs[3], context.regs[1].saturating_mul(components * 4))?;
+            arm64_host_gl(window, |host| unsafe {
+                if symbol == "glUniformMatrix2fv" { host.UniformMatrix2fv(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _, pointer.cast()) } else { host.UniformMatrix3fv(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _, pointer.cast()) }
+            });
+        }
+        "glUniformMatrix4fv" => { let pointer = arm64_const_ptr(mem, context.regs[3], context.regs[1].saturating_mul(64))?; arm64_host_gl(window, |host| unsafe { host.UniformMatrix4fv(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _, pointer.cast()) }); }
+        "glDrawArrays" => { gl.draw_calls = gl.draw_calls.saturating_add(1); arm64_host_gl(window, |host| unsafe { host.DrawArrays(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _) }); }
+        "glDrawElements" => {
             gl.draw_calls = gl.draw_calls.saturating_add(1);
+            let pointer = if gl.element_array_buffer_binding == 0 { let bytes = context.regs[1].saturating_mul(if context.regs[2] as u32 == 0x1403 { 2 } else { 1 }); arm64_const_ptr(mem, context.regs[3], bytes)? } else { context.regs[3] as usize as *const std::ffi::c_void };
+            arm64_host_gl(window, |host| unsafe { host.DrawElements(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _, pointer) });
         }
-        "glGetError" => {
-            return_value(context, gl.gl_error as u64);
-            gl.gl_error = 0;
-            return Ok(true);
-        }
-        "glCheckFramebufferStatus" => {
-            return_value(context, 0x8cd5);
-            return Ok(true);
+        "glTexImage2D" => { let bytes = arm64_texture_data_size(context.regs[3] as u32, context.regs[4] as u32, context.regs[6] as u32, context.regs[7] as u32); let pointer = arm64_const_ptr(mem, context.regs[8], bytes)?; arm64_host_gl(window, |host| unsafe { host.TexImage2D(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _, context.regs[3] as _, context.regs[4] as _, context.regs[5] as _, context.regs[6] as _, context.regs[7] as _, pointer) }); }
+        "glTexSubImage2D" => { let bytes = arm64_texture_data_size(context.regs[4] as u32, context.regs[5] as u32, context.regs[6] as u32, context.regs[7] as u32); let pointer = arm64_const_ptr(mem, context.regs[8], bytes)?; arm64_host_gl(window, |host| unsafe { host.TexSubImage2D(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _, context.regs[3] as _, context.regs[4] as _, context.regs[5] as _, context.regs[6] as _, context.regs[7] as _, pointer) }); }
+        "glCompressedTexImage2D" => { let pointer = arm64_const_ptr(mem, context.regs[7], context.regs[6])?; arm64_host_gl(window, |host| unsafe { host.CompressedTexImage2D(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _, context.regs[3] as _, context.regs[4] as _, context.regs[5] as _, context.regs[6] as _, pointer) }); }
+        "glReadPixels" => { let bytes = arm64_texture_data_size(context.regs[2] as u32, context.regs[3] as u32, context.regs[4] as u32, context.regs[5] as u32); let pointer = arm64_mut_ptr(mem, context.regs[6], bytes)?; arm64_host_gl(window, |host| unsafe { host.ReadPixels(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _, context.regs[3] as _, context.regs[4] as _, context.regs[5] as _, pointer) }); }
+        "glReleaseShaderCompiler" | "glGetActiveAttrib" | "glGetActiveUniform" | "glGetProgramInfoLog" | "glGetShaderInfoLog" | "glGetShaderPrecisionFormat" => {}
+        "glDiscardFramebufferEXT" => {}
+        "glDeleteShader" => arm64_host_gl(window, |host| unsafe { host.DeleteShader(context.regs[0] as _) }),
+        "glFramebufferTexture2D" | "glFramebufferTexture2DOES" => {
+            let target = context.regs[0] as _;
+            let attachment = context.regs[1] as _;
+            let texture_target = context.regs[2] as _;
+            let texture = context.regs[3] as _;
+            let level = context.regs[4] as i32;
+            arm64_host_gl(window, |host| unsafe {
+                if symbol.ends_with("OES") { host.FramebufferTexture2DOES(target, attachment, texture_target, texture, level) } else { host.FramebufferTexture2D(target, attachment, texture_target, texture, level) }
+            });
         }
         _ => {}
     }
