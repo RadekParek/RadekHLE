@@ -790,8 +790,8 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                     cpu.clear_halt(A64_HALT_USER_DEFINED3);
                 }
                 if runtime_state.take_boot_screen_request() {
-                    echo!(
-                        "ARM64 application bootstrap lifecycle active: application_main_calls={}; guest execution continuing",
+                    log_once_fmt!(
+                        "ARM64 boot screen notification consumed: application_main_calls={}; guest execution continuing [repeated notifications suppressed]",
                         runtime_state.application_main_calls,
                     );
                 }

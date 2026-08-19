@@ -106,6 +106,7 @@ pub struct RuntimeState {
     pub application_view: Option<u64>,
     pub application_eagl_view: Option<u64>,
     pub graphics_context: Option<u64>,
+    pub eagl_context_api: u32,
     pub main_nib_name: Option<String>,
     pub launch_callback_return_pc: Option<u64>,
     pub application_return_stub: Option<u64>,
@@ -125,6 +126,18 @@ pub struct RuntimeState {
     pub arm64_gl_present_requested: bool,
     pub arm64_gl: Option<Arm64GuestGlState>,
     pub arm64_application_bootstrap_dispatched: bool,
+    pub render_diagnostics: A64RenderDiagnostics,
+}
+
+#[derive(Debug, Default)]
+pub struct A64RenderDiagnostics {
+    pub display_link_callbacks: u64,
+    pub set_framebuffer_calls: u64,
+    pub present_framebuffer_calls: u64,
+    pub gl_calls: u64,
+    pub last_gl_symbol: Option<String>,
+    pub last_gl_pc: u64,
+    pub last_callback_pc: u64,
 }
 
 #[derive(Debug, Default)]
@@ -195,6 +208,7 @@ impl RuntimeState {
             application_view: None,
             application_eagl_view: None,
             graphics_context: None,
+            eagl_context_api: 1,
             main_nib_name: None,
             launch_callback_return_pc: None,
             application_return_stub: None,
@@ -214,6 +228,7 @@ impl RuntimeState {
             arm64_gl_present_requested: false,
             arm64_gl: None,
             arm64_application_bootstrap_dispatched: false,
+            render_diagnostics: A64RenderDiagnostics::default(),
         }
     }
 
@@ -257,6 +272,8 @@ impl RuntimeState {
 
     pub fn mark_display_link_callback_started(&mut self) {
         self.display_link_callbacks = self.display_link_callbacks.saturating_add(1);
+        self.render_diagnostics.display_link_callbacks = self.display_link_callbacks;
+        self.render_diagnostics.last_callback_pc = self.guest_transfer_pc.unwrap_or(0);
         self.display_link_callback_returned = false;
     }
 
@@ -987,6 +1004,14 @@ fn objc_send(
         "currentContext" if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"EAGLContext") => {
             state.arm64_current_context.unwrap_or(0)
         }
+        "initWithAPI:" if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"EAGLContext") => {
+            let object = objc_object(mem, A64_KIND_CONTEXT)?;
+            state.eagl_context_api = context.regs[2] as u32;
+            state.graphics_context = Some(object);
+            state.arm64_current_context = Some(object);
+            log_dbg!("ARM64 EAGLContext initialized: api={} object={:#x}", state.eagl_context_api, object);
+            object
+        }
         "setCurrentContext:" if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"EAGLContext") => {
             state.arm64_current_context = (context.regs[2] != 0).then_some(context.regs[2]);
             1
@@ -997,7 +1022,7 @@ fn objc_send(
             state.frame_serial = state.frame_serial.saturating_add(1);
             1
         }
-        "platform" if receiver != 0 => objc_string(mem, "iPhone5,1")?,
+        "platform" if receiver != 0 => objc_string(mem, state.device_family.machine_name())?,
         "currentThread" if kind == A64_KIND_CLASS => objc_object(mem, A64_KIND_THREAD)?,
         "currentRunLoop" if kind == A64_KIND_THREAD => objc_object(mem, A64_KIND_RUN_LOOP)?,
         "displayLinkWithTarget:selector:" if kind == A64_KIND_CLASS || kind == A64_KIND_UI_SCREEN => {
@@ -1023,6 +1048,7 @@ fn objc_send(
         }
         "startAnimation" | "invalidate" if kind == A64_KIND_DISPLAY_LINK => 0,
         "setFramebuffer" if state.application_eagl_view == Some(receiver) || kind == A64_KIND_EAGL_VIEW => {
+            state.render_diagnostics.set_framebuffer_calls = state.render_diagnostics.set_framebuffer_calls.saturating_add(1);
             log_once_fmt!(
                 "ARM64 setFramebuffer entry: receiver={:#x} class={} context={:#x} sp={:#x} fp={:#x} lr={:#x} [repeated calls suppressed]",
                 receiver,
@@ -1055,6 +1081,7 @@ fn objc_send(
         "presentFramebuffer" if kind == A64_KIND_EAGL_VIEW => {
             state.present_requested = true;
             state.frame_serial = state.frame_serial.saturating_add(1);
+            state.render_diagnostics.present_framebuffer_calls = state.render_diagnostics.present_framebuffer_calls.saturating_add(1);
             0
         }
         "setDisplayLink:" if state.application_delegate == Some(receiver) => {
@@ -2231,6 +2258,9 @@ fn arm64_gl_call(
     state: &mut RuntimeState,
     window: Option<&mut Window>,
 ) -> Result<bool, String> {
+    state.render_diagnostics.gl_calls = state.render_diagnostics.gl_calls.saturating_add(1);
+    state.render_diagnostics.last_gl_symbol = Some(symbol.to_owned());
+    state.render_diagnostics.last_gl_pc = context.pc;
     let gl = state.arm64_gl.get_or_insert_with(|| Arm64GuestGlState {
         viewport: [0, 0, state.screen_width as i32, state.screen_height as i32],
         clear_color: [0.0, 0.0, 0.0, 1.0],
