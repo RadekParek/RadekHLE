@@ -241,6 +241,7 @@ struct AppPickerDelegateHostObject {
     ios_version: Option<Option<(i32, i32, i32)>>,
     graphics_api_toggle: bool,
     graphics_api: Option<crate::options::GraphicsApi>,
+    arm64_backend: Option<crate::options::Arm64Backend>,
 }
 impl HostObject for AppPickerDelegateHostObject {}
 
@@ -403,6 +404,14 @@ const CLASSES: ClassExports = objc_classes! {
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).ios_version = Some(ios_version_for_tag(tag as i32));
 }
 
+- (())arm64Backend:(id)switch {
+    let switch_state: bool = msg![env; switch isOn];
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).arm64_backend = Some(if switch_state {
+        crate::options::Arm64Backend::Jit
+    } else {
+        crate::options::Arm64Backend::Interpreter
+    });
+}
 - (())graphicsApiToggle {
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).graphics_api_toggle = true;
 }
@@ -739,6 +748,7 @@ fn app_picker_inner(
     let mut quick_options_device_model_scroll: isize = 0;
     let mut quick_options_ios_version: Option<(i32, i32, i32)> = None;
     let mut quick_options_graphics_api = crate::options::GraphicsApi::Default;
+    let mut quick_options_arm64_backend = crate::options::Arm64Backend::Interpreter;
 
     fn update_quick_option_buttons(env: &mut Environment, buttons: &[id], selected_idx: usize) {
         for (idx, &button) in buttons.iter().enumerate() {
@@ -953,6 +963,8 @@ fn app_picker_inner(
             quick_options_graphics_api = api;
             update_graphics_api_dropdown(env, quick_options_stuff.graphics_api_btn, &quick_options_stuff.graphics_api_items, api);
             () = msg![env; (quick_options_stuff.graphics_api_menu) setHidden:true];
+        } else if let Some(backend) = std::mem::take(&mut host_obj.arm64_backend) {
+            quick_options_arm64_backend = backend;
         } else if std::mem::take(&mut host_obj.scale_hack_default) {
             quick_options_scale_hack = None;
             update_scale_hack_buttons(
@@ -1184,6 +1196,7 @@ fn app_picker_inner(
         };
         option_args.push(format!("--graphics-api={value}"));
     }
+    option_args.push(format!("--arm64-backend={}", quick_options_arm64_backend.label()));
     option_args.push(if quick_options_angle_driver {
         "--angle-driver"
     } else {
@@ -2080,6 +2093,8 @@ fn setup_quick_options(
         RowKind::IosVersionDropdown,
         RowKind::Label("Graphics API"),
         RowKind::GraphicsApiDropdown,
+        RowKind::Label("ARM64 Backend"),
+        RowKind::Switch("arm64Backend:", false),
         RowKind::Label("Game folder"),
         RowKind::Buttons(&[
             ("Open folder", "openFileManager"),
