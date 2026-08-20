@@ -112,6 +112,8 @@ pub struct RuntimeState {
     pub application_return_stub: Option<u64>,
     pub application_launch_return_stub: Option<u64>,
     pub application_active_return_stub: Option<u64>,
+    pub nib_awake_return_stub: Option<u64>,
+    pub nib_awake_dispatched: bool,
     pub pending_application_did_become_active: bool,
     pub display_link_object: Option<u64>,
     pub display_link_target: Option<u64>,
@@ -221,6 +223,8 @@ impl RuntimeState {
             application_return_stub: None,
             application_launch_return_stub: None,
             application_active_return_stub: None,
+            nib_awake_return_stub: None,
+            nib_awake_dispatched: false,
             pending_application_did_become_active: false,
             display_link_object: None,
             display_link_target: None,
@@ -402,7 +406,7 @@ fn materialize_custom_constant(mem: &mut Mem64, symbol: &str) -> Option<u64> {
 pub fn can_dispatch(symbol: &str) -> bool {
     let symbol = name(symbol);
     match symbol {
-        "ARM64_application_return" | "ARM64_application_launch_return" | "ARM64_application_active_return" => true,
+        "ARM64_nib_awake_return" | "ARM64_application_return" | "ARM64_application_launch_return" | "ARM64_application_active_return" => true,
         "malloc" | "calloc" | "valloc" | "posix_memalign" | "free"
         | "malloc_zone_free" | "realloc" | "malloc_zone_realloc" | "memcpy"
         | "memmove" | "memcpy_chk" | "memmove_chk" | "memset" | "bzero"
@@ -1583,6 +1587,28 @@ pub fn dispatch(
     state.host_dispatches = state.host_dispatches.saturating_add(1);
     let symbol = name(symbol);
     state.last_symbol = Some(symbol.to_owned());
+    if symbol == "ARM64_nib_awake_return" {
+        state.nib_awake_dispatched = true;
+        let (Some(delegate), Some(application)) = (state.application_delegate, state.application_object) else {
+            return Err("ARM64 awakeFromNib returned before application objects were initialized".to_owned());
+        };
+        let class_name = receiver_class_name(mem, delegate, A64_KIND_GENERIC).unwrap_or_default();
+        let Some(address) = guest_method(state, &class_name, "application:didFinishLaunchingWithOptions:", false) else {
+            return Err("ARM64 could not resolve application:didFinishLaunchingWithOptions: after awakeFromNib".to_owned());
+        };
+        let selector = selector_pointer(mem, "application:didFinishLaunchingWithOptions:")?;
+        context.regs[0] = delegate;
+        context.regs[1] = selector;
+        context.regs[2] = application;
+        context.regs[3] = 0;
+        if let Some(return_stub) = state.application_launch_return_stub {
+            context.regs[30] = return_stub;
+        }
+        state.pending_application_did_become_active = true;
+        state.guest_transfer_pc = Some(address);
+        log!("ARM64 lifecycle transfer: awakeFromNib completed; application:didFinishLaunchingWithOptions: -> {:#x}", address);
+        return Ok(true);
+    }
     if symbol == "ARM64_application_launch_return" {
         state.pending_application_did_become_active = false;
         if let (Some(delegate), Some(application)) = (state.application_delegate, state.application_object) {
@@ -2093,19 +2119,36 @@ pub fn dispatch(
                         state.application_view_controller = Some(view_controller);
                     }
                 }
-                let selector = selector_pointer(mem, "application:didFinishLaunchingWithOptions:")?;
-                context.regs[0] = delegate;
-                context.regs[1] = selector;
-                context.regs[2] = application;
-                context.regs[3] = 0;
-                if let Some(address) = guest_method(state, &delegate_name, "application:didFinishLaunchingWithOptions:", false) {
-                    state.guest_transfer_pc = Some(address);
-                    state.launch_callback_return_pc = Some(context.regs[30]);
-                    state.pending_application_did_become_active = true;
-                    if let Some(return_stub) = state.application_launch_return_stub {
-                        context.regs[30] = return_stub;
+                state.launch_callback_return_pc = Some(context.regs[30]);
+                if let Some(view_controller) = state.application_view_controller {
+                    if let Some(address) = receiver_class_name(mem, view_controller, A64_KIND_GENERIC).as_deref().and_then(|class_name| guest_method(state, class_name, "awakeFromNib", false)) {
+                        let selector = selector_pointer(mem, "awakeFromNib")?;
+                        context.regs[0] = view_controller;
+                        context.regs[1] = selector;
+                        context.regs[2] = 0;
+                        state.nib_awake_dispatched = false;
+                        if let Some(return_stub) = state.nib_awake_return_stub {
+                            context.regs[30] = return_stub;
+                        }
+                        state.guest_transfer_pc = Some(address);
+                        log!("ARM64 UIApplicationMain transferring to view controller awakeFromNib at {:#x}; callback return is intercepted for lifecycle continuation", address);
                     }
-                    log!("ARM64 UIApplicationMain transferring to {} application:didFinishLaunchingWithOptions: at {:#x}; callback return is intercepted for lifecycle continuation", delegate_name, address);
+                }
+                if state.guest_transfer_pc.is_none() {
+                    let selector = selector_pointer(mem, "application:didFinishLaunchingWithOptions:")?;
+                    context.regs[0] = delegate;
+                    context.regs[1] = selector;
+                    context.regs[2] = application;
+                    context.regs[3] = 0;
+                    if let Some(address) = guest_method(state, &delegate_name, "application:didFinishLaunchingWithOptions:", false) {
+                        state.guest_transfer_pc = Some(address);
+                        state.launch_callback_return_pc = Some(context.regs[30]);
+                        state.pending_application_did_become_active = true;
+                        if let Some(return_stub) = state.application_launch_return_stub {
+                            context.regs[30] = return_stub;
+                        }
+                        log!("ARM64 UIApplicationMain transferring to {} application:didFinishLaunchingWithOptions: at {:#x}; callback return is intercepted for lifecycle continuation", delegate_name, address);
+                    }
                 }
             }
             echo!("ARM64 UIApplicationMain entered the compatibility application lifecycle; guest application delegate dispatch is active");

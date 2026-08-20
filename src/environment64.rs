@@ -478,12 +478,15 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     let application_launch_return_stub = write_svc_stub(&mut memory, SVC_HOST_BASE + 0x7ffe)?;
     let application_active_return_stub = write_svc_stub(&mut memory, SVC_HOST_BASE + 0x7fff)?;
     let display_link_return_stub = write_svc_stub(&mut memory, SVC_HOST_BASE + 0x7ffc)?;
+    let nib_awake_return_stub = write_svc_stub(&mut memory, SVC_HOST_BASE + 0x7ffb)?;
     runtime_state.application_return_stub = Some(application_return_stub);
     runtime_state.application_launch_return_stub = Some(application_launch_return_stub);
     runtime_state.application_active_return_stub = Some(application_active_return_stub);
+    runtime_state.nib_awake_return_stub = Some(nib_awake_return_stub);
     runtime_state.display_link_return_stub = Some(display_link_return_stub);
     let mut host_stubs = HashMap::new();
     host_stubs.insert((SVC_HOST_BASE + 0x7ffc) as i32, ("ARM64_display_link_return".to_owned(), "ARM64_display_link_return"));
+    host_stubs.insert((SVC_HOST_BASE + 0x7ffb) as i32, ("ARM64_nib_awake_return".to_owned(), "ARM64_nib_awake_return"));
     host_stubs.insert((SVC_HOST_BASE + 0x7ffd) as i32, ("ARM64_application_return".to_owned(), "ARM64_application_return"));
     host_stubs.insert((SVC_HOST_BASE + 0x7ffe) as i32, ("ARM64_application_launch_return".to_owned(), "ARM64_application_launch_return"));
     host_stubs.insert((SVC_HOST_BASE + 0x7fff) as i32, ("ARM64_application_active_return".to_owned(), "ARM64_application_active_return"));
