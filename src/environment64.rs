@@ -583,6 +583,10 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             ticks.as_mut(),
         );
         cpu.save_context(&mut context);
+        runtime_state.render_diagnostics.last_guest_pc = context.pc;
+        if runtime_state.render_diagnostics.callback_active && runtime_state.render_diagnostics.callback_entry_lr == 0 {
+            runtime_state.render_diagnostics.callback_entry_lr = context.regs[30];
+        }
         if trace_this_instruction {
             trace_count += 1;
             echo!("ARM64 run slice #{}: result={} entry_pc={:#x} final_pc={:#x} sp={:#x} lr={:#x} instruction={:#010x} decoded={}", trace_count, result, instruction_pc, context.pc, context.sp, context.regs[30], instruction, decode_instruction(instruction, instruction_pc));
@@ -728,6 +732,9 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                     ));
                 }
                 let symbol = host_stubs.get(&value).map(|(name, _)| name.as_str()).unwrap_or("<unknown>");
+                if symbol == "<unimplemented>" {
+                    runtime_state.mark_unresolved_call(symbol, context.pc);
+                }
                 if host_dispatches <= 16 || host_dispatches.is_power_of_two() {
                     log_dbg!(
                         "ARM64 host binding #{}: {} pc={:#x} sp={:#x} lr={:#x} x0={:#x} x1={:#x} x2={:#x} x3={:#x} x4={:#x} x5={:#x}",
@@ -845,6 +852,8 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                     context.pc = context.regs[30];
                 }
                 if runtime_state.take_guest_yield() {
+                    runtime_state.render_diagnostics.callback_return_pc = context.regs[30];
+                    runtime_state.trace_render_event(format!("frame={} callback_return=drawFrame display_link_return_pc={:#x} lr={:#x} present={} next_scheduled={} last_gl={} last_guest_pc={:#x}", runtime_state.render_diagnostics.display_link_callbacks, context.pc, context.regs[30], runtime_state.render_diagnostics.present_framebuffer_calls, runtime_state.display_link_is_scheduled(), runtime_state.render_diagnostics.last_gl_symbol.as_deref().unwrap_or("<none>"), runtime_state.render_diagnostics.last_guest_pc));
                     host_dispatches_since_callback = 0;
                     let callback_scheduled = schedule_display_link_callback(&mut memory, &mut context, &mut runtime_state)?;
                     if let Some(transfer_pc) = runtime_state.take_guest_transfer() {

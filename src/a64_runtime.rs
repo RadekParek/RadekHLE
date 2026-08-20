@@ -135,9 +135,16 @@ pub struct A64RenderDiagnostics {
     pub set_framebuffer_calls: u64,
     pub present_framebuffer_calls: u64,
     pub gl_calls: u64,
+    pub trace_events: u64,
     pub last_gl_symbol: Option<String>,
     pub last_gl_pc: u64,
     pub last_callback_pc: u64,
+    pub last_guest_pc: u64,
+    pub callback_entry_lr: u64,
+    pub callback_return_pc: u64,
+    pub callback_active: bool,
+    pub last_unresolved_symbol: Option<String>,
+    pub last_unresolved_pc: u64,
 }
 
 #[derive(Debug, Default)]
@@ -274,11 +281,32 @@ impl RuntimeState {
         self.display_link_callbacks = self.display_link_callbacks.saturating_add(1);
         self.render_diagnostics.display_link_callbacks = self.display_link_callbacks;
         self.render_diagnostics.last_callback_pc = self.guest_transfer_pc.unwrap_or(0);
+        self.render_diagnostics.callback_active = true;
+        self.render_diagnostics.callback_entry_lr = 0;
+        self.render_diagnostics.callback_return_pc = 0;
+        self.render_diagnostics.last_guest_pc = 0;
         self.display_link_callback_returned = false;
     }
 
     pub fn mark_display_link_callback_returned(&mut self) {
         self.display_link_callback_returned = true;
+        self.render_diagnostics.callback_active = false;
+    }
+
+    pub fn trace_render_event(&mut self, message: impl std::fmt::Display) {
+        if self.render_diagnostics.trace_events >= 512 {
+            return;
+        }
+        self.render_diagnostics.trace_events += 1;
+        log!("ARM64 render trace #{}: {}", self.render_diagnostics.trace_events, message);
+    }
+
+    pub fn mark_unresolved_call(&mut self, symbol: &str, pc: u64) {
+        self.render_diagnostics.last_unresolved_symbol = Some(symbol.to_owned());
+        self.render_diagnostics.last_unresolved_pc = pc;
+        if self.reached_unimplemented_symbols.insert(symbol.to_owned()) {
+            log!("ARM64 unresolved import first call: symbol={} pc={:#x} lr={:#x}", symbol, pc, self.render_diagnostics.callback_entry_lr);
+        }
     }
 
     pub fn display_link_is_scheduled(&self) -> bool {
@@ -1335,6 +1363,10 @@ fn objc_send(
     if state.guest_transfer_pc.is_none() {
         return_value(context, result);
     }
+    if state.render_diagnostics.callback_active {
+        let transfer = state.guest_transfer_pc.unwrap_or(0);
+        state.trace_render_event(format!("frame={} objc_return selector={} receiver={:#x} result={:#x} pc={:#x} lr={:#x} transfer={}", state.render_diagnostics.display_link_callbacks, selector, receiver, result, context.pc, context.regs[30], transfer));
+    }
     if selector == "setFramebuffer" {
         log_once_fmt!(
             "ARM64 Objective-C return: selector=setFramebuffer result={:#x} receiver={:#x} sp={:#x} fp={:#x} lr={:#x} [repeated returns suppressed]",
@@ -1463,6 +1495,9 @@ fn transfer_guest_method(
         return false;
     };
     log_dbg!("ARM64 guest Objective-C transfer: {}{} on {} -> {:#x}", if class_method { "+" } else { "-" }, selector, class_name, address);
+    if state.render_diagnostics.callback_active {
+        state.trace_render_event(format!("frame={} objc_transfer selector={} class={} imp={:#x} caller_pc={:#x} lr={:#x}", state.render_diagnostics.display_link_callbacks, selector, class_name, address, context.pc, context.regs[30]));
+    }
     state.guest_transfer_pc = Some(address);
     true
 }
@@ -2217,6 +2252,23 @@ fn arm64_host_gl(window: Option<&mut Window>, call: impl FnOnce(&mut dyn crate::
     }
 }
 
+fn arm64_host_gl_with_error(
+    window: Option<&mut Window>,
+    state: &mut RuntimeState,
+    operation: &str,
+    pc: u64,
+    call: impl FnOnce(&mut dyn crate::gles::GLES),
+) -> u32 {
+    let mut error = 0;
+    if let Some(window) = window {
+        let mut gl = window.make_internal_gl_ctx_current();
+        call(gl.as_mut());
+        error = unsafe { gl.GetError() as u32 };
+    }
+    state.trace_render_event(format!("operation={} pc={:#x} host_error={:#x}", operation, pc, error));
+    error
+}
+
 fn arm64_framebuffer_host_id(id: u32) -> u32 {
     id.saturating_sub(1)
 }
@@ -2261,56 +2313,63 @@ fn arm64_gl_call(
     state.render_diagnostics.gl_calls = state.render_diagnostics.gl_calls.saturating_add(1);
     state.render_diagnostics.last_gl_symbol = Some(symbol.to_owned());
     state.render_diagnostics.last_gl_pc = context.pc;
-    let gl = state.arm64_gl.get_or_insert_with(|| Arm64GuestGlState {
-        viewport: [0, 0, state.screen_width as i32, state.screen_height as i32],
-        clear_color: [0.0, 0.0, 0.0, 1.0],
-        ..Arm64GuestGlState::default()
-    });
+    let guest_pc = context.pc;
+    if state.arm64_gl.is_none() {
+        state.arm64_gl = Some(Arm64GuestGlState {
+            viewport: [0, 0, state.screen_width as i32, state.screen_height as i32],
+            clear_color: [0.0, 0.0, 0.0, 1.0],
+            ..Arm64GuestGlState::default()
+        });
+    }
     match symbol {
         "glGetError" => {
-            let mut error = gl.gl_error;
+            let mut error = state.arm64_gl.as_ref().map_or(0, |gl| gl.gl_error);
             arm64_host_gl(window, |host| error = unsafe { host.GetError() as u32 });
-            gl.gl_error = 0;
+            if let Some(gl) = state.arm64_gl.as_mut() { gl.gl_error = 0; }
             return_value(context, u64::from(error));
         }
         "glGetString" => {
             let name = context.regs[0] as u32;
-            if let Some(&value) = gl.strings.get(&name) {
+            if let Some(&value) = state.arm64_gl.as_ref().and_then(|gl| gl.strings.get(&name)) {
                 return_value(context, value);
                 return Ok(true);
             }
             let mut host_string = std::ptr::null();
             arm64_host_gl(window, |host| host_string = unsafe { host.GetString(name as _) });
             let value = arm64_copy_host_string(mem, host_string.cast())?;
-            gl.strings.insert(name, value);
+            if let Some(gl) = state.arm64_gl.as_mut() { gl.strings.insert(name, value); }
             return_value(context, value);
         }
         "glBindFramebuffer" | "glBindFramebufferOES" => {
-            gl.bind_framebuffer_calls = gl.bind_framebuffer_calls.saturating_add(1);
-            gl.last_bind_framebuffer_pc = context.pc;
-            gl.last_bind_framebuffer_target = context.regs[0] as u32;
-            gl.last_bind_framebuffer = context.regs[1] as u32;
-            gl.current_framebuffer = context.regs[1] as u32;
+            if let Some(gl) = state.arm64_gl.as_mut() {
+                gl.bind_framebuffer_calls = gl.bind_framebuffer_calls.saturating_add(1);
+                gl.last_bind_framebuffer_pc = context.pc;
+                gl.last_bind_framebuffer_target = context.regs[0] as u32;
+                gl.last_bind_framebuffer = context.regs[1] as u32;
+                gl.current_framebuffer = context.regs[1] as u32;
+            }
             let target = context.regs[0] as _;
             let framebuffer = arm64_framebuffer_host_id(context.regs[1] as u32);
-            arm64_host_gl(window, |host| unsafe {
+            let host_error = arm64_host_gl_with_error(window, state, symbol, guest_pc, |host| unsafe {
                 if symbol.ends_with("OES") { host.BindFramebufferOES(target, framebuffer) } else { host.BindFramebuffer(target, framebuffer) }
             });
+            state.trace_render_event(format!("frame={} callback_pc={:#x} gl_pc={:#x} op={} target={:#x} guest={} host={} gl_error={:#x} continuation={:#x}", state.render_diagnostics.display_link_callbacks, state.render_diagnostics.last_callback_pc, guest_pc, symbol, target, context.regs[1], framebuffer, host_error, context.regs[30]));
             log_once_fmt!(
                 "ARM64 GLES framebuffer binding active: target={:#x} framebuffer={} pc={:#x} gl_error={:#x} [repeated binds suppressed]",
-                gl.last_bind_framebuffer_target,
-                gl.last_bind_framebuffer,
-                gl.last_bind_framebuffer_pc,
-                gl.gl_error,
+                state.arm64_gl.as_ref().map_or(0, |gl| gl.last_bind_framebuffer_target),
+                state.arm64_gl.as_ref().map_or(0, |gl| gl.last_bind_framebuffer),
+                state.arm64_gl.as_ref().map_or(0, |gl| gl.last_bind_framebuffer_pc),
+                state.arm64_gl.as_ref().map_or(0, |gl| gl.gl_error),
             );
         }
         "glBindRenderbuffer" | "glBindRenderbufferOES" => {
-            gl.current_renderbuffer = context.regs[1] as u32;
+            if let Some(gl) = state.arm64_gl.as_mut() { gl.current_renderbuffer = context.regs[1] as u32; }
             let target = context.regs[0] as _;
             let renderbuffer = arm64_renderbuffer_host_id(context.regs[1] as u32);
-            arm64_host_gl(window, |host| unsafe {
+            let host_error = arm64_host_gl_with_error(window, state, symbol, guest_pc, |host| unsafe {
                 if symbol.ends_with("OES") { host.BindRenderbufferOES(target, renderbuffer) } else { host.BindRenderbuffer(target, renderbuffer) }
             });
+            state.trace_render_event(format!("frame={} callback_pc={:#x} gl_pc={:#x} op={} target={:#x} guest={} host={} gl_error={:#x} continuation={:#x}", state.render_diagnostics.display_link_callbacks, state.render_diagnostics.last_callback_pc, guest_pc, symbol, target, context.regs[1], renderbuffer, host_error, context.regs[30]));
         }
         "glGenFramebuffers" | "glGenFramebuffersOES" | "glGenRenderbuffers" | "glGenRenderbuffersOES" => {
             let count = context.regs[0] as i32;
@@ -2347,9 +2406,10 @@ fn arm64_gl_call(
         "glCheckFramebufferStatus" | "glCheckFramebufferStatusOES" => {
             let target = context.regs[0] as _;
             let mut status = 0x8cd5u32;
-            arm64_host_gl(window, |host| unsafe {
+            let host_error = arm64_host_gl_with_error(window, state, symbol, guest_pc, |host| unsafe {
                 status = if symbol.ends_with("OES") { host.CheckFramebufferStatusOES(target) as u32 } else { host.CheckFramebufferStatus(target) as u32 };
             });
+            state.trace_render_event(format!("frame={} callback_pc={:#x} gl_pc={:#x} op={} target={:#x} status={:#x} host_error={:#x} continuation={:#x}", state.render_diagnostics.display_link_callbacks, state.render_diagnostics.last_callback_pc, guest_pc, symbol, target, status, host_error, context.regs[30]));
             return_value(context, u64::from(status));
             return Ok(true);
         }
@@ -2367,23 +2427,28 @@ fn arm64_gl_call(
             let attachment = context.regs[1] as _;
             let renderbuffer_target = context.regs[2] as _;
             let renderbuffer = arm64_renderbuffer_host_id(context.regs[3] as u32);
-            arm64_host_gl(window, |host| unsafe {
+            let host_error = arm64_host_gl_with_error(window, state, symbol, guest_pc, |host| unsafe {
                 if symbol.ends_with("OES") { host.FramebufferRenderbufferOES(target, attachment, renderbuffer_target, renderbuffer) } else { host.FramebufferRenderbuffer(target, attachment, renderbuffer_target, renderbuffer) }
             });
+            state.trace_render_event(format!("frame={} callback_pc={:#x} gl_pc={:#x} op={} target={:#x} attachment={:#x} guest={} host={} gl_error={:#x} continuation={:#x}", state.render_diagnostics.display_link_callbacks, state.render_diagnostics.last_callback_pc, guest_pc, symbol, target, attachment, context.regs[3], renderbuffer, host_error, context.regs[30]));
         }
         "glViewport" => {
-            gl.viewport = [context.regs[0] as i32, context.regs[1] as i32, context.regs[2] as i32, context.regs[3] as i32];
-            arm64_host_gl(window, |host| unsafe { host.Viewport(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _, context.regs[3] as _) });
+            let viewport = [context.regs[0] as i32, context.regs[1] as i32, context.regs[2] as i32, context.regs[3] as i32];
+            if let Some(gl) = state.arm64_gl.as_mut() { gl.viewport = viewport; }
+            let host_error = arm64_host_gl_with_error(window, state, symbol, guest_pc, |host| unsafe { host.Viewport(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _, context.regs[3] as _) });
+            state.trace_render_event(format!("frame={} callback_pc={:#x} gl_pc={:#x} op={} viewport={:?} host_error={:#x} continuation={:#x}", state.render_diagnostics.display_link_callbacks, state.render_diagnostics.last_callback_pc, guest_pc, symbol, viewport, host_error, context.regs[30]));
         }
         "glScissor" => arm64_host_gl(window, |host| unsafe { host.Scissor(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _, context.regs[3] as _) }),
         "glClearColor" => {
-            gl.clear_color = [arm64_float_arg(context, 0), arm64_float_arg(context, 1), arm64_float_arg(context, 2), arm64_float_arg(context, 3)];
-            state.clear_color = gl.clear_color;
+            let clear_color = [arm64_float_arg(context, 0), arm64_float_arg(context, 1), arm64_float_arg(context, 2), arm64_float_arg(context, 3)];
+            if let Some(gl) = state.arm64_gl.as_mut() { gl.clear_color = clear_color; }
+            state.clear_color = clear_color;
             arm64_host_gl(window, |host| unsafe { host.ClearColor(arm64_float_arg(context, 0), arm64_float_arg(context, 1), arm64_float_arg(context, 2), arm64_float_arg(context, 3)) });
         }
         "glClear" => {
-            gl.draw_calls = gl.draw_calls.saturating_add(1);
-            arm64_host_gl(window, |host| unsafe { host.Clear(context.regs[0] as _) });
+            if let Some(gl) = state.arm64_gl.as_mut() { gl.draw_calls = gl.draw_calls.saturating_add(1); }
+            let host_error = arm64_host_gl_with_error(window, state, symbol, guest_pc, |host| unsafe { host.Clear(context.regs[0] as _) });
+            state.trace_render_event(format!("frame={} callback_pc={:#x} gl_pc={:#x} op={} mask={:#x} host_error={:#x} continuation={:#x}", state.render_diagnostics.display_link_callbacks, state.render_diagnostics.last_callback_pc, guest_pc, symbol, context.regs[0], host_error, context.regs[30]));
         }
         "glClearStencil" => arm64_host_gl(window, |host| unsafe { host.ClearStencil(context.regs[0] as _) }),
         "glEnable" => arm64_host_gl(window, |host| unsafe { host.Enable(context.regs[0] as _) }),
@@ -2419,8 +2484,10 @@ fn arm64_gl_call(
         "glBindBuffer" => {
             let target = context.regs[0] as u32;
             let buffer = context.regs[1] as u32;
-            if target == 0x8892 { gl.array_buffer_binding = buffer; }
-            if target == 0x8893 { gl.element_array_buffer_binding = buffer; }
+            if let Some(gl) = state.arm64_gl.as_mut() {
+                if target == 0x8892 { gl.array_buffer_binding = buffer; }
+                if target == 0x8893 { gl.element_array_buffer_binding = buffer; }
+            }
             arm64_host_gl(window, |host| unsafe { host.BindBuffer(target as _, buffer as _) });
         }
         "glBufferData" => {
@@ -2468,7 +2535,8 @@ fn arm64_gl_call(
             });
         }
         "glVertexAttribPointer" => {
-            let pointer = if gl.array_buffer_binding == 0 { arm64_const_ptr(mem, context.regs[5], 1)? } else { context.regs[5] as usize as *const std::ffi::c_void };
+            let array_buffer_binding = state.arm64_gl.as_ref().map_or(0, |gl| gl.array_buffer_binding);
+            let pointer = if array_buffer_binding == 0 { arm64_const_ptr(mem, context.regs[5], 1)? } else { context.regs[5] as usize as *const std::ffi::c_void };
             arm64_host_gl(window, |host| unsafe { host.VertexAttribPointer(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _, context.regs[3] as _, context.regs[4] as _, pointer) });
         }
         "glUniform1fv" | "glUniform2fv" | "glUniform3fv" | "glUniform4fv" => {
@@ -2487,10 +2555,11 @@ fn arm64_gl_call(
             });
         }
         "glUniformMatrix4fv" => { let pointer = arm64_const_ptr(mem, context.regs[3], context.regs[1].saturating_mul(64))?; arm64_host_gl(window, |host| unsafe { host.UniformMatrix4fv(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _, pointer.cast()) }); }
-        "glDrawArrays" => { gl.draw_calls = gl.draw_calls.saturating_add(1); arm64_host_gl(window, |host| unsafe { host.DrawArrays(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _) }); }
+        "glDrawArrays" => { if let Some(gl) = state.arm64_gl.as_mut() { gl.draw_calls = gl.draw_calls.saturating_add(1); } arm64_host_gl(window, |host| unsafe { host.DrawArrays(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _) }); }
         "glDrawElements" => {
-            gl.draw_calls = gl.draw_calls.saturating_add(1);
-            let pointer = if gl.element_array_buffer_binding == 0 { let bytes = context.regs[1].saturating_mul(if context.regs[2] as u32 == 0x1403 { 2 } else { 1 }); arm64_const_ptr(mem, context.regs[3], bytes)? } else { context.regs[3] as usize as *const std::ffi::c_void };
+            if let Some(gl) = state.arm64_gl.as_mut() { gl.draw_calls = gl.draw_calls.saturating_add(1); }
+            let element_array_buffer_binding = state.arm64_gl.as_ref().map_or(0, |gl| gl.element_array_buffer_binding);
+            let pointer = if element_array_buffer_binding == 0 { let bytes = context.regs[1].saturating_mul(if context.regs[2] as u32 == 0x1403 { 2 } else { 1 }); arm64_const_ptr(mem, context.regs[3], bytes)? } else { context.regs[3] as usize as *const std::ffi::c_void };
             arm64_host_gl(window, |host| unsafe { host.DrawElements(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _, pointer) });
         }
         "glTexImage2D" => { let bytes = arm64_texture_data_size(context.regs[3] as u32, context.regs[4] as u32, context.regs[6] as u32, context.regs[7] as u32); let pointer = arm64_const_ptr(mem, context.regs[8], bytes)?; arm64_host_gl(window, |host| unsafe { host.TexImage2D(context.regs[0] as _, context.regs[1] as _, context.regs[2] as _, context.regs[3] as _, context.regs[4] as _, context.regs[5] as _, context.regs[6] as _, context.regs[7] as _, pointer) }); }
