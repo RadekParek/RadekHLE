@@ -2093,7 +2093,7 @@ fn setup_quick_options(
         RowKind::IosVersionDropdown,
         RowKind::Label("Graphics API"),
         RowKind::GraphicsApiDropdown,
-        RowKind::Label("ARM64 Backend"),
+        RowKind::Label("Dynarmic JIT"),
         RowKind::Switch("arm64Backend:", false),
         RowKind::Label("Game folder"),
         RowKind::Buttons(&[
