@@ -858,8 +858,9 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                     context.pc = context.regs[30];
                 }
                 if runtime_state.take_guest_yield() {
-                    runtime_state.render_diagnostics.callback_return_pc = context.regs[30];
-                    runtime_state.trace_render_event(format!("frame={} callback_return=drawFrame display_link_return_pc={:#x} lr={:#x} present={} next_scheduled={} last_gl={} last_guest_pc={:#x}", runtime_state.render_diagnostics.display_link_callbacks, context.pc, context.regs[30], runtime_state.render_diagnostics.present_framebuffer_calls, runtime_state.display_link_is_scheduled(), runtime_state.render_diagnostics.last_gl_symbol.as_deref().unwrap_or("<none>"), runtime_state.render_diagnostics.last_guest_pc));
+                    let callback_return_pc = runtime_state.display_link_return_pc.unwrap_or(context.regs[30]);
+                    runtime_state.render_diagnostics.callback_return_pc = callback_return_pc;
+                    runtime_state.trace_render_event(format!("frame={} callback_return=drawFrame display_link_return_pc={:#x} lr={:#x} present={} next_scheduled={} last_gl={} last_guest_pc={:#x}", runtime_state.render_diagnostics.display_link_callbacks, context.pc, callback_return_pc, runtime_state.render_diagnostics.present_framebuffer_calls, runtime_state.display_link_is_scheduled(), runtime_state.render_diagnostics.last_gl_symbol.as_deref().unwrap_or("<none>"), runtime_state.render_diagnostics.last_guest_pc));
                     host_dispatches_since_callback = 0;
                     let callback_scheduled = schedule_display_link_callback(&mut memory, &mut context, &mut runtime_state)?;
                     if let Some(transfer_pc) = runtime_state.take_guest_transfer() {

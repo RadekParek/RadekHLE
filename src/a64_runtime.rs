@@ -124,6 +124,7 @@ pub struct RuntimeState {
     pub display_link_return_stub: Option<u64>,
     pub display_link_callbacks: u64,
     pub display_link_callback_returned: bool,
+    pub display_link_return_pc: Option<u64>,
     pub guest_yield_requested: bool,
     pub arm64_current_context: Option<u64>,
     pub arm64_gl_present_requested: bool,
@@ -237,6 +238,7 @@ impl RuntimeState {
             display_link_return_stub: None,
             display_link_callbacks: 0,
             display_link_callback_returned: false,
+            display_link_return_pc: None,
             guest_yield_requested: false,
             arm64_current_context: None,
             arm64_gl_present_requested: false,
@@ -285,6 +287,7 @@ impl RuntimeState {
     }
 
     pub fn mark_display_link_callback_started(&mut self) {
+        self.display_link_return_pc = None;
         self.display_link_callbacks = self.display_link_callbacks.saturating_add(1);
         self.render_diagnostics.display_link_callbacks = self.display_link_callbacks;
         self.render_diagnostics.last_callback_pc = self.guest_transfer_pc.unwrap_or(0);
@@ -295,7 +298,8 @@ impl RuntimeState {
         self.display_link_callback_returned = false;
     }
 
-    pub fn mark_display_link_callback_returned(&mut self) {
+    pub fn mark_display_link_callback_returned(&mut self, return_pc: u64) {
+        self.display_link_return_pc = Some(return_pc);
         self.display_link_callback_returned = true;
         self.render_diagnostics.callback_active = false;
     }
@@ -1662,7 +1666,7 @@ pub fn dispatch(
         return Ok(true);
     }
     if symbol == "ARM64_display_link_return" {
-        state.mark_display_link_callback_returned();
+        state.mark_display_link_callback_returned(context.regs[30]);
         state.guest_yield_requested = true;
         return_value(context, 0);
         log_dbg!("ARM64 display-link callback returned: callbacks={} selector={}", state.display_link_callbacks, state.last_selector.as_deref().unwrap_or("<none>"));
