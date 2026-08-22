@@ -38,7 +38,6 @@ const A64_KIND_THREAD: u64 = 27;
 const A64_KIND_VIEW: u64 = 28;
 const A64_KIND_EAGL_VIEW: u64 = 29;
 const A64_KIND_CONTEXT: u64 = 30;
-const A64_UIVIEWCONTROLLER_VIEW_IVAR: u64 = 0x148;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum A64GraphicsBackend {
@@ -113,6 +112,8 @@ pub struct RuntimeState {
     pub application_launch_return_stub: Option<u64>,
     pub application_active_return_stub: Option<u64>,
     pub nib_awake_return_stub: Option<u64>,
+    pub guest_method_return_stub: Option<u64>,
+    pub guest_method_return_pcs: Vec<u64>,
     pub nib_awake_dispatched: bool,
     pub pending_application_did_become_active: bool,
     pub display_link_object: Option<u64>,
@@ -224,6 +225,8 @@ impl RuntimeState {
             application_launch_return_stub: None,
             application_active_return_stub: None,
             nib_awake_return_stub: None,
+            guest_method_return_stub: None,
+            guest_method_return_pcs: Vec::new(),
             nib_awake_dispatched: false,
             pending_application_did_become_active: false,
             display_link_object: None,
@@ -406,7 +409,7 @@ fn materialize_custom_constant(mem: &mut Mem64, symbol: &str) -> Option<u64> {
 pub fn can_dispatch(symbol: &str) -> bool {
     let symbol = name(symbol);
     match symbol {
-        "ARM64_nib_awake_return" | "ARM64_application_return" | "ARM64_application_launch_return" | "ARM64_application_active_return" => true,
+        "ARM64_nib_awake_return" | "ARM64_guest_method_return" | "ARM64_application_return" | "ARM64_application_launch_return" | "ARM64_application_active_return" => true,
         "malloc" | "calloc" | "valloc" | "posix_memalign" | "free"
         | "malloc_zone_free" | "realloc" | "malloc_zone_realloc" | "memcpy"
         | "memmove" | "memcpy_chk" | "memmove_chk" | "memset" | "bzero"
@@ -944,9 +947,6 @@ fn objc_send(
         || (view_controller_receiver && matches!(selector.as_str(), "view" | "context"));
     if selector == "view" && receiver != 0 && (view_controller_receiver || state.application_view_controller == Some(receiver)) {
         let view = state.application_view.unwrap_or(0);
-        if view != 0 {
-            set_objc_field(mem, receiver, A64_UIVIEWCONTROLLER_VIEW_IVAR, view);
-        }
         log_once_fmt!(
             "ARM64 controller view bridge: receiver={:#x} class={} result={:#x} application_view={:#x} [repeated bridge calls suppressed]",
             receiver,
@@ -1502,6 +1502,10 @@ fn transfer_guest_method(
     if state.render_diagnostics.callback_active {
         state.trace_render_event(format!("frame={} objc_transfer selector={} class={} imp={:#x} caller_pc={:#x} lr={:#x}", state.render_diagnostics.display_link_callbacks, selector, class_name, address, context.pc, context.regs[30]));
     }
+    if let Some(return_stub) = state.guest_method_return_stub {
+        state.guest_method_return_pcs.push(context.regs[30]);
+        context.regs[30] = return_stub;
+    }
     state.guest_transfer_pc = Some(address);
     true
 }
@@ -1587,6 +1591,15 @@ pub fn dispatch(
     state.host_dispatches = state.host_dispatches.saturating_add(1);
     let symbol = name(symbol);
     state.last_symbol = Some(symbol.to_owned());
+    if symbol == "ARM64_guest_method_return" {
+        let return_pc = state
+            .guest_method_return_pcs
+            .pop()
+            .ok_or("ARM64 guest method return had no saved continuation")?;
+        context.regs[30] = return_pc;
+        log_dbg!("ARM64 guest Objective-C method returned: continuation={:#x} result={:#x} remaining={}", return_pc, context.regs[0], state.guest_method_return_pcs.len());
+        return Ok(true);
+    }
     if symbol == "ARM64_nib_awake_return" {
         state.nib_awake_dispatched = true;
         let (Some(delegate), Some(application)) = (state.application_delegate, state.application_object) else {
@@ -2071,12 +2084,10 @@ pub fn dispatch(
                     initialize_eagl_view(mem, state, view)?;
                     if let Some(view_controller_name) = view_controller_name {
                         let view_controller = objc_instance_for_class(mem, state, &view_controller_name)?;
-                        set_objc_field(mem, view_controller, A64_UIVIEWCONTROLLER_VIEW_IVAR, view);
                         log!(
-                            "ARM64 initialized UIViewController view backing ivar: class={} object={:#x} ivar={:#x} view={:#x}",
+                            "ARM64 initialized UIViewController view bridge: class={} object={:#x} view={:#x}",
                             view_controller_name,
                             view_controller,
-                            A64_UIVIEWCONTROLLER_VIEW_IVAR,
                             view,
                         );
                         if let Some(context) = state.graphics_context {
