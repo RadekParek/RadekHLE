@@ -38,6 +38,7 @@ const A64_KIND_THREAD: u64 = 27;
 const A64_KIND_VIEW: u64 = 28;
 const A64_KIND_EAGL_VIEW: u64 = 29;
 const A64_KIND_CONTEXT: u64 = 30;
+const A64_UIVIEWCONTROLLER_VIEW_IVAR: u64 = 0x148;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum A64GraphicsBackend {
