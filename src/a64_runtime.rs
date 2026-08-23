@@ -85,6 +85,7 @@ pub struct RuntimeState {
     pub application_main_active: bool,
     pub application_main_calls: u64,
     pub application_bootstrap_requested: bool,
+    pub arm64_rng_state: u32,
     pub clear_color: [f32; 4],
     pub last_selector: Option<String>,
     pub last_symbol: Option<String>,
@@ -205,6 +206,7 @@ impl RuntimeState {
             application_main_active: false,
             application_main_calls: 0,
             application_bootstrap_requested: false,
+            arm64_rng_state: 1,
             clear_color: [0.0, 0.0, 0.0, 1.0],
             last_selector: None,
             last_symbol: None,
@@ -604,6 +606,15 @@ fn next_prime(value: u64) -> u64 {
     }
     candidate
 }
+
+fn arm64_prng(state: u32) -> u32 {
+    let mut state = state.max(1);
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    state
+}
+
 fn objc_text(mem: &Mem64, address: u64) -> Option<Vec<u8>> {
     if objc_kind(mem, address) == Some(A64_KIND_STRING) {
         c_string(mem, objc_field(mem, address, 56))
@@ -1848,11 +1859,13 @@ pub fn dispatch(
             Ok(true)
         }
         "srand" => {
+            state.arm64_rng_state = (context.regs[0] as u32).max(1);
             return_value(context, 0);
             Ok(true)
         }
         "rand" => {
-            return_value(context, 1);
+            state.arm64_rng_state = arm64_prng(state.arm64_rng_state);
+            return_value(context, u64::from(state.arm64_rng_state & 0x7fff_ffff));
             Ok(true)
         }
         "objc_release" => {

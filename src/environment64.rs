@@ -42,6 +42,18 @@ fn branch_target(instruction: u32, pc: u64) -> Option<u64> {
     pc.checked_add_signed(immediate)
 }
 
+fn host_call_continuation(context: &touchHLE_DynarmicA64Context) -> u64 {
+    context.regs[30]
+}
+
+fn host_call_identity(context: &touchHLE_DynarmicA64Context) -> (u64, u64) {
+    (context.pc, context.regs[30])
+}
+
+fn host_call_site(context: &touchHLE_DynarmicA64Context) -> u64 {
+    context.regs[30].saturating_sub(4)
+}
+
 fn decode_instruction(instruction: u32, pc: u64) -> String {
     if instruction == 0xd65f_03c0 {
         "ret".to_string()
@@ -601,8 +613,8 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     let mut ticks = Some(EXECUTION_SLICE_TICKS);
     let mut host_dispatches = 0_u64;
     let mut host_dispatches_since_callback = 0_u64;
-    let mut last_pc = context.pc;
-    let mut repeated_pc = 0_u64;
+    let mut last_host_call: Option<(u64, u64)> = None;
+    let mut repeated_host_call = 0_u64;
     let watchdog_ms = std::env::var("TOUCHHLE_ARM64_WATCHDOG_MS").ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or(2000);
     let mut no_progress_since = Instant::now();
     let mut no_progress_slices = 0_u64;
@@ -751,38 +763,45 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             value if value >= SVC_HOST_BASE as i32 => {
                 host_dispatches += 1;
                 host_dispatches_since_callback += 1;
-                if context.pc == last_pc {
-                    repeated_pc += 1;
+                let symbol = host_stubs.get(&value).map(|(name, _)| name.as_str()).unwrap_or("<unknown>");
+                let continuation_pc = host_call_continuation(&context);
+                let call_site = host_call_site(&context);
+                let host_call = host_call_identity(&context);
+                if last_host_call == Some(host_call) {
+                    repeated_host_call += 1;
                 } else {
-                    last_pc = context.pc;
-                    repeated_pc = 0;
+                    last_host_call = Some(host_call);
+                    repeated_host_call = 0;
                 }
-                if repeated_pc > STALL_THRESHOLD {
-                    log_once_fmt!("ARM64 execution stall detected: repeated_pc={} current_pc={:#x} previous_pcs={:?} branch_history={:?} [subsequent identical stalls suppressed]", repeated_pc, context.pc, previous_pcs, previous_branches);
+                if repeated_host_call > STALL_THRESHOLD {
+                    log_once_fmt!("ARM64 execution stall detected: repeated_guest_call={} host_stub_pc={:#x} guest_call_site={:#x} continuation_pc={:#x} binding={} previous_pcs={:?} branch_history={:?} [subsequent identical stalls suppressed]", repeated_host_call, context.pc, call_site, continuation_pc, symbol, previous_pcs, previous_branches);
                     log_once_fmt!("ARM64 stall registers: {}", register_dump(&context));
                     log_once_fmt!("ARM64 stall stack: {}", stack_dump(&memory, context.sp));
                     return Err(format!(
-                        "ARM64 runtime stalled at pc {:#x}; sp={:#x} lr={:#x} fp={:#x}; last host binding was {}; objc_messages={} metal_commands={} backend={}",
+                        "ARM64 runtime stalled at host binding {}; host_stub_pc={:#x} guest_call_site={:#x} continuation_pc={:#x}; sp={:#x} lr={:#x} fp={:#x}; objc_messages={} metal_commands={} backend={}",
+                        symbol,
                         context.pc,
+                        call_site,
+                        continuation_pc,
                         context.sp,
                         context.regs[30],
                         context.regs[29],
-                        host_stubs.get(&value).map(|(name, _)| name.as_str()).unwrap_or("<unknown>"),
                         runtime_state.objc_messages,
                         runtime_state.metal_commands,
                         runtime_state.graphics_backend.label(),
                     ));
                 }
-                let symbol = host_stubs.get(&value).map(|(name, _)| name.as_str()).unwrap_or("<unknown>");
                 if symbol == "<unimplemented>" {
                     runtime_state.mark_unresolved_call(symbol, context.pc);
                 }
                 if host_dispatches <= 16 || host_dispatches.is_power_of_two() {
                     log_dbg!(
-                        "ARM64 host binding #{}: {} pc={:#x} sp={:#x} lr={:#x} x0={:#x} x1={:#x} x2={:#x} x3={:#x} x4={:#x} x5={:#x}",
+                        "ARM64 host binding #{}: {} host_stub_pc={:#x} guest_call_site={:#x} continuation_pc={:#x} sp={:#x} lr={:#x} x0={:#x} x1={:#x} x2={:#x} x3={:#x} x4={:#x} x5={:#x}",
                         host_dispatches,
                         symbol,
                         context.pc,
+                        call_site,
+                        continuation_pc,
                         context.sp,
                         context.regs[30],
                         context.regs[0],
