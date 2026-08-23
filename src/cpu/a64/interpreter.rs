@@ -513,7 +513,8 @@ impl A64Interpreter {
         let size = 1u64 << ((instruction >> 30) & 3);
         let opcode = instruction & 0xffc0_0000;
         let signed_load = matches!(opcode, 0x3980_0000 | 0x7980_0000 | 0xb980_0000);
-        let load = instruction & 0x0040_0000 != 0 || signed_load;
+        let halfword_load = opcode == 0x7940_0000;
+        let load = instruction & 0x0040_0000 != 0 || signed_load || halfword_load;
         let address = read_sp_or_reg(context, ((instruction >> 5) & 31) as usize, true).wrapping_add(((instruction >> 10) & 0xfff) as u64 * size);
         if signed_load {
             let value = match size {
