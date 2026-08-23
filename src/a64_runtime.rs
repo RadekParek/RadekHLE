@@ -38,6 +38,7 @@ const A64_KIND_THREAD: u64 = 27;
 const A64_KIND_VIEW: u64 = 28;
 const A64_KIND_EAGL_VIEW: u64 = 29;
 const A64_KIND_CONTEXT: u64 = 30;
+const A64_KIND_ARRAY: u64 = 31;
 const A64_UIVIEWCONTROLLER_VIEW_IVAR: u64 = 0x148;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -376,6 +377,11 @@ fn name(symbol: &str) -> &str {
 
 fn materialize_host_constant(mem: &mut Mem64, symbol: &str) -> Result<Option<u64>, String> {
     let normalized = name(symbol);
+    if normalized == "stack_chk_guard" {
+        let guard = mem.alloc_zeroed(8).map_err(str::to_owned)?;
+        mem.write_u64(guard, 0x9e37_79b9_7f4a_7c15).map_err(str::to_owned)?;
+        return Ok(Some(guard));
+    }
     if let Some((_, constant)) = search_host_dylibs(|dylib| dylib.constant_exports, symbol)
         .or_else(|| search_host_dylibs(|dylib| dylib.constant_exports, normalized))
     {
@@ -430,11 +436,14 @@ pub fn can_dispatch(symbol: &str) -> bool {
         | "objc_retainAutoreleasedReturnValue" | "objc_retainAutoreleaseReturnValue"
         | "objc_autorelease" | "objc_autoreleaseReturnValue"
         | "objc_unsafeClaimAutoreleasedReturnValue" | "objc_retainAutorelease"
-        | "objc_retainBlock" | "objc_msgSend" | "objc_msgSendSuper2"
+        | "objc_retainBlock" | "objc_setProperty" | "objc_setProperty_nonatomic"
+        | "objc_setProperty_atomic" | "objc_setProperty_nonatomic_copy"
+        | "objc_setProperty_atomic_copy" | "objc_msgSend" | "objc_msgSendSuper2"
         | "objc_msgSend_stret" | "objc_msgSendSuper2_stret" | "objc_msgSend_fpret"
         | "objc_msgSend_fp2ret" | "objc_getClass" | "objc_getRequiredClass"
         | "objc_lookUpClass" | "object_getClass" | "object_getClassName"
-        | "sel_registerName" | "sel_getUid"
+        | "sel_registerName" | "sel_getUid" | "NSSelectorFromString"
+        | "NSSearchPathForDirectoriesInDomains" | "time" | "srand" | "rand"
         | "objc_autoreleasePoolPush" | "objc_autoreleasePoolPop"
         | "objc_exception_throw" | "objc_begin_catch" | "objc_end_catch"
         | "cxa_guard_acquire" | "cxa_guard_release" | "cxa_guard_abort"
@@ -528,6 +537,30 @@ fn c_string(mem: &Mem64, address: u64) -> Option<Vec<u8>> {
 fn c_string_eq(mem: &Mem64, address: u64, value: &[u8]) -> bool {
     c_string(mem, address).as_deref() == Some(value)
 }
+
+fn arm64_home_directory(bundle_path: &str) -> String {
+    bundle_path
+        .rsplit_once('/')
+        .map_or_else(|| "/var/mobile/Applications/00000000-0000-0000-0000-000000000000".to_owned(), |(parent, _)| parent.to_owned())
+}
+
+fn arm64_search_path(state: &RuntimeState, directory: u64, domain_mask: u64) -> Option<String> {
+    let home = arm64_home_directory(&state.bundle_path);
+    if domain_mask & 0x1 == 0 {
+        return None;
+    }
+    match directory {
+        1 | 100 => Some("/var/mobile/Applications".to_owned()),
+        5 => Some(format!("{home}/Library")),
+        7 => Some(home),
+        9 => Some(format!("{home}/Documents")),
+        13 => Some(format!("{home}/Library/Caches")),
+        14 => Some(format!("{home}/Library/Application Support")),
+        22 => Some(format!("{home}/Library/PreferencePanes")),
+        101 => Some(format!("{home}/Library")),
+        _ => None,
+    }
+}
 fn cxx_string_bytes(mem: &Mem64, object: u64) -> Option<Vec<u8>> {
     let first = mem.read_u64(object).ok()?;
     if first & 1 == 0 {
@@ -604,12 +637,26 @@ fn objc_object_with_size(mem: &mut Mem64, kind: u64, size: u64) -> Result<u64, S
     Ok(address)
 }
 
+fn objc_array(mem: &mut Mem64, objects: &[u64]) -> Result<u64, String> {
+    let object = objc_object(mem, A64_KIND_ARRAY)?;
+    let elements = mem
+        .alloc_zeroed((objects.len() as u64).saturating_mul(8))
+        .map_err(str::to_owned)?;
+    for (index, value) in objects.iter().copied().enumerate() {
+        mem.write_u64(elements + index as u64 * 8, value)
+            .map_err(str::to_owned)?;
+    }
+    set_objc_field(mem, object, 56, objects.len() as u64);
+    set_objc_field(mem, object, 64, elements);
+    Ok(object)
+}
+
 fn objc_kind(mem: &Mem64, address: u64) -> Option<u64> {
     if address == 0 || mem.allocation_size(address).is_none() {
         return None;
     }
     let first_word = mem.read_u64(address).ok()?;
-    if (1..=A64_KIND_CONTEXT).contains(&first_word) {
+    if (1..=A64_KIND_ARRAY).contains(&first_word) {
         return Some(first_word);
     }
     let class = if first_word != 0 && mem.allocation_size(first_word).is_some() {
@@ -1140,6 +1187,29 @@ fn objc_send(
         "release" => 0,
         "class" => receiver_class,
         "respondsToSelector:" | "isKindOfClass:" | "hasUnifiedMemory" => 1,
+        "count" if kind == A64_KIND_ARRAY => objc_field(mem, receiver, 56),
+        "objectAtIndexedSubscript:" | "objectAtIndex:" if kind == A64_KIND_ARRAY => {
+            let index = context.regs[2];
+            let count = objc_field(mem, receiver, 56);
+            let result = if index < count {
+                let elements = objc_field(mem, receiver, 64);
+                let address = elements
+                    .checked_add(index.saturating_mul(8))
+                    .ok_or("ARM64 NSArray index address overflows")?;
+                mem.read_u64(address).map_err(str::to_owned)?
+            } else {
+                log_once_fmt!(
+                    "ARM64 NSArray objectAtIndex out of bounds: receiver={:#x} index={} count={} caller_pc={:#x} [repeated invalid accesses suppressed]",
+                    receiver,
+                    index,
+                    count,
+                    context.pc,
+                );
+                0
+            };
+            return_value(context, result);
+            return Ok(())
+        }
         "status" if kind == A64_KIND_COMMAND_BUFFER => 4,
         "error" if kind == A64_KIND_COMMAND_BUFFER => 0,
         "newFence" | "newEvent" | "newHeapWithDescriptor:" | "newArgumentEncoderWithArguments:" => objc_object(mem, A64_KIND_GENERIC)?,
@@ -1567,6 +1637,11 @@ pub fn schedule_display_link_callback(
 
 
 pub fn materialize_import(mem: &mut Mem64, symbol: &str) -> Result<Option<u64>, String> {
+    if name(symbol) == "stack_chk_guard" {
+        let guard = mem.alloc_zeroed(8).map_err(str::to_owned)?;
+        mem.write_u64(guard, 0x9e37_79b9_7f4a_7c15).map_err(str::to_owned)?;
+        return Ok(Some(guard));
+    }
     if let Some(value) = materialize_host_constant(mem, symbol)? {
         return Ok(Some(value));
     }
@@ -1589,11 +1664,6 @@ pub fn materialize_import(mem: &mut Mem64, symbol: &str) -> Result<Option<u64>, 
         mem.write_bytes(pointer, bytes).map_err(str::to_owned)?;
         mem.write_u8(pointer + bytes.len() as u64, 0).map_err(str::to_owned)?;
         return Ok(Some(objc_class(mem, pointer)?));
-    }
-    if symbol == "stack_chk_guard" {
-        let guard = mem.alloc_zeroed(8).map_err(str::to_owned)?;
-        mem.write_u64(guard, 0x9e37_79b9_7f4a_7c15).map_err(str::to_owned)?;
-        return Ok(Some(guard));
     }
     Ok(None)
 }
@@ -1716,6 +1786,73 @@ pub fn dispatch(
         | "Znwm" | "Znam" | "ZnwmRKSt9nothrow_t" | "__ZnwmRKSt9nothrow_t" => {
             let address = mem.alloc_zeroed(context.regs[0]).map_err(str::to_owned)?;
             return_value(context, address);
+            Ok(true)
+        }
+        "NSSearchPathForDirectoriesInDomains" => {
+            let path = arm64_search_path(state, context.regs[0], context.regs[1]);
+            let result = match path.as_deref() {
+                Some(path) => {
+                    let string = objc_string(mem, path)?;
+                    objc_array(mem, &[string])?
+                }
+                None => objc_array(mem, &[])?
+            };
+            log_once_fmt!(
+                "ARM64 Foundation path search: directory={} domain_mask={:#x} result={:#x} path={} [repeated calls suppressed]",
+                context.regs[0],
+                context.regs[1],
+                result,
+                path.as_deref().unwrap_or("<empty>"),
+            );
+            return_value(context, result);
+            Ok(true)
+        }
+        "NSSelectorFromString" => {
+            let selector = objc_text(mem, context.regs[0]).unwrap_or_default();
+            let selector = String::from_utf8(selector).map_err(|_| "ARM64 selector string is not UTF-8")?;
+            let pointer = selector_pointer(mem, &selector)?;
+            log_once_fmt!(
+                "ARM64 selector registration: selector={} pointer={:#x} [repeated registrations suppressed]",
+                selector,
+                pointer,
+            );
+            return_value(context, pointer);
+            Ok(true)
+        }
+        "objc_setProperty" | "objc_setProperty_nonatomic" | "objc_setProperty_atomic"
+        | "objc_setProperty_nonatomic_copy" | "objc_setProperty_atomic_copy" => {
+            let offset = context.regs[2] as i32 as i64;
+            let address = context.regs[0]
+                .checked_add_signed(offset)
+                .ok_or("ARM64 objc_setProperty address overflows")?;
+            mem.write_u64(address, context.regs[3]).map_err(str::to_owned)?;
+            log_once_fmt!(
+                "ARM64 Objective-C property store: receiver={:#x} offset={} value={:#x} address={:#x} [repeated stores suppressed]",
+                context.regs[0],
+                offset,
+                context.regs[3],
+                address,
+            );
+            return_value(context, 0);
+            Ok(true)
+        }
+        "time" => {
+            let seconds = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| "ARM64 system clock is before the Unix epoch")?
+                .as_secs() as i32;
+            if context.regs[0] != 0 {
+                mem.write_u32(context.regs[0], seconds as u32).map_err(str::to_owned)?;
+            }
+            return_value(context, seconds as i64 as u64);
+            Ok(true)
+        }
+        "srand" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "rand" => {
+            return_value(context, 1);
             Ok(true)
         }
         "objc_release" => {
