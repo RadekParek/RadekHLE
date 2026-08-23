@@ -185,8 +185,8 @@ impl A64Interpreter {
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
-        if (instruction & 0x1fe0_0400 == 0x1a80_0000 || instruction & 0x1fe0_0400 == 0x5a80_0000)
-            && instruction & 0x0000_0c00 != 0x0000_0800
+        if (instruction & 0x1fe0_0000 == 0x1a80_0000 || instruction & 0x1fe0_0000 == 0x5a80_0000)
+            && instruction & 0x0000_0810 == 0
         {
             self.execute_conditional_select(context, instruction)?;
             context.pc = pc.wrapping_add(4);
@@ -564,7 +564,6 @@ impl A64Interpreter {
 mod conditional_select_tests {
     use super::A64Interpreter;
     use crate::mem64::{Mem64, Permissions};
-    use touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context;
 
     const CODE: u64 = 0x1_0000_0000;
 
@@ -578,7 +577,7 @@ mod conditional_select_tests {
         let mut interpreter = A64Interpreter::new();
         assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
         assert_eq!(context.pc, CODE + 4);
-        context.regs[0]
+        context.regs[instruction as usize & 31]
     }
 
     #[test]
@@ -589,9 +588,9 @@ mod conditional_select_tests {
 
     #[test]
     fn conditional_select_variants_have_distinct_false_operands() {
-        assert_eq!(run(0x1a820020, 0, 0x11, 0x22), 0x22);
-        assert_eq!(run(0x1a820420, 0, 0x11, 0x22), 0x23);
-        assert_eq!(run(0x5a820020, 0, 0x11, 0x22), !0x22u64 as u32 as u64);
+        assert_eq!(run(0x9a820020, 0, 0x11, 0x22), 0x22);
+        assert_eq!(run(0x9a820420, 0, 0x11, 0x22), 0x23);
+        assert_eq!(run(0x5a820020, 0, 0x11, 0x22), !0x22u32 as u64);
         assert_eq!(run(0x5a820420, 0, 0x11, 0x22), (!0x22u32).wrapping_add(1) as u64);
     }
 }

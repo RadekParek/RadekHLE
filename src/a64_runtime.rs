@@ -150,6 +150,12 @@ pub struct A64RenderDiagnostics {
     pub callback_active: bool,
     pub last_unresolved_symbol: Option<String>,
     pub last_unresolved_pc: u64,
+    pub last_dispatch_receiver: u64,
+    pub last_dispatch_selector: Option<String>,
+    pub last_dispatch_pc: u64,
+    pub last_dispatch_lr: u64,
+    pub last_dispatch_sp: u64,
+    pub last_dispatch_callback_target: u64,
 }
 
 #[derive(Debug, Default)]
@@ -895,6 +901,12 @@ fn objc_send(
         .unwrap_or_default();
     state.objc_messages = state.objc_messages.saturating_add(1);
     state.last_selector = Some(selector.clone());
+    state.render_diagnostics.last_dispatch_receiver = receiver;
+    state.render_diagnostics.last_dispatch_selector = Some(selector.clone());
+    state.render_diagnostics.last_dispatch_pc = context.pc;
+    state.render_diagnostics.last_dispatch_lr = context.regs[30];
+    state.render_diagnostics.last_dispatch_sp = context.sp;
+    state.render_diagnostics.last_dispatch_callback_target = state.display_link_target.unwrap_or(0);
     let kind = objc_kind(mem, receiver).unwrap_or(A64_KIND_GENERIC);
     let receiver_class = if kind == A64_KIND_CLASS {
         receiver

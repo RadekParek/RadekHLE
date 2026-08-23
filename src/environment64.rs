@@ -51,8 +51,8 @@ fn decode_instruction(instruction: u32, pc: u64) -> String {
         format!("bl {:#x}", branch_target(instruction, pc).unwrap_or(0))
     } else if instruction & 0x7e00_0000 == 0x3400_0000 {
         format!("cbz/cbnz {:#x}", branch_target(instruction, pc).unwrap_or(0))
-    } else if (instruction & 0x1fe0_0400 == 0x1a80_0000 || instruction & 0x1fe0_0400 == 0x5a80_0000)
-        && instruction & 0x0000_0c00 != 0x0000_0800
+    } else if (instruction & 0x1fe0_0000 == 0x1a80_0000 || instruction & 0x1fe0_0000 == 0x5a80_0000)
+        && instruction & 0x0000_0810 == 0
     {
         let mnemonic = if instruction & 0x4000_0000 != 0 {
             if instruction & 0x0000_0400 != 0 { "csneg" } else { "csinv" }
@@ -234,7 +234,31 @@ fn failure_diagnostics(
     echo!("ARM64 failure previous_pcs={:?} branch_history={:?}", previous_pcs, previous_branches);
     echo!("ARM64 failure stack: {}", stack_dump(memory, context.sp));
     echo!("ARM64 failure call stack: {}", call_stack_dump(memory, context));
+    let previous_instruction = context.pc.checked_sub(4).and_then(|pc| memory.read_u32(pc).ok());
+    let next_instruction = context.pc.checked_add(4).and_then(|pc| memory.read_u32(pc).ok());
+    echo!(
+        "ARM64 failure instruction window: prev_pc={:#x} prev={:#010x} current_pc={:#x} current={:#010x} next_pc={:#x} next={:#010x} image_offset={:#x}",
+        context.pc.saturating_sub(4),
+        previous_instruction.unwrap_or(0),
+        context.pc,
+        instruction,
+        context.pc.saturating_add(4),
+        next_instruction.unwrap_or(0),
+        context.pc.saturating_sub(0x1_0000_0000),
+    );
     echo!("ARM64 failure mappings: {}", mapping_dump(memory));
+    echo!(
+        "ARM64 failure dispatch: receiver={:#x} selector={} callback_target={:#x} dispatch_pc={:#x} dispatch_lr={:#x} dispatch_sp={:#x} current_pc={:#x} current_lr={:#x} current_sp={:#x}",
+        runtime_state.render_diagnostics.last_dispatch_receiver,
+        runtime_state.render_diagnostics.last_dispatch_selector.as_deref().unwrap_or("<none>"),
+        runtime_state.render_diagnostics.last_dispatch_callback_target,
+        runtime_state.render_diagnostics.last_dispatch_pc,
+        runtime_state.render_diagnostics.last_dispatch_lr,
+        runtime_state.render_diagnostics.last_dispatch_sp,
+        context.pc,
+        context.regs[30],
+        context.sp,
+    );
     echo!("ARM64 failure state: module={} last_symbol={} last_callback={} selector={} dispatches={} objc={} metal={} unresolved_reached={}", runtime_state.current_module.as_deref().unwrap_or("<unknown>"), runtime_state.last_symbol.as_deref().unwrap_or("<none>"), runtime_state.last_successful_symbol.as_deref().unwrap_or("<none>"), runtime_state.last_selector.as_deref().unwrap_or("<none>"), runtime_state.host_dispatches, runtime_state.objc_messages, runtime_state.metal_commands, runtime_state.reached_unimplemented_symbols.len());
 }
 
