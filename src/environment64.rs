@@ -61,7 +61,7 @@ fn decode_instruction(instruction: u32, pc: u64) -> String {
         } else {
             "csel"
         };
-        let condition = instruction & 0xf;
+        let condition = (instruction >> 12) & 0xf;
         format!("{} cond={:#x} rn={} rm={} rd={}", mnemonic, condition, (instruction >> 5) & 31, (instruction >> 16) & 31, instruction & 31)
     } else if instruction & 0xffff_fc1f == 0xd61f_0000 {
         "br/blr".to_string()
