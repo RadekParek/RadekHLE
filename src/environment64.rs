@@ -403,6 +403,45 @@ fn load_embedded_unity_framework(
     Ok(())
 }
 
+fn detect_graphics_backend(executable: &MachO64, requested: crate::options::GraphicsApi) -> (A64GraphicsBackend, &'static str) {
+    match requested {
+        crate::options::GraphicsApi::GLES10
+        | crate::options::GraphicsApi::GLES11
+        | crate::options::GraphicsApi::GLES20
+        | crate::options::GraphicsApi::GLES30
+        | crate::options::GraphicsApi::Translator
+        | crate::options::GraphicsApi::TranslatorGLES30 => {
+            (A64GraphicsBackend::OpenGLESCompatibility, "graphics option explicitly selects OpenGL ES compatibility")
+        }
+        crate::options::GraphicsApi::Metal => {
+            (A64GraphicsBackend::MetalCompatibility, "graphics option explicitly selects Metal compatibility")
+        }
+        crate::options::GraphicsApi::Default => {
+            let uses_gles = executable.dynamic_libraries.iter().any(|library| library.contains("OpenGLES"))
+                || executable.bindings.iter().any(|binding| {
+                    let symbol = binding.symbol.trim_start_matches('_');
+                    symbol.starts_with("gl") || symbol.starts_with("EAGL")
+                });
+            let uses_metal = executable.dynamic_libraries.iter().any(|library| library.contains("Metal"))
+                || executable.bindings.iter().any(|binding| {
+                    let symbol = binding.symbol.trim_start_matches('_');
+                    symbol.starts_with("MTL") || symbol == "MTLCreateSystemDefaultDevice"
+                });
+            if uses_gles {
+                if uses_metal {
+                    (A64GraphicsBackend::OpenGLESCompatibility, "application uses OpenGL ES and Metal; native Metal is incomplete, so OpenGL ES compatibility is selected")
+                } else {
+                    (A64GraphicsBackend::OpenGLESCompatibility, "application imports OpenGL ES; OpenGL ES compatibility is selected automatically")
+                }
+            } else if uses_metal {
+                (A64GraphicsBackend::MetalCompatibility, "application imports Metal; Metal compatibility is selected")
+            } else {
+                (A64GraphicsBackend::OpenGLESCompatibility, "application graphics API is not declared; OpenGL ES compatibility is the safe ARM64 fallback")
+            }
+        }
+    }
+}
+
 pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> Result<(), String> {
     echo!(
         "ARM64 launch configuration: device={:?}, orientation={:?}, fullscreen={}, screen={:?}, scale={:.2}, iOS={:?}",
@@ -463,17 +502,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             device_family
         ));
     }
-    let graphics_backend = match options.graphics_api {
-        crate::options::GraphicsApi::GLES10
-        | crate::options::GraphicsApi::GLES11
-        | crate::options::GraphicsApi::GLES20
-        | crate::options::GraphicsApi::GLES30
-        | crate::options::GraphicsApi::Translator
-        | crate::options::GraphicsApi::TranslatorGLES30 => A64GraphicsBackend::OpenGLESCompatibility,
-        crate::options::GraphicsApi::Default | crate::options::GraphicsApi::Metal => {
-            A64GraphicsBackend::MetalCompatibility
-        }
-    };
+    let (graphics_backend, graphics_reason) = detect_graphics_backend(&executable, options.graphics_api);
     let orientation = if options.initial_orientation == crate::window::DeviceOrientation::Portrait
         && !bundle.supported_interface_orientations().iter().any(|orientation| *orientation == "UIInterfaceOrientationPortrait")
     {
@@ -502,10 +531,20 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
         window_options.device_family = Some(device_family);
         window_options.host_screen_size = Some(device_family.portrait_size());
         window_options.initial_orientation = orientation;
-        if graphics_backend == A64GraphicsBackend::MetalCompatibility {
-            window_options.graphics_api = crate::options::GraphicsApi::GLES20;
-            window_options.prefer_gles2_context = true;
-            log!("ARM64 Metal compatibility: using a host GLES2 display surface for the Metal presenter");
+        match graphics_backend {
+            A64GraphicsBackend::OpenGLESCompatibility => {
+                window_options.graphics_api = crate::options::GraphicsApi::Translator;
+                window_options.prefer_gles2_context = true;
+                log!("ARM64 automatic graphics fallback: using the existing GLES1→GLES2 translator; reason={graphics_reason}");
+            }
+            A64GraphicsBackend::MetalCompatibility => {
+                window_options.graphics_api = crate::options::GraphicsApi::GLES20;
+                window_options.prefer_gles2_context = true;
+                log!("ARM64 Metal compatibility: using a host GLES2 display surface for the Metal presenter; reason={graphics_reason}");
+            }
+            A64GraphicsBackend::SoftwareCompatibility => {
+                log!("ARM64 software compatibility backend selected; reason={graphics_reason}");
+            }
         }
         Some(Box::new(crate::window::Window::new(
             "RadekHLE ARM64",
@@ -520,8 +559,9 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
         device_family.machine_name()
     );
     echo!(
-        "ARM64 graphics backend selected: {} (64-bit apps use native Metal compatibility routing)",
-        graphics_backend.label()
+        "ARM64 graphics backend selected: {} (automatic selection; {})",
+        graphics_backend.label(),
+        graphics_reason
     );
     log_dbg!(
         "ARM64 compatibility profile: iOS {}.{}.{}; pointer size=8; stack alignment=16; bindings={}",
