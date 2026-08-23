@@ -964,7 +964,9 @@ mod tests {
         context.regs[10] = 16;
         assert_eq!(A64Interpreter::new().run_or_step(&mut memory, &mut context, None), -1);
         assert_eq!(context.regs[9], 15);
-    }    #[test]
+    }
+
+    #[test]
     fn smulh_writes_signed_high_product() {
         let mut memory = Mem64::new();
         memory.map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute()).unwrap();
@@ -976,8 +978,6 @@ mod tests {
         assert_eq!(A64Interpreter::new().run_or_step(&mut memory, &mut context, None), -1);
         assert_eq!(context.regs[9], u64::MAX);
     }
-
-
 
     #[test]
     fn rejects_execute_and_write_access_to_read_only_code() {
