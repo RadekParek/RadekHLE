@@ -51,6 +51,18 @@ fn decode_instruction(instruction: u32, pc: u64) -> String {
         format!("bl {:#x}", branch_target(instruction, pc).unwrap_or(0))
     } else if instruction & 0x7e00_0000 == 0x3400_0000 {
         format!("cbz/cbnz {:#x}", branch_target(instruction, pc).unwrap_or(0))
+    } else if (instruction & 0x1fe0_0400 == 0x1a80_0000 || instruction & 0x1fe0_0400 == 0x5a80_0000)
+        && instruction & 0x0000_0c00 != 0x0000_0800
+    {
+        let mnemonic = if instruction & 0x4000_0000 != 0 {
+            if instruction & 0x0000_0400 != 0 { "csneg" } else { "csinv" }
+        } else if instruction & 0x0000_0400 != 0 {
+            "csinc"
+        } else {
+            "csel"
+        };
+        let condition = instruction & 0xf;
+        format!("{} cond={:#x} rn={} rm={} rd={}", mnemonic, condition, (instruction >> 5) & 31, (instruction >> 16) & 31, instruction & 31)
     } else if instruction & 0xffff_fc1f == 0xd61f_0000 {
         "br/blr".to_string()
     } else {

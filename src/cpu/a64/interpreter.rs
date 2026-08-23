@@ -185,7 +185,9 @@ impl A64Interpreter {
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
-        if instruction & 0x1fe0_0c00 == 0x1a80_0000 {
+        if (instruction & 0x1fe0_0400 == 0x1a80_0000 || instruction & 0x1fe0_0400 == 0x5a80_0000)
+            && instruction & 0x0000_0c00 != 0x0000_0800
+        {
             self.execute_conditional_select(context, instruction)?;
             context.pc = pc.wrapping_add(4);
             return Ok(None);
@@ -358,13 +360,19 @@ impl A64Interpreter {
 
     fn execute_conditional_select(&self, context: &mut touchHLE_DynarmicA64Context, instruction: u32) -> Result<(), InterpreterError> {
         let sf = instruction >> 31 != 0;
-        let condition = instruction & 0xf;
+        let condition = (instruction >> 12) & 0xf;
+        let condition_true = condition_holds(context, condition);
         let first = read_reg(context, ((instruction >> 5) & 31) as usize, sf);
         let second = read_reg(context, ((instruction >> 16) & 31) as usize, sf);
-        let mut value = if condition_holds(context, condition) { first } else { second };
-        if instruction & 0x0000_0400 != 0 { value = value.wrapping_add(1); }
-        if instruction & 0x0000_0800 != 0 { value = !value; }
-        if instruction & 0x0000_1000 != 0 { value = value.wrapping_neg(); }
+        let value = if condition_true {
+            first
+        } else if instruction & 0x4000_0000 != 0 {
+            if instruction & 0x0000_0400 != 0 { (!second).wrapping_add(1) } else { !second }
+        } else if instruction & 0x0000_0400 != 0 {
+            second.wrapping_add(1)
+        } else {
+            second
+        };
         set_reg(context, (instruction & 31) as usize, value, sf);
         Ok(())
     }
@@ -549,6 +557,42 @@ impl A64Interpreter {
         if mode == 1 { write_sp_or_reg(context, base_reg, base.wrapping_add_signed(offset), true); }
         if mode == 3 { write_sp_or_reg(context, base_reg, address, true); }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod conditional_select_tests {
+    use super::A64Interpreter;
+    use crate::mem64::{Mem64, Permissions};
+    use touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context;
+
+    const CODE: u64 = 0x1_0000_0000;
+
+    fn run(instruction: u32, pstate: u32, first: u64, second: u64) -> u64 {
+        let mut memory = Mem64::new();
+        memory.map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute()).unwrap();
+        memory.load_bytes(CODE, &instruction.to_le_bytes()).unwrap();
+        let mut context = touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context { pc: CODE, pstate, ..Default::default() };
+        context.regs[1] = first;
+        context.regs[2] = second;
+        let mut interpreter = A64Interpreter::new();
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(context.pc, CODE + 4);
+        context.regs[0]
+    }
+
+    #[test]
+    fn cset_ne_uses_inverted_condition_and_writes_zero_register() {
+        assert_eq!(run(0x1a9f07e8, 0, 0, 0), 1);
+        assert_eq!(run(0x1a9f07e8, super::NZCV_Z, 0, 0), 0);
+    }
+
+    #[test]
+    fn conditional_select_variants_have_distinct_false_operands() {
+        assert_eq!(run(0x1a820020, 0, 0x11, 0x22), 0x22);
+        assert_eq!(run(0x1a820420, 0, 0x11, 0x22), 0x23);
+        assert_eq!(run(0x5a820020, 0, 0x11, 0x22), !0x22u64 as u32 as u64);
+        assert_eq!(run(0x5a820420, 0, 0x11, 0x22), (!0x22u32).wrapping_add(1) as u64);
     }
 }
 

@@ -1281,7 +1281,7 @@ fn make_icon_grid(
 ) -> IconGridStuff {
     let ui_scale = picker_ui_scale(app_frame.size);
     let short_side = app_frame.size.width.min(app_frame.size.height);
-    let icon_size_value = (56.0 * ui_scale).min(short_side * 0.22).max(48.0);
+    let icon_size_value = (60.0 * ui_scale).min(short_side * 0.23).max(50.0);
     let icon_size = CGSize {
         width: icon_size_value,
         height: icon_size_value,
