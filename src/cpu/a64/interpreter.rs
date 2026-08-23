@@ -160,6 +160,11 @@ impl A64Interpreter {
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
+        if instruction & 0x1f80_0000 == 0x1300_0000 {
+            self.execute_bitfield(context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
         if instruction & 0x1f80_0000 == 0x1200_0000 {
             self.execute_logical_immediate(context, instruction)?;
             context.pc = pc.wrapping_add(4);
@@ -240,6 +245,52 @@ impl A64Interpreter {
             return Ok(None);
         }
         Err(InterpreterError::Undefined)
+    }
+
+    fn execute_bitfield(&self, context: &mut touchHLE_DynarmicA64Context, instruction: u32) -> Result<(), InterpreterError> {
+        let sf = instruction >> 31 != 0;
+        let n = ((instruction >> 22) & 1) as u32;
+        let immr = ((instruction >> 16) & 0x3f) as u32;
+        let imms = ((instruction >> 10) & 0x3f) as u32;
+        if (sf && n == 0) || (!sf && (n != 0 || immr >= 32 || imms >= 32)) {
+            return Err(InterpreterError::Undefined);
+        }
+        let combined = (n << 6) | ((!imms) & 0x3f);
+        let len = 31 - combined.leading_zeros();
+        if len < 1 {
+            return Err(InterpreterError::Undefined);
+        }
+        let levels = (1u32 << len) - 1;
+        let s = imms & levels;
+        let r = immr & levels;
+        let d = s.wrapping_sub(r) & levels;
+        let element_size = 1u32 << len;
+        let width = if sf { 64 } else { 32 };
+        let width_mask = if sf { u64::MAX } else { u32::MAX as u64 };
+        let w_element = if s + 1 == 64 { u64::MAX } else { (1u64 << (s + 1)) - 1 };
+        let t_element = if d + 1 == 64 { u64::MAX } else { (1u64 << (d + 1)) - 1 };
+        let w_mask = rotate_right_width(replicate_element(w_element, element_size, width), r, width);
+        let t_mask = replicate_element(t_element, element_size, width);
+        let rn = ((instruction >> 5) & 31) as usize;
+        let rd = (instruction & 31) as usize;
+        let source = read_reg(context, rn, sf);
+        let rotated = rotate_right_width(source, r, width);
+        let value = match (instruction >> 29) & 3 {
+            0 => {
+                let bottom = rotated & w_mask & t_mask;
+                let top = if source & (1u64 << s) != 0 { !t_mask } else { 0 };
+                (top | bottom) & width_mask
+            }
+            1 => {
+                let destination = read_reg(context, rd, sf);
+                let bottom = (destination & !w_mask) | (rotated & w_mask);
+                ((destination & !t_mask) | (bottom & t_mask)) & width_mask
+            }
+            2 => rotated & w_mask & t_mask,
+            _ => return Err(InterpreterError::Undefined),
+        };
+        set_reg(context, rd, value, sf);
+        Ok(())
     }
 
     fn execute_logical_immediate(&self, context: &mut touchHLE_DynarmicA64Context, instruction: u32) -> Result<(), InterpreterError> {
@@ -632,6 +683,24 @@ fn set_reg(context: &mut touchHLE_DynarmicA64Context, index: usize, value: u64, 
     set_x(context, index, if sf { value } else { value as u32 as u64 });
 }
 
+fn replicate_element(value: u64, element_size: u32, width: u32) -> u64 {
+    let mut result = 0;
+    let mut shift = 0;
+    while shift < width {
+        result |= value << shift;
+        shift += element_size;
+    }
+    result
+}
+
+fn rotate_right_width(value: u64, amount: u32, width: u32) -> u64 {
+    if width == 32 {
+        u64::from((value as u32).rotate_right(amount))
+    } else {
+        value.rotate_right(amount)
+    }
+}
+
 fn read_sp_or_reg(context: &touchHLE_DynarmicA64Context, index: usize, sf: bool) -> u64 {
     if index == 31 { if sf { context.sp } else { context.sp as u32 as u64 } } else { read_reg(context, index, sf) }
 }
@@ -729,6 +798,45 @@ fn is_control_flow(instruction: u32, pc: u64, next_pc: u64) -> bool {
         || instruction & 0x7e00_0000 == 0x3600_0000
 }
 
+
+#[cfg(test)]
+mod bitfield_tests {
+    use super::A64Interpreter;
+    use crate::mem64::{Mem64, Permissions};
+
+    const CODE: u64 = 0x2_0000_0000;
+
+    fn run(instruction: u32, value: u64) -> (u64, u32) {
+        let mut memory = Mem64::new();
+        memory.map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute()).unwrap();
+        memory.load_bytes(CODE, &instruction.to_le_bytes()).unwrap();
+        let mut context = touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context {
+            pc: CODE,
+            pstate: super::NZCV_N | super::NZCV_C | super::NZCV_V,
+            ..Default::default()
+        };
+        context.regs[8] = value;
+        let mut interpreter = A64Interpreter::new();
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(context.pc, CODE + 4);
+        (context.regs[8], context.pstate)
+    }
+
+    #[test]
+    fn ubfm_exact_minecraft_encoding_is_lsr_w8_by_three() {
+        let unchanged_flags = super::NZCV_N | super::NZCV_C | super::NZCV_V;
+        assert_eq!(run(0x53037d08, 0xf000_0000), (0x1e00_0000, unchanged_flags));
+        assert_eq!(run(0x53037d08, 0), (0, unchanged_flags));
+        assert_eq!(run(0x53037d08, u32::MAX as u64), (0x1fff_ffff, unchanged_flags));
+        assert_eq!(run(0x53037d08, 0xffff_ffff_ffff_ffff), (0x1fff_ffff, unchanged_flags));
+    }
+
+    #[test]
+    fn bitfield_writes_zero_extend_without_modifying_flags() {
+        let unchanged_flags = super::NZCV_N | super::NZCV_C | super::NZCV_V;
+        assert_eq!(run(0x53007c08, 0xffff_ffff_0000_0001), (0, unchanged_flags));
+    }
+}
 
 #[cfg(test)]
 mod tests {
