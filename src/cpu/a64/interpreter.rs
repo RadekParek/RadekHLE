@@ -199,6 +199,20 @@ impl A64Interpreter {
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
+        if instruction & 0x1fe0_fc00 == 0x1b40_7c00 {
+            let left = read_reg(context, ((instruction >> 5) & 31) as usize, true) as i64 as i128;
+            let right = read_reg(context, ((instruction >> 16) & 31) as usize, true) as i64 as i128;
+            set_reg(context, (instruction & 31) as usize, ((left * right) >> 64) as u64, true);
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
+        if instruction & 0x1fe0_fc00 == 0x1bc0_7c00 {
+            let left = read_reg(context, ((instruction >> 5) & 31) as usize, true) as u128;
+            let right = read_reg(context, ((instruction >> 16) & 31) as usize, true) as u128;
+            set_reg(context, (instruction & 31) as usize, ((left * right) >> 64) as u64, true);
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
         if instruction & 0x1f00_0000 == 0x1b00_0000 {
             self.execute_multiply(context, instruction)?;
             context.pc = pc.wrapping_add(4);
@@ -938,6 +952,32 @@ mod tests {
         assert_eq!(context.regs[0], 43);
         assert_eq!(context.sp, STACK);
     }
+
+    #[test]
+    fn umulh_matches_aarch64_high_product() {
+        let mut memory = Mem64::new();
+        memory.map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute()).unwrap();
+        let instruction = 0x9bca7d29u32;
+        memory.load_bytes(CODE, &instruction.to_le_bytes()).unwrap();
+        let mut context = touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context { pc: CODE, ..Default::default() };
+        context.regs[9] = u64::MAX;
+        context.regs[10] = 16;
+        assert_eq!(A64Interpreter::new().run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(context.regs[9], 15);
+    }    #[test]
+    fn smulh_writes_signed_high_product() {
+        let mut memory = Mem64::new();
+        memory.map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute()).unwrap();
+        let instruction = 0x9b407d09u32;
+        memory.load_bytes(CODE, &instruction.to_le_bytes()).unwrap();
+        let mut context = touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context { pc: CODE, ..Default::default() };
+        context.regs[8] = u64::MAX;
+        context.regs[0] = 2;
+        assert_eq!(A64Interpreter::new().run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(context.regs[9], u64::MAX);
+    }
+
+
 
     #[test]
     fn rejects_execute_and_write_access_to_read_only_code() {
