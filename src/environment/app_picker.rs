@@ -2373,7 +2373,6 @@ const GRAPHICS_API_ENTRIES: &[(&str, crate::options::GraphicsApi)] = &[
         "OpenGL ES 1.1 → OpenGL ES 3.0 translator",
         crate::options::GraphicsApi::TranslatorGLES30,
     ),
-    ("Metal compatibility", crate::options::GraphicsApi::Metal),
 ];
 
 fn update_graphics_api_dropdown(env: &mut Environment, button: id, items: &[id], value: crate::options::GraphicsApi) {
