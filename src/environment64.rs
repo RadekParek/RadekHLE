@@ -63,7 +63,9 @@ fn decode_instruction(instruction: u32, pc: u64) -> String {
         format!("bl {:#x}", branch_target(instruction, pc).unwrap_or(0))
     } else if instruction & 0x7e00_0000 == 0x3400_0000 {
         format!("cbz/cbnz {:#x}", branch_target(instruction, pc).unwrap_or(0))
-    } else if (instruction & 0x1fe0_0000 == 0x1a80_0000 || instruction & 0x1fe0_0000 == 0x5a80_0000)
+    } else if (instruction & 0x1fe0_0000 == 0x1a80_0000
+        || instruction & 0x1fe0_0000 == 0x5a80_0000
+        || instruction & 0x1fe0_0000 == 0x1ac0_0000)
         && instruction & 0x0000_0810 == 0
     {
         let mnemonic = if instruction & 0x4000_0000 != 0 {
