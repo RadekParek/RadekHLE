@@ -190,7 +190,9 @@ impl A64Interpreter {
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
-        if (instruction & 0x1fe0_0000 == 0x1a80_0000 || instruction & 0x1fe0_0000 == 0x5a80_0000)
+        if (instruction & 0x1fe0_0000 == 0x1a80_0000
+            || instruction & 0x1fe0_0000 == 0x5a80_0000
+            || instruction & 0x1fe0_0000 == 0x1ac0_0000)
             && instruction & 0x0000_0810 == 0
         {
             self.execute_conditional_select(context, instruction)?;
@@ -943,5 +945,24 @@ mod tests {
         memory.map_zeroed_with_permissions(0x1000, 0x1000, Permissions::READ).unwrap();
         assert_eq!(A64Interpreter::new().run_or_step(&mut memory, &mut touchHLE_DynarmicA64Context { pc: 0x1000, ..Default::default() }, None), -2);
         assert!(memory.write_u32(0x1000, 0).is_err());
+    }
+
+    #[test]
+    fn csinc_w_form_decodes_the_minecraft_blocker() {
+        let mut memory = Mem64::new();
+        memory.map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute()).unwrap();
+        memory.load_bytes(CODE, &0x1ac92589u32.to_le_bytes()).unwrap();
+        let mut context = touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context {
+            pc: CODE,
+            pstate: super::NZCV_Z,
+            ..Default::default()
+        };
+        context.regs[12] = 41;
+        context.regs[9] = 1;
+        let mut interpreter = A64Interpreter::new();
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(context.regs[9], 2);
+        assert_eq!(context.pc, CODE + 4);
+        assert_eq!(context.pstate, super::NZCV_Z);
     }
 }
