@@ -328,7 +328,7 @@ impl Environment {
 
                     // ДОБАВЛЯЕМ СЮДА ПРИВЯЗКУ К ОБЫЧНОМУ ПОРТРЕТУ:
                     "UIInterfaceOrientationPortraitUpsideDown" => {
-                        window::DeviceOrientation::Portrait
+                        window::DeviceOrientation::PortraitUpsideDown
                     }
 
                     other => {

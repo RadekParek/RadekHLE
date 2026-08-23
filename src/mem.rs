@@ -484,8 +484,9 @@ impl Mem {
     #[cold]
     fn null_check_fail(at: VAddr, size: GuestUSize, is_write: bool, caller: &str) {
         use std::collections::HashSet;
-        use std::sync::Mutex;
+        use std::sync::{Mutex, Once};
         static SEEN: Mutex<Option<HashSet<(VAddr, bool)>>> = Mutex::new(None);
+        static SUPPRESSION_LOGGED: Once = Once::new();
         const MAX_UNIQUE_LOGS: usize = 64;
 
         let mut guard = SEEN.lock().unwrap();
@@ -495,14 +496,12 @@ impl Mem {
             return;
         }
         if set.len() >= MAX_UNIQUE_LOGS {
-            if set.len() == MAX_UNIQUE_LOGS {
-                // Insert a sentinel to emit the notice only once.
-                set.insert((0xFFFF_FFFE, false));
+            SUPPRESSION_LOGGED.call_once(|| {
                 log!(
                     "touchHLE::mem: further NULL-PAGE warnings silenced after {} unique sites",
                     MAX_UNIQUE_LOGS
                 );
-            }
+            });
             return;
         }
         set.insert(key);

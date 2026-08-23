@@ -12,6 +12,7 @@ use crate::matrix::Matrix;
 use std::time::{Duration, Instant};
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 pub struct FpsCounter {
@@ -26,8 +27,18 @@ static GLYPH_TEXTURES: OnceLock<Mutex<Option<Vec<u32>>>> = OnceLock::new();
 // Runtime-controlled flag to enable the on-screen FPS overlay without requiring
 // an environment variable. Use set_onscreen_fps_enabled(true/false) to control it
 // from other parts of the runtime (e.g., the app picker or window input).
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 static ONSCREEN_FPS_ENABLED: OnceLock<AtomicBool> = OnceLock::new();
+static HUD_METRICS: OnceLock<Mutex<HudMetrics>> = OnceLock::new();
+static HUD_FPS_TENTHS: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Default)]
+struct HudMetrics {
+    cpu_percent: Option<f32>,
+    gpu_percent: Option<f32>,
+    ram_mb: Option<u64>,
+    architecture: String,
+}
 
 impl FpsCounter {
     pub fn start() -> Self {
@@ -59,12 +70,8 @@ impl FpsCounter {
                 .map(|b| b.load(Ordering::SeqCst))
                 .unwrap_or(false);
             if onscreen_env || onscreen_runtime {
-                let text = format!("FPS: {:.1}", fps);
-                if let Some(mutex) = LAST_FPS_TEXT.get() {
-                    if let Ok(mut s) = mutex.lock() {
-                        *s = text;
-                    }
-                }
+                HUD_FPS_TENTHS.store((fps * 10.0).round() as u64, Ordering::Relaxed);
+                refresh_hud_metrics();
             }
         }
     }
@@ -73,6 +80,100 @@ impl FpsCounter {
 /// Runtime API: enable/disable the on-screen FPS overlay at runtime.
 pub fn set_onscreen_fps_enabled(enabled: bool) {
     ONSCREEN_FPS_ENABLED.get_or_init(|| AtomicBool::new(false)).store(enabled, Ordering::SeqCst);
+}
+
+pub fn set_onscreen_hud_architecture(architecture: &str) {
+    let mutex = HUD_METRICS.get_or_init(|| Mutex::new(HudMetrics::default()));
+    if let Ok(mut metrics) = mutex.lock() {
+        metrics.architecture = architecture.to_owned();
+    }
+    update_hud_text();
+}
+
+fn refresh_hud_metrics() {
+    let mutex = HUD_METRICS.get_or_init(|| Mutex::new(HudMetrics::default()));
+    if let Ok(mut metrics) = mutex.lock() {
+        metrics.cpu_percent = process_cpu_percent();
+        metrics.gpu_percent = gpu_percent();
+        metrics.ram_mb = resident_memory_mb();
+    }
+    update_hud_text();
+}
+
+fn update_hud_text() {
+    let fps = HUD_FPS_TENTHS.load(Ordering::Relaxed) as f32 / 10.0;
+    let metrics = HUD_METRICS
+        .get_or_init(|| Mutex::new(HudMetrics::default()))
+        .lock()
+        .ok()
+        .map(|metrics| metrics.clone())
+        .unwrap_or_default();
+    let cpu = metrics.cpu_percent.map_or_else(|| "--".to_owned(), |value| format!("{value:.0}"));
+    let gpu = metrics.gpu_percent.map_or_else(|| "--".to_owned(), |value| format!("{value:.0}"));
+    let ram = metrics.ram_mb.map_or_else(|| "--".to_owned(), |value| value.to_string());
+    let architecture = if metrics.architecture.is_empty() {
+        "ARM32/ARM64"
+    } else {
+        metrics.architecture.as_str()
+    };
+    if let Some(mutex) = LAST_FPS_TEXT.get() {
+        if let Ok(mut value) = mutex.lock() {
+            *value = format!("FPS: {fps:.1} CPU: {cpu}% GPU: {gpu}% RAM: {ram}MB {architecture}");
+        }
+    }
+}
+
+fn process_cpu_percent() -> Option<f32> {
+    static SAMPLE: OnceLock<Mutex<Option<(u64, u64)>>> = OnceLock::new();
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let fields = stat.rsplit_once(") ")?.1.split_whitespace().collect::<Vec<_>>();
+    let process_ticks = fields.get(11)?.parse::<u64>().ok()?.checked_add(fields.get(12)?.parse::<u64>().ok()?)?;
+    let total_ticks = std::fs::read_to_string("/proc/stat")
+        .ok()?
+        .lines()
+        .find(|line| line.starts_with("cpu "))?
+        .split_whitespace()
+        .skip(1)
+        .filter_map(|value| value.parse::<u64>().ok())
+        .sum::<u64>();
+    let mutex = SAMPLE.get_or_init(|| Mutex::new(None));
+    let mut previous = mutex.lock().ok()?;
+    let result = previous.take().and_then(|(old_process, old_total)| {
+        let process_delta = process_ticks.saturating_sub(old_process);
+        let total_delta = total_ticks.saturating_sub(old_total);
+        (total_delta > 0).then(|| {
+            let cores = std::thread::available_parallelism().map_or(1, |value| value.get()) as f32;
+            (process_delta as f32 / total_delta as f32 * cores * 100.0).clamp(0.0, 100.0 * cores as f32)
+        })
+    });
+    *previous = Some((process_ticks, total_ticks));
+    result
+}
+
+fn resident_memory_mb() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kilobytes = status
+        .lines()
+        .find(|line| line.starts_with("VmRSS:"))?
+        .split_whitespace()
+        .nth(1)?
+        .parse::<u64>()
+        .ok()?;
+    Some((kilobytes + 1023) / 1024)
+}
+
+fn gpu_percent() -> Option<f32> {
+    const PATHS: &[&str] = &[
+        "/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage",
+        "/sys/class/kgsl/kgsl-3d0/gpu_busy",
+        "/sys/class/devfreq/3d00000.gpu/load",
+        "/sys/class/devfreq/gpu/load",
+    ];
+    PATHS.iter().find_map(|path| {
+        let value = std::fs::read_to_string(path).ok()?;
+        let value = value.trim().trim_end_matches('%').split('@').next()?.trim().parse::<f32>().ok()?;
+        Some(value.clamp(0.0, 100.0))
+    })
 }
 
 pub fn centered_texture_rotation(rotation_matrix: Matrix<2>) -> Matrix<4> {
@@ -207,7 +308,7 @@ const GLYPH_W: u32 = 8;
 const GLYPH_H: u32 = 8;
 
 // Glyphs available in this tiny font: "0123456789:.FPS"
-const GLYPH_CHARS: &str = "0123456789:.FPS";
+const GLYPH_CHARS: &str = "0123456789:.FPSCUGRAMB%";
 // Each glyph is 8 bytes, each bit is a pixel (MSB left).
 const GLYPH_BITMAPS: &[[u8; 8]] = &[
     // 0
@@ -240,6 +341,22 @@ const GLYPH_BITMAPS: &[[u8; 8]] = &[
     [0x7C,0x66,0x66,0x7C,0x60,0x60,0x60,0x00],
     // S
     [0x3C,0x66,0x30,0x1C,0x06,0x66,0x3C,0x00],
+    // C
+    [0x3C,0x66,0x60,0x60,0x60,0x66,0x3C,0x00],
+    // U
+    [0x66,0x66,0x66,0x66,0x66,0x66,0x3C,0x00],
+    // G
+    [0x3C,0x66,0x60,0x6E,0x66,0x66,0x3E,0x00],
+    // R
+    [0x7C,0x66,0x66,0x7C,0x6C,0x66,0x66,0x00],
+    // A
+    [0x18,0x3C,0x66,0x66,0x7E,0x66,0x66,0x00],
+    // M
+    [0x63,0x77,0x7F,0x6B,0x63,0x63,0x63,0x00],
+    // B
+    [0x7C,0x66,0x66,0x7C,0x66,0x66,0x7C,0x00],
+    // %
+    [0x62,0x64,0x08,0x10,0x26,0x46,0x00,0x00],
 ];
 
 fn glyph_index(ch: char) -> Option<usize> {
@@ -311,7 +428,7 @@ unsafe fn draw_onscreen_text(gles: &mut dyn GLES, viewport: (u32, u32, u32, u32)
     use gles11::types::*;
     let (vx, vy, vw, vh) = viewport;
     // Pixel size per glyph
-    let scale = 2u32; // 8x8 * 2 = 16px high font
+    let scale = if text.len() > 32 { 1 } else { 2 };
     let gw = (GLYPH_W * scale) as f32;
     let gh = (GLYPH_H * scale) as f32;
 

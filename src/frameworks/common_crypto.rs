@@ -762,7 +762,7 @@ fn CCCrypt(
     data_out_available: GuestUSize,
     data_out_moved: MutPtr<GuestUSize>,
 ) -> i32 {
-    log!(
+    log_once_fmt!(
         "CCCrypt(op={}, alg={}, options={:#x}, keyLen={}, dataLen={})",
         op,
         alg,

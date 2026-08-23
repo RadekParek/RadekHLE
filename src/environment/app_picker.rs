@@ -501,9 +501,9 @@ fn show_app_picker_gui(
         })
         .unwrap_or((320, 568));
     options.host_screen_size = Some(picker_canvas_size);
-    options.scale_hack = 2.0;
+    options.scale_hack = 4.0;
     log!(
-        "App picker: using fixed {}x{} logical canvas at 2x internal resolution, preserving host aspect ratio.",
+        "App picker: using fixed {}x{} logical canvas at 4x internal resolution, preserving host aspect ratio.",
         picker_canvas_size.0,
         picker_canvas_size.1
     );
@@ -2133,7 +2133,7 @@ fn setup_quick_options(
         RowKind::Switch("force64Bit:", false),
         RowKind::Label("Frame pacing"),
         RowKind::Switch("framePacing:", true),
-        RowKind::Label("Show FPS"),
+        RowKind::Label("Show HUD"),
         RowKind::Switch("showFPS:", true),
         RowKind::Label("Frame generation (experimental)"),
         RowKind::Buttons(&[
