@@ -454,6 +454,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     );
     let executable_path = bundle.executable_path();
     let executable = MachO64::load_from_file(&executable_path, &fs, 0)?;
+    let (graphics_backend, graphics_reason) = detect_graphics_backend(&executable, options.graphics_api);
     let entry = executable.entry_point_pc.ok_or("ARM64 Mach-O has no entry point")?;
     let image_end = executable.last_segment_end;
     echo!("ARM64 image loaded: entry {:#x}, image range ends at {:#x}", entry, image_end);
@@ -502,7 +503,6 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             device_family
         ));
     }
-    let (graphics_backend, graphics_reason) = detect_graphics_backend(&executable, options.graphics_api);
     let orientation = if options.initial_orientation == crate::window::DeviceOrientation::Portrait
         && !bundle.supported_interface_orientations().iter().any(|orientation| *orientation == "UIInterfaceOrientationPortrait")
     {
