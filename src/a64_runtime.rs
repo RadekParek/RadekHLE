@@ -1787,17 +1787,40 @@ pub fn dispatch(
             Ok(true)
         }
         "free" | "malloc_zone_free" | "_ZdlPv" | "_ZdaPv" | "__ZdlPv" | "__ZdaPv" => {
-            if context.regs[0] != 0 {
-                mem.free(context.regs[0]);
+            let pointer = A64Abi::arg(context, 0);
+            let allocation_size = mem.allocation_size(pointer);
+            let released = pointer == 0 || mem.free(pointer);
+            if state.host_dispatches <= 16 || state.host_dispatches.is_power_of_two() {
+                log_dbg!(
+                    "ARM64 deallocation: symbol={} pointer={pointer:#x} allocation_size={allocation_size:?} released={} pc={:#x} lr={:#x} sp={:#x}",
+                    symbol, released, context.pc, context.regs[30], context.sp,
+                );
             }
             return_value(context, 0);
             Ok(true)
         }
         "_Znwm" | "_Znam" | "__Znwm" | "__Znam"
         | "Znwm" | "Znam" | "ZnwmRKSt9nothrow_t" | "__ZnwmRKSt9nothrow_t" => {
-            let address = mem.alloc_zeroed(context.regs[0]).map_err(str::to_owned)?;
-            return_value(context, address);
-            Ok(true)
+            let size = A64Abi::arg(context, 0);
+            match mem.alloc_zeroed(size) {
+                Ok(address) => {
+                    if state.host_dispatches <= 16 || state.host_dispatches.is_power_of_two() {
+                        log_dbg!(
+                            "ARM64 allocation: symbol={} size={} size_hex={size:#x} size_signed={} result={address:#x} pc={:#x} lr={:#x} sp={:#x}",
+                            symbol, size, size as i64, context.pc, context.regs[30], context.sp,
+                        );
+                    }
+                    return_value(context, address);
+                    Ok(true)
+                }
+                Err(error) => {
+                    log_dbg!(
+                        "ARM64 allocation failed: symbol={} size={} size_hex={size:#x} size_signed={} reason={} pc={:#x} lr={:#x} sp={:#x}",
+                        symbol, size, size as i64, error, context.pc, context.regs[30], context.sp,
+                    );
+                    Err(error.to_owned())
+                }
+            }
         }
         "NSSearchPathForDirectoriesInDomains" => {
             let path = arm64_search_path(state, context.regs[0], context.regs[1]);

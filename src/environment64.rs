@@ -54,6 +54,15 @@ fn host_call_site(context: &touchHLE_DynarmicA64Context) -> u64 {
     context.regs[30].saturating_sub(4)
 }
 
+fn callback_event_context(context: &touchHLE_DynarmicA64Context) -> String {
+    format!(
+        "pc={:#x} lr={:#x} sp={:#x} fp={:#x} x0={:#x} x1={:#x} x2={:#x} x3={:#x} x4={:#x} x5={:#x} x6={:#x} x7={:#x}",
+        context.pc, context.regs[30], context.sp, context.regs[29], context.regs[0],
+        context.regs[1], context.regs[2], context.regs[3], context.regs[4], context.regs[5],
+        context.regs[6], context.regs[7],
+    )
+}
+
 fn decode_instruction(instruction: u32, pc: u64) -> String {
     if instruction == 0xd65f_03c0 {
         "ret".to_string()
@@ -617,6 +626,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     let mut host_dispatches_since_callback = 0_u64;
     let mut last_host_call: Option<(u64, u64)> = None;
     let mut repeated_host_call = 0_u64;
+    let mut guest_progress_since_host_call = true;
     let watchdog_ms = std::env::var("TOUCHHLE_ARM64_WATCHDOG_MS").ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or(2000);
     let mut no_progress_since = Instant::now();
     let mut no_progress_slices = 0_u64;
@@ -639,6 +649,9 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             ticks.as_mut(),
         );
         cpu.save_context(&mut context);
+        if result >= SVC_HOST_BASE as i32 && instruction_pc != context.pc {
+            guest_progress_since_host_call = true;
+        }
         runtime_state.render_diagnostics.last_guest_pc = context.pc;
         if runtime_state.render_diagnostics.callback_active && runtime_state.render_diagnostics.callback_entry_lr == 0 {
             runtime_state.render_diagnostics.callback_entry_lr = context.regs[30];
@@ -769,6 +782,12 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 let continuation_pc = host_call_continuation(&context);
                 let call_site = host_call_site(&context);
                 let host_call = host_call_identity(&context);
+                let callback_arguments = callback_event_context(&context);
+                if guest_progress_since_host_call {
+                    last_host_call = None;
+                    repeated_host_call = 0;
+                    guest_progress_since_host_call = false;
+                }
                 if last_host_call == Some(host_call) {
                     repeated_host_call += 1;
                 } else {
@@ -798,20 +817,14 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 }
                 if host_dispatches <= 16 || host_dispatches.is_power_of_two() {
                     log_dbg!(
-                        "ARM64 host binding #{}: {} host_stub_pc={:#x} guest_call_site={:#x} continuation_pc={:#x} sp={:#x} lr={:#x} x0={:#x} x1={:#x} x2={:#x} x3={:#x} x4={:#x} x5={:#x}",
+                        "ARM64 host binding #{}: {} host_stub_pc={:#x} guest_run_entry_pc={:#x} guest_call_site={:#x} continuation_pc={:#x} {}",
                         host_dispatches,
                         symbol,
                         context.pc,
+                        instruction_pc,
                         call_site,
                         continuation_pc,
-                        context.sp,
-                        context.regs[30],
-                        context.regs[0],
-                        context.regs[1],
-                        context.regs[2],
-                        context.regs[3],
-                        context.regs[4],
-                        context.regs[5],
+                        callback_event_context(&context),
                     );
                 }
                 verify_abi(&context, symbol);
@@ -836,6 +849,20 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                     );
                 }
                 verify_abi(&context, symbol);
+                if matches!(symbol, "malloc" | "calloc" | "valloc" | "posix_memalign" | "free" | "malloc_zone_free" | "_ZdlPv" | "_ZdaPv" | "__ZdlPv" | "__ZdaPv" | "_Znwm" | "_Znam" | "__Znwm" | "__Znam" | "Znwm" | "Znam" | "ZnwmRKSt9nothrow_t" | "__ZnwmRKSt9nothrow_t" | "memcpy" | "memmove" | "memcpy_chk" | "memmove_chk" | "memset" | "memset_chk")
+                    && (host_dispatches <= 16 || host_dispatches.is_power_of_two())
+                {
+                    log_dbg!(
+                        "ARM64 host callback return: symbol={} host_stub_pc={:#x} guest_run_entry_pc={:#x} guest_call_site={:#x} continuation_pc={:#x} result_x0={:#x} {}",
+                        symbol,
+                        context.pc,
+                        instruction_pc,
+                        call_site,
+                        continuation_pc,
+                        context.regs[0],
+                        callback_arguments,
+                    );
+                }
                 if runtime_state.take_present_request() {
                     log_dbg!(
                         "ARM64 compatibility frame {} submitted: commands={}, clear={:?}",
