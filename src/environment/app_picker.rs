@@ -73,10 +73,32 @@ fn enumerate_apps(apps_dir: &Path) -> Result<Vec<AppInfo>, std::io::Error> {
     let mut apps = Vec::new();
     let mut directories = vec![apps_dir.to_path_buf()];
     while let Some(directory) = directories.pop() {
-        for entry in std::fs::read_dir(directory)? {
-            let app_path = entry?.path();
+        let mut entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries.collect::<Result<Vec<_>, _>>().unwrap_or_else(|e| {
+                log!(
+                    "Warning: couldn't finish reading game directory {}: {}",
+                    directory.display(),
+                    e
+                );
+                Vec::new()
+            }),
+            Err(e) => {
+                log!(
+                    "Warning: couldn't read game directory {}: {}",
+                    directory.display(),
+                    e
+                );
+                continue;
+            }
+        };
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let app_path = entry.path();
             let extension = app_path.extension();
-            if extension == Some(OsStr::new("app")) || extension == Some(OsStr::new("ipa")) {
+            if extension
+                .map(|ext| ext.eq_ignore_ascii_case("app") || ext.eq_ignore_ascii_case("ipa"))
+                .unwrap_or(false)
+            {
                 let (bundle, fs) = match BundleData::open_any(&app_path).and_then(|bundle_data| {
                     Bundle::new_bundle_and_fs_from_host_path(bundle_data, /* read_only_mode: */ true)
                 }) {
