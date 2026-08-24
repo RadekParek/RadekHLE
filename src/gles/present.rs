@@ -428,7 +428,7 @@ unsafe fn draw_onscreen_text(gles: &mut dyn GLES, viewport: (u32, u32, u32, u32)
     use gles11::types::*;
     let (vx, vy, vw, vh) = viewport;
     // Pixel size per glyph
-    let scale = if text.len() > 32 { 1 } else { 2 };
+    let scale = 3;
     let gw = (GLYPH_W * scale) as f32;
     let gh = (GLYPH_H * scale) as f32;
 

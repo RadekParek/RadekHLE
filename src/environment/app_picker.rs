@@ -264,6 +264,7 @@ struct AppPickerDelegateHostObject {
     graphics_api_toggle: bool,
     graphics_api: Option<crate::options::GraphicsApi>,
     arm64_backend: Option<crate::options::Arm64Backend>,
+    metal_translator: Option<bool>,
 }
 impl HostObject for AppPickerDelegateHostObject {}
 
@@ -433,6 +434,10 @@ const CLASSES: ClassExports = objc_classes! {
     } else {
         crate::options::Arm64Backend::Interpreter
     });
+}
+- (())metalTranslator:(id)switch {
+    let switch_state: bool = msg![env; switch isOn];
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).metal_translator = Some(switch_state);
 }
 - (())graphicsApiToggle {
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).graphics_api_toggle = true;
@@ -670,7 +675,7 @@ fn app_picker_inner(
         let text = ns_string::from_rust_string(
             env,
             format!(
-                "RadekHLE 3.0 {}{}{}",
+                "RadekHLE 4.0 {}{}{}",
                 crate::branding(),
                 if crate::branding().is_empty() {
                     ""
@@ -771,6 +776,7 @@ fn app_picker_inner(
     let mut quick_options_ios_version: Option<(i32, i32, i32)> = None;
     let mut quick_options_graphics_api = crate::options::GraphicsApi::Default;
     let mut quick_options_arm64_backend = crate::options::Arm64Backend::Interpreter;
+    let mut quick_options_metal_translator = true;
 
     fn update_quick_option_buttons(env: &mut Environment, buttons: &[id], selected_idx: usize) {
         for (idx, &button) in buttons.iter().enumerate() {
@@ -1162,6 +1168,8 @@ fn app_picker_inner(
                 false => None,
                 true => Some(()),
             };
+        } else if let Some(enabled) = std::mem::take(&mut host_obj.metal_translator) {
+            quick_options_metal_translator = enabled;
         }
     };
 
@@ -1219,6 +1227,11 @@ fn app_picker_inner(
         option_args.push(format!("--graphics-api={value}"));
     }
     option_args.push(format!("--arm64-backend={}", quick_options_arm64_backend.label()));
+    option_args.push(if quick_options_metal_translator {
+        "--metal-translator"
+    } else {
+        "--disable-metal-translator"
+    }.to_string());
     option_args.push(if quick_options_angle_driver {
         "--angle-driver"
     } else {
@@ -2117,6 +2130,8 @@ fn setup_quick_options(
         RowKind::GraphicsApiDropdown,
         RowKind::Label("Dynarmic JIT"),
         RowKind::Switch("arm64Backend:", false),
+        RowKind::Label("Metal translator (ARM64)"),
+        RowKind::Switch("metalTranslator:", true),
         RowKind::Label("Game folder"),
         RowKind::Buttons(&[
             ("Open folder", "openFileManager"),

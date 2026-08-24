@@ -143,6 +143,7 @@ pub struct Options {
     pub force_32_bit: bool,
     pub force_64_bit: bool,
     pub arm64_backend: Arm64Backend,
+    pub metal_translator: bool,
     pub gdb_listen_addrs: Option<Vec<SocketAddr>>,
     pub preferred_languages: Option<Vec<String>>,
     pub headless: bool,
@@ -232,6 +233,7 @@ impl Default for Options {
             force_32_bit: false,
             force_64_bit: false,
             arm64_backend: Arm64Backend::Auto,
+            metal_translator: true,
             gdb_listen_addrs: None,
             preferred_languages: None,
             headless: false,
@@ -480,6 +482,10 @@ impl Options {
             self.force_64_bit = false;
         } else if let Some(value) = arg.strip_prefix("--arm64-backend=") {
             self.arm64_backend = Arm64Backend::parse(value)?;
+        } else if arg == "--metal-translator" {
+            self.metal_translator = true;
+        } else if arg == "--disable-metal-translator" {
+            self.metal_translator = false;
         } else if arg == "--prefer-gles2-context" {
             self.prefer_gles2_context = true;
         } else if arg == "--allow-network-access" {

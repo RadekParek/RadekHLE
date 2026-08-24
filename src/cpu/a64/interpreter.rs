@@ -326,7 +326,11 @@ impl A64Interpreter {
         let r = immr & levels;
         let ones = if s + 1 == 64 { u64::MAX } else { (1u64 << (s + 1)) - 1 };
         let element_mask = if element_size == 64 { u64::MAX } else { (1u64 << element_size) - 1 };
-        let rotated = ((ones >> r) | (ones << (element_size - r))) & element_mask;
+        let rotated = if r == 0 {
+            ones
+        } else {
+            ((ones >> r) | (ones << (element_size - r))) & element_mask
+        };
         let mut mask = 0u64;
         let mut shift = 0;
         while shift < width {

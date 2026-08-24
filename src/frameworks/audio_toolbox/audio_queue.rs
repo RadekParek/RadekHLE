@@ -1957,7 +1957,7 @@ pub fn AudioQueueNewInput(
     in_flags: u32,
     out_aq: MutPtr<AudioQueueRef>,
 ) -> OSStatus {
-    log!("TODO: AudioQueueNewInput(...) stubbed");
+    log!("AudioQueueNewInput: using deterministic silent microphone input");
 
     if in_flags != 0 {
         log!("Warning: AudioQueueNewInput ignoring unexpected flags {:#x}.", in_flags);
@@ -1991,7 +1991,7 @@ pub fn AudioQueueNewInput(
         underruns: 0,
         last_underrun_log: None,
         is_running_handler: false,
-        is_input: false,
+        is_input: true,
         input_delay: 0,
         hardware_codec_policy: codec_policy::DEFAULT,
         offline_render_format: None,

@@ -5,6 +5,8 @@ use crate::mem::{SafeRead, SafeWrite};
 pub type Guest64USize = u64;
 pub type Guest64Addr = u64;
 
+const MAX_GUEST_ALLOCATION: Guest64USize = 512 * 1024 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Permissions(u8);
 
@@ -216,6 +218,9 @@ impl Mem64 {
     }
 
     pub fn alloc_zeroed_with_permissions(&mut self, size: Guest64USize, permissions: Permissions) -> Result<Guest64Addr, &'static str> {
+        if size > MAX_GUEST_ALLOCATION {
+            return Err("64-bit allocation request exceeds the safety limit");
+        }
         let size = size.max(16).checked_add(15).ok_or("allocation size overflows")? & !15;
         let mut base = self.next_allocation.max(0x1_0000_0000);
         loop {

@@ -533,14 +533,28 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
         window_options.initial_orientation = orientation;
         match graphics_backend {
             A64GraphicsBackend::OpenGLESCompatibility => {
-                window_options.graphics_api = crate::options::GraphicsApi::Translator;
+                window_options.graphics_api = if options.metal_translator {
+                    crate::options::GraphicsApi::TranslatorGLES30
+                } else {
+                    crate::options::GraphicsApi::GLES20
+                };
                 window_options.prefer_gles2_context = true;
-                log!("ARM64 automatic graphics fallback: using the existing GLES1→GLES2 translator; reason={graphics_reason}");
+                log!(
+                    "ARM64 automatic graphics fallback: using {} for the guest GLES path; reason={graphics_reason}",
+                    if options.metal_translator { "the existing GLES1→GLES3 translator" } else { "a direct GLES2 compatibility context" },
+                );
             }
             A64GraphicsBackend::MetalCompatibility => {
-                window_options.graphics_api = crate::options::GraphicsApi::GLES20;
+                window_options.graphics_api = if options.metal_translator {
+                    crate::options::GraphicsApi::TranslatorGLES30
+                } else {
+                    crate::options::GraphicsApi::GLES20
+                };
                 window_options.prefer_gles2_context = true;
-                log!("ARM64 Metal compatibility: using a host GLES2 display surface for the Metal presenter; reason={graphics_reason}");
+                log!(
+                    "ARM64 Metal compatibility: guest Metal is routed to the host GLES presentation surface; {}; reason={graphics_reason}",
+                    if options.metal_translator { "the GLES1→GLES3 translator is enabled" } else { "the translator is disabled" },
+                );
             }
             A64GraphicsBackend::SoftwareCompatibility => {
                 log!("ARM64 software compatibility backend selected; reason={graphics_reason}");
@@ -854,6 +868,12 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 }
                 if symbol == "<unimplemented>" {
                     runtime_state.mark_unresolved_call(symbol, context.pc);
+                }
+                if symbol == "__Znam" || symbol == "_Znam" || symbol == "Znam" {
+                    log_once_fmt!(
+                        "ARM64 allocation call: symbol={} size={:#x} x0={:#x} x1={:#x} x2={:#x} x3={:#x} pc={:#x} lr={:#x} [repeated allocation calls suppressed]",
+                        symbol, context.regs[0], context.regs[0], context.regs[1], context.regs[2], context.regs[3], context.pc, context.regs[30],
+                    );
                 }
                 if host_dispatches <= 16 || host_dispatches.is_power_of_two() {
                     log_dbg!(

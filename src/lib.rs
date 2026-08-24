@@ -117,7 +117,7 @@ Special options:
 ";
 pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
     echo!(
-        "RadekHLE 3.0 {}{}{} git_sha={}",
+        "RadekHLE 4.0 {}{}{} git_sha={}",
         branding(),
         if branding().is_empty() { "" } else { " " },
         VERSION,
