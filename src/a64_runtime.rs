@@ -2227,6 +2227,45 @@ pub fn dispatch(
             return_value(context, 0);
             Ok(true)
         }
+        "gettimeofday" => {
+            if context.regs[0] != 0 {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_err(|_| "ARM64 system clock is before the Unix epoch")?;
+                mem.write_u64(context.regs[0], now.as_secs()).map_err(str::to_owned)?;
+                mem.write_u32(context.regs[0] + 8, now.subsec_micros()).map_err(str::to_owned)?;
+            }
+            if context.regs[1] != 0 {
+                mem.write_u32(context.regs[1], 0).map_err(str::to_owned)?;
+                mem.write_u32(context.regs[1] + 4, 0).map_err(str::to_owned)?;
+            }
+            return_value(context, 0);
+            Ok(true)
+        }
+        "pthread_condattr_init" | "pthread_mutexattr_init" => {
+            let output = context.regs[0];
+            if output != 0 {
+                mem.fill_bytes(output, 0, if symbol == "pthread_condattr_init" { 4 } else { 12 }).map_err(str::to_owned)?;
+            }
+            return_value(context, 0);
+            Ok(true)
+        }
+        "pthread_cond_init" => {
+            let output = context.regs[0];
+            if output != 0 {
+                mem.fill_bytes(output, 0, 28).map_err(str::to_owned)?;
+            }
+            return_value(context, 0);
+            Ok(true)
+        }
+        "pthread_mutex_init" => {
+            let output = context.regs[0];
+            if output != 0 {
+                mem.fill_bytes(output, 0, 12).map_err(str::to_owned)?;
+            }
+            return_value(context, 0);
+            Ok(true)
+        }
         "pthread_self" => {
             return_value(context, 1);
             Ok(true)

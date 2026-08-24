@@ -398,7 +398,7 @@ impl A64Interpreter {
         let shift_type = (instruction >> 22) & 3;
         let amount = ((instruction >> 10) & 0x3f) as u32;
         let right = shift_value(rm, shift_type, amount, sf);
-        let left = read_sp_or_reg(context, ((instruction >> 5) & 31) as usize, sf);
+        let left = read_reg(context, ((instruction >> 5) & 31) as usize, sf);
         let (value, carry, overflow) = add_sub(left, right, subtract, sf);
         write_add_sub_result(context, (instruction & 31) as usize, value, sf, update_flags);
         if update_flags {
@@ -517,8 +517,7 @@ impl A64Interpreter {
         let size = 1u64 << ((instruction >> 30) & 3);
         let opcode = instruction & 0xffc0_0000;
         let signed_load = matches!(opcode, 0x3980_0000 | 0x7980_0000 | 0xb980_0000);
-        let halfword_load = opcode == 0x7940_0000;
-        let load = instruction & 0x0040_0000 != 0 || signed_load || halfword_load;
+        let load = instruction & 0x0040_0000 != 0 || signed_load;
         let address = read_sp_or_reg(context, ((instruction >> 5) & 31) as usize, true).wrapping_add(((instruction >> 10) & 0xfff) as u64 * size);
         if signed_load {
             let value = match size {
@@ -936,6 +935,24 @@ mod tests {
         assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
         assert_eq!(context.sp, SP);
         assert!(context.pstate & (1 << 29) != 0);
+    }
+
+    #[test]
+    fn add_sub_register_uses_zero_register_for_register_31() {
+        let mut memory = Mem64::new();
+        memory.map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute()).unwrap();
+        let instruction = 0x8b1f0108u32;
+        memory.load_bytes(CODE, &instruction.to_le_bytes()).unwrap();
+        let mut context = touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context {
+            pc: CODE,
+            sp: 0x7fff_fffe_f000,
+            ..Default::default()
+        };
+        context.regs[8] = 7;
+        let mut interpreter = A64Interpreter::new();
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(context.regs[8], 7);
+        assert_eq!(context.sp, 0x7fff_fffe_f000);
     }
 
     #[test]
