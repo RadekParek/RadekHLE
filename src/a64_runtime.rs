@@ -1207,7 +1207,13 @@ fn objc_send(
                 let address = elements
                     .checked_add(index.saturating_mul(8))
                     .ok_or("ARM64 NSArray index address overflows")?;
-                mem.read_u64(address).map_err(str::to_owned)?
+                let result = mem.read_u64(address).map_err(str::to_owned)?;
+                log_once_fmt!(
+                    "ARM64 NSArray objectAtIndex trace: receiver={receiver:#x} index={index} count={count} elements={elements:#x} result={result:#x} pc={:#x} lr={:#x} [first in-process access only]",
+                    context.pc,
+                    context.regs[30],
+                );
+                result
             } else {
                 log_once_fmt!(
                     "ARM64 NSArray objectAtIndex out of bounds: receiver={:#x} index={} count={} caller_pc={:#x} [repeated invalid accesses suppressed]",
@@ -1786,7 +1792,7 @@ pub fn dispatch(
             }
             Ok(true)
         }
-        "free" | "malloc_zone_free" | "_ZdlPv" | "_ZdaPv" | "__ZdlPv" | "__ZdaPv" => {
+        "free" | "malloc_zone_free" | "_ZdlPv" | "_ZdaPv" | "__ZdlPv" | "__ZdaPv" | "ZdlPv" | "ZdaPv" => {
             let pointer = A64Abi::arg(context, 0);
             let allocation_size = mem.allocation_size(pointer);
             let released = pointer == 0 || mem.free(pointer);

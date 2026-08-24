@@ -904,7 +904,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                         symbol, context.regs[0], context.regs[0], context.regs[1], context.regs[2], context.regs[3], context.pc, context.regs[30],
                     );
                 }
-                if host_dispatches <= 16 || host_dispatches.is_power_of_two() {
+                if host_dispatches <= 16 || host_dispatches.is_power_of_two() || matches!(symbol, "pthread_mutex_unlock" | "__ZdlPv" | "_ZdlPv" | "ZdlPv" | "__Znam" | "_Znam" | "Znam") {
                     log_dbg!(
                         "ARM64 host binding #{}: {} host_stub_pc={:#x} guest_run_entry_pc={:#x} guest_call_site={:#x} continuation_pc={:#x} {}",
                         host_dispatches,
