@@ -64,14 +64,42 @@ fn callback_event_context(context: &touchHLE_DynarmicA64Context) -> String {
 }
 
 fn decode_instruction(instruction: u32, pc: u64) -> String {
+    if instruction & 0x3b00_0000 == 0x3900_0000 {
+        let width = 1_u64 << ((instruction >> 30) & 3);
+        let load = instruction & 0x0040_0000 != 0;
+        let signed = matches!(instruction & 0xffc0_0000, 0x3980_0000 | 0x7980_0000 | 0xb980_0000);
+        let mnemonic = match (load, signed, width) {
+            (true, false, 1) => "ldrb",
+            (true, false, 2) => "ldrh",
+            (true, false, 4 | 8) => "ldr",
+            (true, true, 1) => "ldrsb",
+            (true, true, 2) => "ldrsh",
+            (true, true, 4) => "ldrsw",
+            (true, true, 8) => "ldr",
+            (false, _, 1) => "strb",
+            (false, _, 2) => "strh",
+            (false, _, 4 | 8) => "str",
+            _ => "load/store",
+        };
+        return format!(
+            "{} {}, [x{}, #{:#x}]",
+            mnemonic,
+            if width == 1 || width == 2 || (width == 4 && signed) { format!("w{}", instruction & 31) } else { format!("x{}", instruction & 31) },
+            (instruction >> 5) & 31,
+            ((instruction >> 10) & 0xfff) as u64 * width,
+        );
+    }
     if instruction == 0xd65f_03c0 {
         "ret".to_string()
     } else if instruction & 0xfc00_0000 == 0x1400_0000 {
-        format!("b {:#x}", branch_target(instruction, pc).unwrap_or(0))
+        let immediate = (((instruction & 0x03ff_ffff) as i32) << 6 >> 4) as i64;
+        format!("b {:#x}", pc.wrapping_add_signed(immediate))
     } else if instruction & 0xfc00_0000 == 0x9400_0000 {
-        format!("bl {:#x}", branch_target(instruction, pc).unwrap_or(0))
+        let immediate = (((instruction & 0x03ff_ffff) as i32) << 6 >> 4) as i64;
+        format!("bl {:#x}", pc.wrapping_add_signed(immediate))
     } else if instruction & 0x7e00_0000 == 0x3400_0000 {
-        format!("cbz/cbnz {:#x}", branch_target(instruction, pc).unwrap_or(0))
+        let immediate = ((((instruction >> 5) & 0x7f_ffff) as i32) << 13 >> 11) as i64;
+        format!("cbz/cbnz {:#x}", pc.wrapping_add_signed(immediate))
     } else if (instruction & 0x1fe0_0000 == 0x1a80_0000
         || instruction & 0x1fe0_0000 == 0x5a80_0000
         || instruction & 0x1fe0_0000 == 0x1ac0_0000)
@@ -251,7 +279,8 @@ fn failure_diagnostics(
     reason: &str,
 ) {
     let instruction = memory.read_u32(context.pc).unwrap_or(0);
-    echo!("ARM64 failure diagnostics: reason={} pc={:#x} instruction={:#010x} decoded={}", reason, context.pc, instruction, decode_instruction(instruction, context.pc));
+    let decoded = decode_instruction(instruction, context.pc);
+    echo!("ARM64 failure diagnostics: reason={} pc={:#x} instruction={:#010x} decoded={}", reason, context.pc, instruction, decoded);
     echo!("ARM64 failure registers: {}", register_dump(context));
     echo!("ARM64 failure processor state: {}", processor_state_dump(context));
     echo!("ARM64 failure previous_pcs={:?} branch_history={:?}", previous_pcs, previous_branches);
