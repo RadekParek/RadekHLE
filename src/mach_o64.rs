@@ -3,7 +3,10 @@ use std::io::{Cursor, Seek, SeekFrom};
 
 use std::convert::TryInto;
 
-use mach_object::{Bind, BindSymbolType, LazyBind, LinkEditData, LoadCommand, MachCommand, OFile, Rebase, Symbol, SymbolIter, ThreadState, WeakBind};
+use mach_object::{
+    Bind, BindSymbolType, LazyBind, LinkEditData, LoadCommand, MachCommand, OFile, Rebase, Symbol,
+    SymbolIter, ThreadState, WeakBind,
+};
 
 use crate::mem64::{Guest64Addr, Mem64, Permissions};
 
@@ -66,39 +69,57 @@ pub struct MachO64 {
 fn command_bytes<'a>(bytes: &'a [u8], offset: u32, size: u32) -> Result<&'a [u8], String> {
     let start = usize::try_from(offset).map_err(|_| "ARM64 dyld info offset is too large")?;
     let length = usize::try_from(size).map_err(|_| "ARM64 dyld info size is too large")?;
-    let end = start.checked_add(length).ok_or("ARM64 dyld info range overflows")?;
-    bytes.get(start..end).ok_or_else(|| "ARM64 dyld info extends past the Mach-O file".to_string())
+    let end = start
+        .checked_add(length)
+        .ok_or("ARM64 dyld info range overflows")?;
+    bytes
+        .get(start..end)
+        .ok_or_else(|| "ARM64 dyld info extends past the Mach-O file".to_string())
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, String> {
-    let end = offset.checked_add(2).ok_or("ARM64 fixup offset overflows")?;
+    let end = offset
+        .checked_add(2)
+        .ok_or("ARM64 fixup offset overflows")?;
     let data = bytes.get(offset..end).ok_or("ARM64 fixups are truncated")?;
     Ok(u16::from_le_bytes([data[0], data[1]]))
 }
 
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, String> {
-    let end = offset.checked_add(4).ok_or("ARM64 fixup offset overflows")?;
+    let end = offset
+        .checked_add(4)
+        .ok_or("ARM64 fixup offset overflows")?;
     let data = bytes.get(offset..end).ok_or("ARM64 fixups are truncated")?;
     Ok(u32::from_le_bytes([data[0], data[1], data[2], data[3]]))
 }
 
 fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, String> {
-    let end = offset.checked_add(8).ok_or("ARM64 fixup offset overflows")?;
+    let end = offset
+        .checked_add(8)
+        .ok_or("ARM64 fixup offset overflows")?;
     let data = bytes.get(offset..end).ok_or("ARM64 fixups are truncated")?;
     Ok(u64::from_le_bytes(data.try_into().unwrap()))
 }
 
 fn read_cstr(bytes: &[u8], offset: usize) -> Result<String, String> {
-    let data = bytes.get(offset..).ok_or("ARM64 fixup string offset is invalid")?;
-    let end = data.iter().position(|&byte| byte == 0).ok_or("ARM64 fixup string is unterminated")?;
-    String::from_utf8(data[..end].to_vec()).map_err(|_| "ARM64 fixup symbol is not UTF-8".to_string())
+    let data = bytes
+        .get(offset..)
+        .ok_or("ARM64 fixup string offset is invalid")?;
+    let end = data
+        .iter()
+        .position(|&byte| byte == 0)
+        .ok_or("ARM64 fixup string is unterminated")?;
+    String::from_utf8(data[..end].to_vec())
+        .map_err(|_| "ARM64 fixup symbol is not UTF-8".to_string())
 }
 
 fn add_signed(base: u64, offset: i64) -> Result<u64, String> {
     if offset >= 0 {
-        base.checked_add(offset as u64).ok_or("ARM64 address overflows".into())
+        base.checked_add(offset as u64)
+            .ok_or("ARM64 address overflows".into())
     } else {
-        base.checked_sub(offset.unsigned_abs()).ok_or("ARM64 address underflows".into())
+        base.checked_sub(offset.unsigned_abs())
+            .ok_or("ARM64 address underflows".into())
     }
 }
 
@@ -129,7 +150,9 @@ fn parse_objc_methods(memory: &Mem64, list: u64, slide: u64) -> Vec<ObjCMethod64
     let count = count.min(4096);
     (0..count)
         .filter_map(|index| {
-            let entry = list.checked_add(8)?.checked_add(u64::from(index).checked_mul(entry_size)?)?;
+            let entry = list
+                .checked_add(8)?
+                .checked_add(u64::from(index).checked_mul(entry_size)?)?;
             let name = guest_c_string(memory, read_guest_u64(memory, entry)?)?;
             let address = read_guest_u64(memory, entry + 16)?.checked_add(slide)?;
             Some(ObjCMethod64 { name, address })
@@ -138,27 +161,47 @@ fn parse_objc_methods(memory: &Mem64, list: u64, slide: u64) -> Vec<ObjCMethod64
 }
 
 fn parse_objc_classes(memory: &Mem64, sections: &[Section64], slide: u64) -> Vec<ObjCClass64> {
-    let Some(classlist) = sections.iter().find(|section| section.name == "__objc_classlist") else {
+    let Some(classlist) = sections
+        .iter()
+        .find(|section| section.name == "__objc_classlist")
+    else {
         return Vec::new();
     };
     let count = (classlist.size / 8).min(4096);
     (0..count)
         .filter_map(|index| {
-            let class_ptr = classlist.address.checked_add(index * 8).and_then(|address| read_guest_u64(memory, address))?;
+            let class_ptr = classlist
+                .address
+                .checked_add(index * 8)
+                .and_then(|address| read_guest_u64(memory, address))?;
             let data = read_guest_u64(memory, class_ptr + 32)? & !7;
             let name = guest_c_string(memory, read_guest_u64(memory, data + 24)?)?;
             let superclass = read_guest_u64(memory, class_ptr + 8)
                 .and_then(|address| read_guest_u64(memory, address + 32))
-                .and_then(|address| guest_c_string(memory, read_guest_u64(memory, (address & !7) + 24)?));
+                .and_then(|address| {
+                    guest_c_string(memory, read_guest_u64(memory, (address & !7) + 24)?)
+                });
             let instance_size = read_guest_u64(memory, data + 8)
                 .map(|value| u64::from(value as u32).clamp(96, 1024 * 1024))
                 .unwrap_or(96);
-            let instance_methods = parse_objc_methods(memory, read_guest_u64(memory, data + 32)?, slide);
+            let instance_methods =
+                parse_objc_methods(memory, read_guest_u64(memory, data + 32)?, slide);
             let ivars = parse_objc_ivars(memory, read_guest_u64(memory, data + 48).unwrap_or(0));
             let metaclass = read_guest_u64(memory, class_ptr)?;
             let metaclass_data = read_guest_u64(memory, metaclass + 32).unwrap_or(0) & !7;
-            let class_methods = parse_objc_methods(memory, read_guest_u64(memory, metaclass_data + 32).unwrap_or(0), slide);
-            Some(ObjCClass64 { name, superclass, instance_size, instance_methods, class_methods, ivars })
+            let class_methods = parse_objc_methods(
+                memory,
+                read_guest_u64(memory, metaclass_data + 32).unwrap_or(0),
+                slide,
+            );
+            Some(ObjCClass64 {
+                name,
+                superclass,
+                instance_size,
+                instance_methods,
+                class_methods,
+                ivars,
+            })
         })
         .collect()
 }
@@ -179,10 +222,15 @@ fn parse_objc_ivars(memory: &Mem64, list: u64) -> Vec<ObjCIvar64> {
     let count = count.min(4096);
     (0..count)
         .filter_map(|index| {
-            let entry = list.checked_add(8)?.checked_add(u64::from(index).checked_mul(u64::from(entsize))?)?;
+            let entry = list
+                .checked_add(8)?
+                .checked_add(u64::from(index).checked_mul(u64::from(entsize))?)?;
             let offset_address = read_guest_u64(memory, entry)?;
             let name = guest_c_string(memory, read_guest_u64(memory, entry + 8)?)?;
-            Some(ObjCIvar64 { name, offset_address })
+            Some(ObjCIvar64 {
+                name,
+                offset_address,
+            })
         })
         .collect()
 }
@@ -204,9 +252,17 @@ fn parse_chained_fixups(
     let symbols_offset = read_u32(blob, 12)? as usize;
     let imports_count = read_u32(blob, 16)? as usize;
     let imports_format = read_u32(blob, 20)?;
-    let starts = blob.get(starts_offset..).ok_or("ARM64 chained fixup starts offset is invalid")?;
+    let starts = blob
+        .get(starts_offset..)
+        .ok_or("ARM64 chained fixup starts offset is invalid")?;
     let segment_count = read_u32(starts, 0)? as usize;
-    let segment_offsets_end = 4usize.checked_add(segment_count.checked_mul(4).ok_or("ARM64 chained fixup segment table overflows")?).ok_or("ARM64 chained fixup segment table overflows")?;
+    let segment_offsets_end = 4usize
+        .checked_add(
+            segment_count
+                .checked_mul(4)
+                .ok_or("ARM64 chained fixup segment table overflows")?,
+        )
+        .ok_or("ARM64 chained fixup segment table overflows")?;
     if starts.len() < segment_offsets_end {
         return Err("ARM64 chained fixup segment table is truncated".into());
     }
@@ -227,13 +283,25 @@ fn parse_chained_fixups(
             3 => {
                 let raw = read_u64(blob, import_cursor)?;
                 let addend = read_u64(blob, import_cursor + 8)? as i64;
-                (((raw & 0xffff) as i32), ((raw >> 17) & 0x7fff_ffff) as usize, addend, 16usize)
+                (
+                    ((raw & 0xffff) as i32),
+                    ((raw >> 17) & 0x7fff_ffff) as usize,
+                    addend,
+                    16usize,
+                )
             }
             other => return Err(format!("unsupported ARM64 chained import format {other}")),
         };
-        let name = read_cstr(blob, symbols_offset.checked_add(name_offset).ok_or("ARM64 fixup symbol offset overflows")?)?;
+        let name = read_cstr(
+            blob,
+            symbols_offset
+                .checked_add(name_offset)
+                .ok_or("ARM64 fixup symbol offset overflows")?,
+        )?;
         imports.push((ordinal, name, addend));
-        import_cursor = import_cursor.checked_add(entry_size).ok_or("ARM64 fixup import table overflows")?;
+        import_cursor = import_cursor
+            .checked_add(entry_size)
+            .ok_or("ARM64 fixup import table overflows")?;
     }
 
     for segment_index in 0..segment_count {
@@ -241,14 +309,22 @@ fn parse_chained_fixups(
         if offset == 0 {
             continue;
         }
-        let segment = starts.get(offset..).ok_or("ARM64 chained segment starts offset is invalid")?;
+        let segment = starts
+            .get(offset..)
+            .ok_or("ARM64 chained segment starts offset is invalid")?;
         let size = read_u32(segment, 0)? as usize;
         let page_size = read_u16(segment, 4)? as u64;
         let pointer_format = read_u16(segment, 6)?;
         let segment_offset = read_u64(segment, 8)?;
         let page_count = read_u16(segment, 20)? as usize;
         let page_starts_offset = 22usize;
-        let page_starts_end = page_starts_offset.checked_add(page_count.checked_mul(2).ok_or("ARM64 chained page table overflows")?).ok_or("ARM64 chained page table overflows")?;
+        let page_starts_end = page_starts_offset
+            .checked_add(
+                page_count
+                    .checked_mul(2)
+                    .ok_or("ARM64 chained page table overflows")?,
+            )
+            .ok_or("ARM64 chained page table overflows")?;
         if size < page_starts_end || segment.len() < page_starts_end {
             return Err("ARM64 chained segment starts is truncated".into());
         }
@@ -256,7 +332,9 @@ fn parse_chained_fixups(
             return Err("ARM64 chained fixup references an invalid segment".into());
         }
         if pointer_format != 2 && pointer_format != 6 {
-            return Err(format!("unsupported ARM64 chained pointer format {pointer_format}"));
+            return Err(format!(
+                "unsupported ARM64 chained pointer format {pointer_format}"
+            ));
         }
         let base = segment_bases[segment_index];
         for page in 0..page_count {
@@ -272,15 +350,23 @@ fn parse_chained_fixups(
                 .checked_add((page as u64 + 1) * page_size)
                 .ok_or("ARM64 chained page end overflows")?;
             loop {
-                let address = base.checked_add(chain_offset).ok_or("ARM64 chained pointer address overflows")?;
+                let address = base
+                    .checked_add(chain_offset)
+                    .ok_or("ARM64 chained pointer address overflows")?;
                 let raw = memory.read_u64(address).map_err(str::to_owned)?;
                 let bind = (raw >> 63) != 0;
                 let next = (raw >> 51) & 0xfff;
                 if bind {
                     let ordinal = (raw & 0x00ff_ffff) as usize;
-                    let (_, symbol, import_addend) = imports.get(ordinal).ok_or("ARM64 chained bind ordinal is invalid")?;
+                    let (_, symbol, import_addend) = imports
+                        .get(ordinal)
+                        .ok_or("ARM64 chained bind ordinal is invalid")?;
                     let inline_addend = ((raw >> 24) & 0xff) as u8 as i8 as i64;
-                    bindings.push(Binding64 { address, symbol: symbol.clone(), addend: *import_addend + inline_addend });
+                    bindings.push(Binding64 {
+                        address,
+                        symbol: symbol.clone(),
+                        addend: *import_addend + inline_addend,
+                    });
                 } else {
                     let target = raw & 0x0000_000f_ffff_ffff;
                     let target = if pointer_format == 2 {
@@ -288,12 +374,21 @@ fn parse_chained_fixups(
                     } else {
                         target
                     };
-                    memory.load_u64(address, target.checked_add(slide).ok_or("ARM64 chained rebase overflows")?).map_err(str::to_owned)?;
+                    memory
+                        .load_u64(
+                            address,
+                            target
+                                .checked_add(slide)
+                                .ok_or("ARM64 chained rebase overflows")?,
+                        )
+                        .map_err(str::to_owned)?;
                 }
                 if next == 0 {
                     break;
                 }
-                chain_offset = chain_offset.checked_add(next * 4).ok_or("ARM64 chained pointer chain overflows")?;
+                chain_offset = chain_offset
+                    .checked_add(next * 4)
+                    .ok_or("ARM64 chained pointer chain overflows")?;
                 if chain_offset >= page_end {
                     return Err("ARM64 chained pointer escapes its page".into());
                 }
@@ -314,24 +409,40 @@ impl MachO64 {
             .file_name()
             .ok_or("64-bit executable has no file name")?
             .to_string();
-        let bytes = fs.read(path.as_ref()).map_err(|_| "Could not read 64-bit executable file")?;
+        let bytes = fs
+            .read(path.as_ref())
+            .map_err(|_| "Could not read 64-bit executable file")?;
         Self::load_from_bytes(&bytes, name, slide)
     }
 
-    pub fn load_from_bytes(bytes: &[u8], name: impl Into<String>, slide: u64) -> Result<Self, String> {
+    pub fn load_from_bytes(
+        bytes: &[u8],
+        name: impl Into<String>,
+        slide: u64,
+    ) -> Result<Self, String> {
         let name = name.into();
         let mut cursor = Cursor::new(bytes);
-        let file = OFile::parse(&mut cursor).map_err(|e| format!("could not parse ARM64 Mach-O: {e}"))?;
+        let file =
+            OFile::parse(&mut cursor).map_err(|e| format!("could not parse ARM64 Mach-O: {e}"))?;
         let (image_bytes, file) = match file {
             OFile::FatFile { files, .. } => {
                 let (arch, file) = files
                     .into_iter()
                     .find(|(arch, _)| arch.cputype == mach_object::CPU_TYPE_ARM64)
                     .ok_or("fat binary has no ARM64 slice")?;
-                let start = usize::try_from(arch.offset).map_err(|_| "ARM64 fat slice offset is too large")?;
-                let length = usize::try_from(arch.size).map_err(|_| "ARM64 fat slice size is too large")?;
-                let end = start.checked_add(length).ok_or("ARM64 fat slice range overflows")?;
-                (bytes.get(start..end).ok_or("ARM64 fat slice extends past the file")?, file)
+                let start = usize::try_from(arch.offset)
+                    .map_err(|_| "ARM64 fat slice offset is too large")?;
+                let length =
+                    usize::try_from(arch.size).map_err(|_| "ARM64 fat slice size is too large")?;
+                let end = start
+                    .checked_add(length)
+                    .ok_or("ARM64 fat slice range overflows")?;
+                (
+                    bytes
+                        .get(start..end)
+                        .ok_or("ARM64 fat slice extends past the file")?,
+                    file,
+                )
             }
             file => (bytes, file),
         };
@@ -373,10 +484,14 @@ impl MachO64 {
                     sections: segment_sections,
                     ..
                 } => {
-                    let base = (vmaddr as u64).checked_add(slide).ok_or("segment address overflows")?;
+                    let base = (vmaddr as u64)
+                        .checked_add(slide)
+                        .ok_or("segment address overflows")?;
                     segment_bases.push(base);
-                    last_segment_end = last_segment_end
-                        .max(base.checked_add(vmsize as u64).ok_or("segment end overflows")?);
+                    last_segment_end = last_segment_end.max(
+                        base.checked_add(vmsize as u64)
+                            .ok_or("segment end overflows")?,
+                    );
                     if segname == "__PAGEZERO" {
                         continue;
                     }
@@ -389,22 +504,35 @@ impl MachO64 {
                     let permissions = Permissions::from_mach_protection(initprot, maxprot);
                     memory.map_zeroed_with_permissions(base, vmsize as u64, permissions)?;
                     if filesize != 0 {
-                        let start = usize::try_from(fileoff).map_err(|_| "segment file offset is too large")?;
-                        let length = usize::try_from(filesize).map_err(|_| "segment file size is too large")?;
-                        let end = start.checked_add(length).ok_or("segment file range overflows")?;
-                        let source = image_bytes.get(start..end).ok_or_else(|| format!("segment {segname} extends past the Mach-O file"))?;
+                        let start = usize::try_from(fileoff)
+                            .map_err(|_| "segment file offset is too large")?;
+                        let length = usize::try_from(filesize)
+                            .map_err(|_| "segment file size is too large")?;
+                        let end = start
+                            .checked_add(length)
+                            .ok_or("segment file range overflows")?;
+                        let source = image_bytes.get(start..end).ok_or_else(|| {
+                            format!("segment {segname} extends past the Mach-O file")
+                        })?;
                         memory.load_bytes(base, source)?;
                     }
                     for section in segment_sections {
                         sections.push(Section64 {
                             name: section.sectname.clone(),
-                            address: (section.addr as u64).checked_add(slide).ok_or("section address overflows")?,
+                            address: (section.addr as u64)
+                                .checked_add(slide)
+                                .ok_or("section address overflows")?,
                             size: section.size as u64,
                         });
                         macho_sections.push(section);
                     }
                 }
-                LoadCommand::SymTab { symoff, nsyms, stroff, strsize } => {
+                LoadCommand::SymTab {
+                    symoff,
+                    nsyms,
+                    stroff,
+                    strsize,
+                } => {
                     symtab = Some((symoff, nsyms, stroff, strsize));
                 }
                 LoadCommand::DyldChainedFixups(data) => {
@@ -415,7 +543,10 @@ impl MachO64 {
                     return Err("ARM64 executable is encrypted".into());
                 }
                 LoadCommand::EntryPoint { entryoff, .. } => entry_point_offset = Some(entryoff),
-                LoadCommand::UnixThread { state: ThreadState::Arm64 { __pc, .. }, .. } => {
+                LoadCommand::UnixThread {
+                    state: ThreadState::Arm64 { __pc, .. },
+                    ..
+                } => {
                     entry_point_pc = Some(__pc.checked_add(slide).ok_or("entry point overflows")?);
                 }
                 LoadCommand::DyldInfo {
@@ -429,7 +560,9 @@ impl MachO64 {
                     lazy_bind_size,
                     ..
                 } => {
-                    for rebased in Rebase::parse(command_bytes(image_bytes, rebase_off, rebase_size)?, 8) {
+                    for rebased in
+                        Rebase::parse(command_bytes(image_bytes, rebase_off, rebase_size)?, 8)
+                    {
                         if rebased.symbol_type != BindSymbolType::Pointer {
                             continue;
                         }
@@ -440,7 +573,12 @@ impl MachO64 {
                             .checked_add(rebased.symbol_offset as u64)
                             .ok_or("ARM64 rebase address overflows")?;
                         let value = memory.read_u64(address)?;
-                        memory.load_u64(address, value.checked_add(slide).ok_or("ARM64 rebase value overflows")?)?;
+                        memory.load_u64(
+                            address,
+                            value
+                                .checked_add(slide)
+                                .ok_or("ARM64 rebase value overflows")?,
+                        )?;
                     }
                     for bound in Bind::parse(command_bytes(image_bytes, bind_off, bind_size)?, 8) {
                         if bound.symbol_type != BindSymbolType::Pointer {
@@ -450,9 +588,16 @@ impl MachO64 {
                             .get(bound.segment_index)
                             .ok_or("ARM64 bind references an invalid segment")?;
                         let address = add_signed(segment, bound.symbol_offset as i64)?;
-                        bindings.push(Binding64 { address, symbol: bound.name, addend: bound.addend as i64 });
+                        bindings.push(Binding64 {
+                            address,
+                            symbol: bound.name,
+                            addend: bound.addend as i64,
+                        });
                     }
-                    for bound in WeakBind::parse(command_bytes(image_bytes, weak_bind_off, weak_bind_size)?, 8) {
+                    for bound in WeakBind::parse(
+                        command_bytes(image_bytes, weak_bind_off, weak_bind_size)?,
+                        8,
+                    ) {
                         if bound.symbol_type != BindSymbolType::Pointer {
                             continue;
                         }
@@ -460,14 +605,25 @@ impl MachO64 {
                             .get(bound.segment_index)
                             .ok_or("ARM64 weak bind references an invalid segment")?;
                         let address = add_signed(segment, bound.symbol_offset as i64)?;
-                        bindings.push(Binding64 { address, symbol: bound.name, addend: bound.addend as i64 });
+                        bindings.push(Binding64 {
+                            address,
+                            symbol: bound.name,
+                            addend: bound.addend as i64,
+                        });
                     }
-                    for bound in LazyBind::parse(command_bytes(image_bytes, lazy_bind_off, lazy_bind_size)?, 8) {
+                    for bound in LazyBind::parse(
+                        command_bytes(image_bytes, lazy_bind_off, lazy_bind_size)?,
+                        8,
+                    ) {
                         let segment = *segment_bases
                             .get(bound.segment_index)
                             .ok_or("ARM64 lazy bind references an invalid segment")?;
                         let address = add_signed(segment, bound.symbol_offset as i64)?;
-                        bindings.push(Binding64 { address, symbol: bound.name, addend: 0 });
+                        bindings.push(Binding64 {
+                            address,
+                            symbol: bound.name,
+                            addend: 0,
+                        });
                     }
                 }
                 _ => {}
@@ -475,7 +631,14 @@ impl MachO64 {
         }
 
         if let Some(data) = chained_fixups {
-            parse_chained_fixups(image_bytes, data, &segment_bases, &mut memory, &mut bindings, slide)?;
+            parse_chained_fixups(
+                image_bytes,
+                data,
+                &segment_bases,
+                &mut memory,
+                &mut bindings,
+                slide,
+            )?;
         }
 
         bindings.sort_by_key(|binding| binding.address);
@@ -499,8 +662,21 @@ impl MachO64 {
             symbols_cursor
                 .seek(SeekFrom::Start(symoff as u64))
                 .map_err(|_| "invalid symbol table offset")?;
-            for symbol in SymbolIter::new(&mut symbols_cursor, macho_sections, nsyms, stroff, strsize, false, true) {
-                if let Symbol::Defined { name: Some(symbol_name), entry, .. } = symbol {
+            for symbol in SymbolIter::new(
+                &mut symbols_cursor,
+                macho_sections,
+                nsyms,
+                stroff,
+                strsize,
+                false,
+                true,
+            ) {
+                if let Symbol::Defined {
+                    name: Some(symbol_name),
+                    entry,
+                    ..
+                } = symbol
+                {
                     exported_symbols.insert(symbol_name.to_string(), entry as u64 + slide);
                 }
             }

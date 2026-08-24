@@ -133,7 +133,8 @@ pub fn configure_angle_driver(enabled: bool) {
         "libGLESv2.so"
     };
     let egl_path = std::env::var("TOUCHHLE_ANGLE_EGL").unwrap_or_else(|_| default_egl.to_owned());
-    let gles_path = std::env::var("TOUCHHLE_ANGLE_GLES").unwrap_or_else(|_| default_gles.to_owned());
+    let gles_path =
+        std::env::var("TOUCHHLE_ANGLE_GLES").unwrap_or_else(|_| default_gles.to_owned());
     let egl_exists = std::path::Path::new(&egl_path).exists();
     let gles_exists = std::path::Path::new(&gles_path).exists();
 

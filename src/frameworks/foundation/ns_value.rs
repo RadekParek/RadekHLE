@@ -10,6 +10,7 @@ use super::{
     _nib_archive_decoder, ns_keyed_unarchiver, NSComparisonResult, NSOrderedSame, NSRange,
     NSUInteger,
 };
+use crate::frameworks::core_animation::ca_transform3d::CATransform3D;
 use crate::frameworks::core_foundation::cf_number::{
     kCFNumberCFIndexType,
     kCFNumberCGFloatType,
@@ -29,7 +30,6 @@ use crate::frameworks::core_foundation::cf_number::{
     kCFNumberShortType,
     CFNumberType,
 };
-use crate::frameworks::core_animation::ca_transform3d::CATransform3D;
 use crate::frameworks::core_graphics::{CGPoint, CGRect, CGSize};
 use crate::frameworks::foundation::NSInteger;
 use crate::mem::{ConstPtr, ConstVoidPtr, MutVoidPtr};
@@ -1022,4 +1022,3 @@ pub fn is_conversion_lossless(env: &mut Environment, this: id, type_: CFNumberTy
     };
     msg![env; this isEqualToNumber:num2]
 }
-

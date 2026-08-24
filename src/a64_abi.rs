@@ -22,7 +22,12 @@ impl A64Abi {
             .checked_mul(8)
             .ok_or("ARM64 ABI argument offset overflows")? as u64;
         memory
-            .read_u64(context.sp.checked_add(offset).ok_or("ARM64 ABI stack argument overflows")?)
+            .read_u64(
+                context
+                    .sp
+                    .checked_add(offset)
+                    .ok_or("ARM64 ABI stack argument overflows")?,
+            )
             .map_err(str::to_owned)
     }
 

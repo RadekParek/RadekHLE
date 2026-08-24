@@ -65,7 +65,8 @@ fn translate_glsl_es_with_version(source: &str, version_directive: &'static str)
             if trimmed.starts_with("#version") {
                 emitted_version = true;
                 continue; // We'll emit our own version directive
-            } else if !trimmed.is_empty() && !trimmed.starts_with("//") && !trimmed.starts_with('#') {
+            } else if !trimmed.is_empty() && !trimmed.starts_with("//") && !trimmed.starts_with('#')
+            {
                 emitted_version = true;
             }
         }
@@ -91,7 +92,7 @@ fn translate_glsl_es_with_version(source: &str, version_directive: &'static str)
         }
 
         let stripped = strip_precision_qualifiers(raw_line);
-let stripped = strip_half_types(&stripped);
+        let stripped = strip_half_types(&stripped);
         body_lines.push(stripped);
     }
 

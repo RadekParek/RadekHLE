@@ -56,14 +56,13 @@ pub fn app_picker(options: Options) -> Result<(PathBuf, Vec<String>), String> {
     let apps: Result<Vec<AppInfo>, String> = if !apps_dir.is_dir() {
         Err(format!("The {} directory couldn't be found. Check you're running touchHLE from the right directory.", apps_dir.display()))
     } else {
-        enumerate_apps(&apps_dir)
-            .map_err(|err| {
-                format!(
-                    "Couldn't get list of apps in the {} directory: {}.",
-                    apps_dir.display(),
-                    err
-                )
-            })
+        enumerate_apps(&apps_dir).map_err(|err| {
+            format!(
+                "Couldn't get list of apps in the {} directory: {}.",
+                apps_dir.display(),
+                err
+            )
+        })
     };
 
     show_app_picker_gui(options, apps)
@@ -100,7 +99,10 @@ fn enumerate_apps(apps_dir: &Path) -> Result<Vec<AppInfo>, std::io::Error> {
                 .unwrap_or(false)
             {
                 let (bundle, fs) = match BundleData::open_any(&app_path).and_then(|bundle_data| {
-                    Bundle::new_bundle_and_fs_from_host_path(bundle_data, /* read_only_mode: */ true)
+                    Bundle::new_bundle_and_fs_from_host_path(
+                        bundle_data,
+                        /* read_only_mode: */ true,
+                    )
                 }) {
                     Ok(ok) => ok,
                     Err(e) => {
@@ -507,12 +509,12 @@ fn show_app_picker_gui(
         let mut image = Image::from_bytes(bytes).unwrap();
         // should match Bundle::load_icon()
         // Use a slightly smaller corner radius for larger icons for a cleaner look.
-                let corner_radius_px = 12.0;
-                image.round_corners(
-                    corner_radius_px,
-                    /* four_corners: */ true,
-                    /* add_sheen: */ true,
-                );
+        let corner_radius_px = 12.0;
+        image.round_corners(
+            corner_radius_px,
+            /* four_corners: */ true,
+            /* add_sheen: */ true,
+        );
         image
     };
     let mut options = options;
@@ -569,7 +571,10 @@ fn app_picker_inner(
     let window: id = msg![env; window initWithFrame:bounds];
 
     let app_frame: CGRect = bounds;
-    let CGSize { width: app_frame_width, height: app_frame_height } = app_frame.size;
+    let CGSize {
+        width: app_frame_width,
+        height: app_frame_height,
+    } = app_frame.size;
     let ui_scale = picker_ui_scale(app_frame.size);
     log!(
         "App picker layout: logical frame {:.0}x{:.0}, UI scale {:.2}",
@@ -979,7 +984,13 @@ fn app_picker_inner(
             }
         } else if let Some(version) = std::mem::take(&mut host_obj.ios_version) {
             quick_options_ios_version = version;
-            update_ios_version_dropdown(env, quick_options_stuff.ios_version_btn, quick_options_stuff.ios_version_menu, &quick_options_stuff.ios_version_items, quick_options_ios_version);
+            update_ios_version_dropdown(
+                env,
+                quick_options_stuff.ios_version_btn,
+                quick_options_stuff.ios_version_menu,
+                &quick_options_stuff.ios_version_items,
+                quick_options_ios_version,
+            );
         } else if std::mem::take(&mut host_obj.graphics_api_toggle) {
             let hidden: bool = msg![env; (quick_options_stuff.graphics_api_menu) isHidden];
             () = msg![env; (quick_options_stuff.graphics_api_menu) setHidden:(!hidden)];
@@ -989,7 +1000,12 @@ fn app_picker_inner(
             }
         } else if let Some(api) = std::mem::take(&mut host_obj.graphics_api) {
             quick_options_graphics_api = api;
-            update_graphics_api_dropdown(env, quick_options_stuff.graphics_api_btn, &quick_options_stuff.graphics_api_items, api);
+            update_graphics_api_dropdown(
+                env,
+                quick_options_stuff.graphics_api_btn,
+                &quick_options_stuff.graphics_api_items,
+                api,
+            );
             () = msg![env; (quick_options_stuff.graphics_api_menu) setHidden:true];
         } else if let Some(backend) = std::mem::take(&mut host_obj.arm64_backend) {
             quick_options_arm64_backend = backend;
@@ -1096,7 +1112,11 @@ fn app_picker_inner(
                 () = msg![env; (quick_options_stuff.main_view)
                     bringSubviewToFront:(quick_options_stuff.device_model_btn)];
             }
-            let arrow = if quick_options_device_model_open { "▲" } else { "▼" };
+            let arrow = if quick_options_device_model_open {
+                "▲"
+            } else {
+                "▼"
+            };
             let title = format!(
                 "{} {}",
                 device_model_label_for_tag(quick_options_device_tag),
@@ -1206,13 +1226,19 @@ fn app_picker_inner(
         std::env::set_var("TOUCHHLE_ONSCREEN_FPS", "1");
         crate::gles::present::set_onscreen_fps_enabled(true);
     }
-    option_args.push(if quick_options_frame_pacing {
-        "--enable-frame-pacing"
-    } else {
-        "--disable-frame-pacing"
-    }.to_string());
-    option_args.push(format!("--frame-generation={}", quick_options_frame_generation
-        .map_or_else(|| "off".to_string(), |multiplier| multiplier.to_string())));
+    option_args.push(
+        if quick_options_frame_pacing {
+            "--enable-frame-pacing"
+        } else {
+            "--disable-frame-pacing"
+        }
+        .to_string(),
+    );
+    option_args.push(format!(
+        "--frame-generation={}",
+        quick_options_frame_generation
+            .map_or_else(|| "off".to_string(), |multiplier| multiplier.to_string())
+    ));
     if quick_options_graphics_api != crate::options::GraphicsApi::Default {
         let value = match quick_options_graphics_api {
             crate::options::GraphicsApi::Translator => "translator",
@@ -1226,27 +1252,42 @@ fn app_picker_inner(
         };
         option_args.push(format!("--graphics-api={value}"));
     }
-    option_args.push(format!("--arm64-backend={}", quick_options_arm64_backend.label()));
-    option_args.push(if quick_options_metal_translator {
-        "--metal-translator"
-    } else {
-        "--disable-metal-translator"
-    }.to_string());
-    option_args.push(if quick_options_angle_driver {
-        "--angle-driver"
-    } else {
-        "--disable-angle-driver"
-    }.to_string());
-    option_args.push(if quick_options_log_file {
-        "--enable-log-file"
-    } else {
-        "--disable-log-file"
-    }.to_string());
-    option_args.push(if quick_options_fast_memory {
-        "--enable-direct-memory-access"
-    } else {
-        "--disable-direct-memory-access"
-    }.to_string());
+    option_args.push(format!(
+        "--arm64-backend={}",
+        quick_options_arm64_backend.label()
+    ));
+    option_args.push(
+        if quick_options_metal_translator {
+            "--metal-translator"
+        } else {
+            "--disable-metal-translator"
+        }
+        .to_string(),
+    );
+    option_args.push(
+        if quick_options_angle_driver {
+            "--angle-driver"
+        } else {
+            "--disable-angle-driver"
+        }
+        .to_string(),
+    );
+    option_args.push(
+        if quick_options_log_file {
+            "--enable-log-file"
+        } else {
+            "--disable-log-file"
+        }
+        .to_string(),
+    );
+    option_args.push(
+        if quick_options_fast_memory {
+            "--enable-direct-memory-access"
+        } else {
+            "--disable-direct-memory-access"
+        }
+        .to_string(),
+    );
     if quick_options_force_32_bit {
         option_args.push("--force-32-bit".to_string());
     } else if quick_options_force_64_bit {
@@ -1259,9 +1300,7 @@ fn app_picker_inner(
             // No override — fall back to the app bundle / built-in default.
         } else if tag == DEVICE_TAG_AUTO {
             option_args.push("--device-family=auto".to_string());
-        } else if let Some(family) =
-            crate::window::DeviceFamily::ALL_SELECTABLE.get(tag as usize)
-        {
+        } else if let Some(family) = crate::window::DeviceFamily::ALL_SELECTABLE.get(tag as usize) {
             option_args.push(format!("--device-family={}", family.option_name()));
         }
     }
@@ -1323,7 +1362,11 @@ fn make_icon_grid(
     };
     let num_cols = 4;
     let num_cols_f = num_cols as CGFloat;
-    let num_rows = if app_frame.size.height >= 640.0 * ui_scale { 5 } else { 4 };
+    let num_rows = if app_frame.size.height >= 640.0 * ui_scale {
+        5
+    } else {
+        4
+    };
     let label_size = CGSize {
         width: icon_size.width + 14.0 * ui_scale,
         height: 22.0 * ui_scale,
@@ -1484,9 +1527,7 @@ fn make_icon_from_glyph(
     let cg_image = CGBitmapContextCreateImage(env, context);
     // This radius should match the one in src/bundle.rs.
     cg_image::borrow_image_mut(&mut env.objc, cg_image).round_corners(
-            12.0,
-        /* four_corners: */ true,
-        /* add_sheen: */ true,
+        12.0, /* four_corners: */ true, /* add_sheen: */ true,
     );
     CGContextRelease(env, context);
 
@@ -1583,14 +1624,26 @@ fn make_app_launcher_grid(
     let card_width = (super_view_size.width * 0.40).max(icon_size + 12.0 * ui_scale);
     let items = [
         ("Files", "openFileManager", "/res/picker_files_icon.jpg"),
-        ("Settings", "quickOptionsShow", "/res/picker_settings_icon.jpg"),
+        (
+            "Settings",
+            "quickOptionsShow",
+            "/res/picker_settings_icon.jpg",
+        ),
         ("Info", "copyrightInfoShow", "/res/picker_touchhle_icon.png"),
-        ("TouchHLE.org", "visitWebsite", "/res/picker_touchhle_icon.png"),
+        (
+            "TouchHLE.org",
+            "visitWebsite",
+            "/res/picker_touchhle_icon.png",
+        ),
     ];
     for (index, (title, selector_name, icon_path)) in items.iter().enumerate() {
         let row = index / 2;
         let column = index % 2;
-        let center = if row == 0 { first_row_center } else { second_row_center };
+        let center = if row == 0 {
+            first_row_center
+        } else {
+            second_row_center
+        };
         let card_center_x = if column == 0 {
             super_view_size.width * 0.28
         } else {
@@ -1609,9 +1662,18 @@ fn make_app_launcher_grid(
         let button: id = msg_class![env; UIButton buttonWithType:UIButtonTypeCustom];
         () = msg![env; button setFrame:icon_frame];
         let resource: &[u8] = match *icon_path {
-            "/res/picker_files_icon.jpg" => &include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/res/picker_files_icon.jpg"))[..],
-            "/res/picker_settings_icon.jpg" => &include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/res/picker_settings_icon.jpg"))[..],
-            "/res/picker_touchhle_icon.png" => &include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/res/picker_touchhle_icon.png"))[..],
+            "/res/picker_files_icon.jpg" => &include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/res/picker_files_icon.jpg"
+            ))[..],
+            "/res/picker_settings_icon.jpg" => &include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/res/picker_settings_icon.jpg"
+            ))[..],
+            "/res/picker_touchhle_icon.png" => &include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/res/picker_touchhle_icon.png"
+            ))[..],
             _ => unreachable!(),
         };
         let image = Image::from_bytes(resource).expect("picker icon resource must be valid");
@@ -2288,7 +2350,13 @@ fn setup_quick_options(
                 device_model_thumb = dropdown.3;
             }
             RowKind::GraphicsApiDropdown => {
-                let dropdown = make_graphics_api_dropdown(env, delegate, main_view, main_frame.size, row_center);
+                let dropdown = make_graphics_api_dropdown(
+                    env,
+                    delegate,
+                    main_view,
+                    main_frame.size,
+                    row_center,
+                );
                 graphics_api_btn = dropdown.0;
                 graphics_api_menu = dropdown.1;
                 graphics_api_items = dropdown.2;
@@ -2412,7 +2480,12 @@ const GRAPHICS_API_ENTRIES: &[(&str, crate::options::GraphicsApi)] = &[
     ),
 ];
 
-fn update_graphics_api_dropdown(env: &mut Environment, button: id, items: &[id], value: crate::options::GraphicsApi) {
+fn update_graphics_api_dropdown(
+    env: &mut Environment,
+    button: id,
+    items: &[id],
+    value: crate::options::GraphicsApi,
+) {
     for (index, &item) in items.iter().enumerate() {
         let color: id = if GRAPHICS_API_ENTRIES[index].1 == value {
             msg_class![env; UIColor magentaColor]
@@ -2426,11 +2499,23 @@ fn update_graphics_api_dropdown(env: &mut Environment, button: id, items: &[id],
     () = msg![env; button layoutSubviews];
 }
 
-fn make_graphics_api_dropdown(env: &mut Environment, delegate: id, super_view: id, super_view_size: CGSize, row_center: CGFloat) -> (id, id, Vec<id>) {
+fn make_graphics_api_dropdown(
+    env: &mut Environment,
+    delegate: id,
+    super_view: id,
+    super_view_size: CGSize,
+    row_center: CGFloat,
+) -> (id, id, Vec<id>) {
     let ui_scale = picker_ui_scale(super_view_size);
     let width = (super_view_size.width * 0.56).clamp(170.0, 720.0);
     let height = 30.0 * ui_scale;
-    let frame = CGRect { origin: CGPoint { x: super_view_size.width * 0.42, y: row_center - height / 2.0 }, size: CGSize { width, height } };
+    let frame = CGRect {
+        origin: CGPoint {
+            x: super_view_size.width * 0.42,
+            y: row_center - height / 2.0,
+        },
+        size: CGSize { width, height },
+    };
     let button: id = msg_class![env; UIButton buttonWithType:UIButtonTypeCustom];
     let title = ns_string::get_static_str(env, "Default (game)");
     () = msg![env; button setTitle:title forState:UIControlStateNormal];
@@ -2493,7 +2578,10 @@ fn make_ios_version_dropdown(
             x: super_view_size.width * 0.42,
             y: row_center - button_height / 2.0,
         },
-        size: CGSize { width: button_width, height: button_height },
+        size: CGSize {
+            width: button_width,
+            height: button_height,
+        },
     };
     let button: id = msg_class![env; UIButton buttonWithType:UIButtonTypeCustom];
     let title = ns_string::get_static_str(env, "iOS version");
@@ -2686,7 +2774,10 @@ fn make_device_model_dropdown(
     // Scrollbar track (full height) and thumb.
     let track_view: id = msg_class![env; UIView alloc];
     let track_frame = CGRect {
-        origin: CGPoint { x: list_width, y: 0.0 },
+        origin: CGPoint {
+            x: list_width,
+            y: 0.0,
+        },
         size: CGSize {
             width: scrollbar_width,
             height: visible_menu_height,
@@ -2699,7 +2790,10 @@ fn make_device_model_dropdown(
 
     let thumb_view: id = msg_class![env; UIView alloc];
     let thumb_frame = CGRect {
-        origin: CGPoint { x: list_width, y: 0.0 },
+        origin: CGPoint {
+            x: list_width,
+            y: 0.0,
+        },
         size: CGSize {
             width: scrollbar_width,
             height: (54.0 * ui_scale).min(visible_menu_height),
@@ -2714,7 +2808,10 @@ fn make_device_model_dropdown(
     let clear: id = msg_class![env; UIColor clearColor];
     let up_btn: id = msg_class![env; UIButton buttonWithType:UIButtonTypeCustom];
     let up_frame = CGRect {
-        origin: CGPoint { x: list_width, y: 0.0 },
+        origin: CGPoint {
+            x: list_width,
+            y: 0.0,
+        },
         size: CGSize {
             width: scrollbar_width,
             height: visible_menu_height / 2.0,

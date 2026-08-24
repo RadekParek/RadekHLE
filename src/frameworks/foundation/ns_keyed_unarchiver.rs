@@ -392,10 +392,16 @@ fn get_value_to_decode_for_key(env: &mut Environment, unarchiver: id, key: id) -
 fn number_from_plist_value(value: &Value) -> Option<NSNumberHostObject> {
     match value {
         Value::Boolean(value) => Some(NSNumberHostObject::Bool(*value)),
-        Value::Integer(value) => value
-            .as_signed()
-            .map(NSNumberHostObject::LongLong)
-            .or_else(|| value.as_unsigned().map(NSNumberHostObject::UnsignedLongLong)),
+        Value::Integer(value) => {
+            value
+                .as_signed()
+                .map(NSNumberHostObject::LongLong)
+                .or_else(|| {
+                    value
+                        .as_unsigned()
+                        .map(NSNumberHostObject::UnsignedLongLong)
+                })
+        }
         Value::Real(value) => Some(NSNumberHostObject::Double(*value)),
         _ => None,
     }
@@ -417,21 +423,41 @@ pub(super) fn decode_current_number(
         return value
             .as_boolean()
             .map(NSNumberHostObject::Bool)
-            .or_else(|| value.as_signed_integer().map(|value| NSNumberHostObject::Bool(value != 0)))
-            .or_else(|| value.as_unsigned_integer().map(|value| NSNumberHostObject::Bool(value != 0)));
+            .or_else(|| {
+                value
+                    .as_signed_integer()
+                    .map(|value| NSNumberHostObject::Bool(value != 0))
+            })
+            .or_else(|| {
+                value
+                    .as_unsigned_integer()
+                    .map(|value| NSNumberHostObject::Bool(value != 0))
+            });
     }
     if let Some(value) = item.get("NS.intval") {
         return value
             .as_signed_integer()
             .map(NSNumberHostObject::LongLong)
-            .or_else(|| value.as_unsigned_integer().map(NSNumberHostObject::UnsignedLongLong));
+            .or_else(|| {
+                value
+                    .as_unsigned_integer()
+                    .map(NSNumberHostObject::UnsignedLongLong)
+            });
     }
     if let Some(value) = item.get("NS.dblval") {
         return value
             .as_real()
             .map(NSNumberHostObject::Double)
-            .or_else(|| value.as_signed_integer().map(|value| NSNumberHostObject::Double(value as f64)))
-            .or_else(|| value.as_unsigned_integer().map(|value| NSNumberHostObject::Double(value as f64)));
+            .or_else(|| {
+                value
+                    .as_signed_integer()
+                    .map(|value| NSNumberHostObject::Double(value as f64))
+            })
+            .or_else(|| {
+                value
+                    .as_unsigned_integer()
+                    .map(|value| NSNumberHostObject::Double(value as f64))
+            });
     }
 
     item.get("NS.numbervalue")
@@ -519,7 +545,10 @@ fn unarchive_key(env: &mut Environment, unarchiver: id, key: Uid) -> id {
                     // is ultimately owned by ObjC via the host object
                     let class_name = class_name.to_string();
                     if class_name.is_empty() {
-                        log!("Warning: unarchive_key: empty $classname for class uid {}.", class_key.get());
+                        log!(
+                            "Warning: unarchive_key: empty $classname for class uid {}.",
+                            class_key.get()
+                        );
                     }
                     env.objc.get_known_class(&class_name, &mut env.mem)
                 };
@@ -703,4 +732,3 @@ fn keys_for_key(env: &mut Environment, unarchiver: id, key: &str) -> Vec<Uid> {
         .filter_map(|value| value.as_uid().copied())
         .collect()
 }
-

@@ -26,12 +26,12 @@ use sdl2::mouse::MouseButton;
 use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::surface::Surface;
 use sdl2_sys::SDL_PowerState;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::f32::consts::{FRAC_PI_2, PI};
 use std::ptr::null_mut;
 use std::time::{Duration, Instant};
-use std::cell::{Cell, RefCell};
 
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -236,7 +236,11 @@ impl DeviceFamily {
     }
 
     pub fn oldest_arm64_for_class(is_ipad: bool) -> Self {
-        if is_ipad { Self::iPadAir } else { Self::iPhone5s }
+        if is_ipad {
+            Self::iPadAir
+        } else {
+            Self::iPhone5s
+        }
     }
 
     pub fn is_ipod_touch(&self) -> bool {
@@ -251,7 +255,13 @@ impl DeviceFamily {
     }
 
     pub fn is_phone_568(&self) -> bool {
-        matches!(self, DeviceFamily::iPhone5 | DeviceFamily::iPhone5c | DeviceFamily::iPhone5s | DeviceFamily::iPodTouch5)
+        matches!(
+            self,
+            DeviceFamily::iPhone5
+                | DeviceFamily::iPhone5c
+                | DeviceFamily::iPhone5s
+                | DeviceFamily::iPodTouch5
+        )
     }
 
     pub fn is_retina(&self) -> bool {
@@ -314,17 +324,38 @@ impl DeviceFamily {
     /// Portrait (width, height) in logical points.
     pub fn portrait_size(&self) -> (u32, u32) {
         match self {
-            DeviceFamily::iPhone6 | DeviceFamily::iPhone6s | DeviceFamily::iPhone7 | DeviceFamily::iPhone8 => (375, 667),
-            DeviceFamily::iPhone6Plus | DeviceFamily::iPhone6sPlus | DeviceFamily::iPhone7Plus | DeviceFamily::iPhone8Plus => (414, 736),
+            DeviceFamily::iPhone6
+            | DeviceFamily::iPhone6s
+            | DeviceFamily::iPhone7
+            | DeviceFamily::iPhone8 => (375, 667),
+            DeviceFamily::iPhone6Plus
+            | DeviceFamily::iPhone6sPlus
+            | DeviceFamily::iPhone7Plus
+            | DeviceFamily::iPhone8Plus => (414, 736),
             DeviceFamily::iPhoneX => (375, 812),
             DeviceFamily::iPhoneSE2 | DeviceFamily::iPhoneSE3 => (375, 667),
             DeviceFamily::iPhone11 | DeviceFamily::iPhone12 | DeviceFamily::iPhone13 => (390, 844),
-            DeviceFamily::iPhone11Pro | DeviceFamily::iPhone12Pro | DeviceFamily::iPhone13Pro => (375, 812),
-            DeviceFamily::iPhone11ProMax | DeviceFamily::iPhone12ProMax | DeviceFamily::iPhone13ProMax => (414, 896),
-            DeviceFamily::iPhone14 | DeviceFamily::iPhone15 | DeviceFamily::iPhone16 | DeviceFamily::iPhone17 => (390, 844),
-            DeviceFamily::iPhone14Plus | DeviceFamily::iPhone15Plus | DeviceFamily::iPhone16Plus => (428, 926),
-            DeviceFamily::iPhone14Pro | DeviceFamily::iPhone15Pro | DeviceFamily::iPhone16Pro | DeviceFamily::iPhone17Pro => (393, 852),
-            DeviceFamily::iPhone14ProMax | DeviceFamily::iPhone15ProMax | DeviceFamily::iPhone16ProMax | DeviceFamily::iPhone17ProMax => (430, 932),
+            DeviceFamily::iPhone11Pro | DeviceFamily::iPhone12Pro | DeviceFamily::iPhone13Pro => {
+                (375, 812)
+            }
+            DeviceFamily::iPhone11ProMax
+            | DeviceFamily::iPhone12ProMax
+            | DeviceFamily::iPhone13ProMax => (414, 896),
+            DeviceFamily::iPhone14
+            | DeviceFamily::iPhone15
+            | DeviceFamily::iPhone16
+            | DeviceFamily::iPhone17 => (390, 844),
+            DeviceFamily::iPhone14Plus
+            | DeviceFamily::iPhone15Plus
+            | DeviceFamily::iPhone16Plus => (428, 926),
+            DeviceFamily::iPhone14Pro
+            | DeviceFamily::iPhone15Pro
+            | DeviceFamily::iPhone16Pro
+            | DeviceFamily::iPhone17Pro => (393, 852),
+            DeviceFamily::iPhone14ProMax
+            | DeviceFamily::iPhone15ProMax
+            | DeviceFamily::iPhone16ProMax
+            | DeviceFamily::iPhone17ProMax => (430, 932),
             DeviceFamily::iPhone16e => (390, 844),
             _ if self.is_ipad() => (768, 1024),
             _ if self.is_phone_568() => (320, 568),
@@ -335,16 +366,39 @@ impl DeviceFamily {
     /// UIScreen.scale — retina multiplier.
     pub fn scale_factor(&self) -> f32 {
         match self {
-            DeviceFamily::iPhone6Plus | DeviceFamily::iPhone6sPlus | DeviceFamily::iPhone7Plus | DeviceFamily::iPhone8Plus | DeviceFamily::iPhoneX => 3.0,
+            DeviceFamily::iPhone6Plus
+            | DeviceFamily::iPhone6sPlus
+            | DeviceFamily::iPhone7Plus
+            | DeviceFamily::iPhone8Plus
+            | DeviceFamily::iPhoneX => 3.0,
             DeviceFamily::iPhoneSE2 | DeviceFamily::iPhoneSE3 => 2.0,
-            DeviceFamily::iPhone11 | DeviceFamily::iPhone11Pro | DeviceFamily::iPhone11ProMax
-            | DeviceFamily::iPhone12Mini | DeviceFamily::iPhone12 | DeviceFamily::iPhone12Pro
-            | DeviceFamily::iPhone12ProMax | DeviceFamily::iPhone13Mini | DeviceFamily::iPhone13
-            | DeviceFamily::iPhone13Pro | DeviceFamily::iPhone13ProMax => 3.0,
-            DeviceFamily::iPhone14 | DeviceFamily::iPhone14Plus | DeviceFamily::iPhone14Pro | DeviceFamily::iPhone14ProMax
-            | DeviceFamily::iPhone15 | DeviceFamily::iPhone15Plus | DeviceFamily::iPhone15Pro | DeviceFamily::iPhone15ProMax
-            | DeviceFamily::iPhone16 | DeviceFamily::iPhone16Plus | DeviceFamily::iPhone16Pro | DeviceFamily::iPhone16ProMax
-            | DeviceFamily::iPhone16e | DeviceFamily::iPhone17 | DeviceFamily::iPhone17Pro | DeviceFamily::iPhone17ProMax => 3.0,
+            DeviceFamily::iPhone11
+            | DeviceFamily::iPhone11Pro
+            | DeviceFamily::iPhone11ProMax
+            | DeviceFamily::iPhone12Mini
+            | DeviceFamily::iPhone12
+            | DeviceFamily::iPhone12Pro
+            | DeviceFamily::iPhone12ProMax
+            | DeviceFamily::iPhone13Mini
+            | DeviceFamily::iPhone13
+            | DeviceFamily::iPhone13Pro
+            | DeviceFamily::iPhone13ProMax => 3.0,
+            DeviceFamily::iPhone14
+            | DeviceFamily::iPhone14Plus
+            | DeviceFamily::iPhone14Pro
+            | DeviceFamily::iPhone14ProMax
+            | DeviceFamily::iPhone15
+            | DeviceFamily::iPhone15Plus
+            | DeviceFamily::iPhone15Pro
+            | DeviceFamily::iPhone15ProMax
+            | DeviceFamily::iPhone16
+            | DeviceFamily::iPhone16Plus
+            | DeviceFamily::iPhone16Pro
+            | DeviceFamily::iPhone16ProMax
+            | DeviceFamily::iPhone16e
+            | DeviceFamily::iPhone17
+            | DeviceFamily::iPhone17Pro
+            | DeviceFamily::iPhone17ProMax => 3.0,
             _ if self.is_retina() => 2.0,
             _ => 1.0,
         }
@@ -1068,17 +1122,16 @@ impl Window {
             // A GLES1 window cannot later create the GLES2 context required by
             // the fixed-function translator on Android.
             let attr = video_ctx.gl_attr();
-            let use_gles2 = matches!(
-                options.graphics_api,
-                crate::options::GraphicsApi::Translator
-                    | crate::options::GraphicsApi::TranslatorGLES30
-                    | crate::options::GraphicsApi::GLES20
-                    | crate::options::GraphicsApi::GLES30
-                    | crate::options::GraphicsApi::Metal
-            ) || (matches!(
-                options.graphics_api,
-                crate::options::GraphicsApi::Default
-            ) && (options.prefer_gles2_context || options.angle_driver));
+            let use_gles2 =
+                matches!(
+                    options.graphics_api,
+                    crate::options::GraphicsApi::Translator
+                        | crate::options::GraphicsApi::TranslatorGLES30
+                        | crate::options::GraphicsApi::GLES20
+                        | crate::options::GraphicsApi::GLES30
+                        | crate::options::GraphicsApi::Metal
+                ) || (matches!(options.graphics_api, crate::options::GraphicsApi::Default)
+                    && (options.prefer_gles2_context || options.angle_driver));
             if use_gles2 {
                 let version = if matches!(
                     options.graphics_api,
@@ -1118,7 +1171,8 @@ impl Window {
         let device_family = options.device_family.unwrap_or(DeviceFamily::iPhone);
         let device_orientation = options.initial_orientation;
         let fullscreen = options.fullscreen;
-        let portrait_screen_size = host_screen_size.unwrap_or_else(|| device_family.portrait_size());
+        let portrait_screen_size =
+            host_screen_size.unwrap_or_else(|| device_family.portrait_size());
 
         let mut window = if Self::rotatable_fullscreen() {
             // Without this, SDL will force fullscreen mode to be portrait.
@@ -1142,8 +1196,11 @@ impl Window {
                 .unwrap();
             window
         } else {
-            let (width, height) =
-                size_for_orientation_from_size(portrait_screen_size, device_orientation, scale_hack);
+            let (width, height) = size_for_orientation_from_size(
+                portrait_screen_size,
+                device_orientation,
+                scale_hack,
+            );
             let window = video_ctx
                 .window(title, width, height)
                 .position_centered()
@@ -1157,7 +1214,11 @@ impl Window {
         if env::consts::OS == "android" {
             let gl_attr = video_ctx.gl_attr();
             debug_assert_eq!(gl_attr.context_profile(), sdl2::video::GLProfile::GLES);
-            log!("Android SDL requested GLES context {}.{}", gl_attr.context_version().0, gl_attr.context_version().1);
+            log!(
+                "Android SDL requested GLES context {}.{}",
+                gl_attr.context_version().0,
+                gl_attr.context_version().1
+            );
         }
 
         if let Some(icon) = icon {
@@ -1256,9 +1317,7 @@ impl Window {
             crate::options::GraphicsApi::GLES10 | crate::options::GraphicsApi::GLES11 => {
                 create_gles1_ctx_no_parent_stack(&mut window, options)
             }
-            crate::options::GraphicsApi::Metal => {
-                create_gles2_ctx_no_parent_stack(&mut window)
-            }
+            crate::options::GraphicsApi::Metal => create_gles2_ctx_no_parent_stack(&mut window),
             crate::options::GraphicsApi::Default => {
                 if options.prefer_gles2_context || options.angle_driver {
                     create_gles2_ctx_no_parent_stack(&mut window)
@@ -1305,11 +1364,8 @@ impl Window {
             independent_of_viewport: bool,
         ) -> (f32, f32) {
             let (vx, vy, vw, vh) = if independent_of_viewport {
-                let (width, height) = size_for_orientation(
-                    window.device_family,
-                    window.device_orientation,
-                    1.0,
-                );
+                let (width, height) =
+                    size_for_orientation(window.device_family, window.device_orientation, 1.0);
                 (0, 0, width, height)
             } else {
                 window.viewport()
@@ -2354,7 +2410,12 @@ impl Window {
         let mut gl = self.make_internal_gl_ctx_current();
         unsafe {
             gl.Viewport(x as _, y as _, width as _, height as _);
-            gl.ClearColor(clear_color[0], clear_color[1], clear_color[2], clear_color[3]);
+            gl.ClearColor(
+                clear_color[0],
+                clear_color[1],
+                clear_color[2],
+                clear_color[3],
+            );
             gl.Clear(crate::gles::gles11_raw::COLOR_BUFFER_BIT);
         }
         drop(gl);
@@ -2455,11 +2516,7 @@ impl Window {
     /// The aspect ratio, scale and orientation reflect the guest app's view of
     /// the world.
     pub fn size_unrotated_unscaled(&self) -> (u32, u32) {
-        size_for_orientation_from_size(
-            self.screen_size(),
-            DeviceOrientation::Portrait,
-            1.0,
-        )
+        size_for_orientation_from_size(self.screen_size(), DeviceOrientation::Portrait, 1.0)
     }
 
     pub fn framebuffer_size(&self) -> (u32, u32) {
@@ -2472,8 +2529,11 @@ impl Window {
     /// The aspect ratio of this region always reflects the guest app's view of
     /// the world, but the scale and orientation might not.
     pub fn viewport(&self) -> (u32, u32, u32, u32) {
-        let (app_width, app_height) =
-            size_for_orientation_from_size(self.screen_size(), self.device_orientation, self.scale_hack);
+        let (app_width, app_height) = size_for_orientation_from_size(
+            self.screen_size(),
+            self.device_orientation,
+            self.scale_hack,
+        );
         if !self.fullscreen && !Self::rotatable_fullscreen() {
             return (0, 0, app_width, app_height);
         }

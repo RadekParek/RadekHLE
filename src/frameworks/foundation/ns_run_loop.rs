@@ -408,7 +408,11 @@ pub fn run_run_loop(
                 .audio_queues,
         );
         let has_audio_sources = !audio_queues_tmp.is_empty()
-            || !env.objc.borrow::<NSRunLoopHostObject>(run_loop).audio_units.is_empty();
+            || !env
+                .objc
+                .borrow::<NSRunLoopHostObject>(run_loop)
+                .audio_units
+                .is_empty();
 
         for audio_queue in audio_queues_tmp.drain(..) {
             handle_audio_queue(env, audio_queue);

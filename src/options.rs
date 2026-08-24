@@ -46,7 +46,9 @@ impl Arm64Backend {
             "auto" => Ok(Self::Auto),
             "jit" => Ok(Self::Jit),
             "interpreter" => Ok(Self::Interpreter),
-            _ => Err(format!("Unknown ARM64 backend {value:?}; expected auto, jit, or interpreter")),
+            _ => Err(format!(
+                "Unknown ARM64 backend {value:?}; expected auto, jit, or interpreter"
+            )),
         }
     }
 
@@ -284,8 +286,8 @@ impl Options {
                 self.auto_device_family = true;
                 self.device_family = None;
             } else {
-                let parsed =
-                    DeviceFamily::try_from(value).map_err(|_| "Invalid device family".to_string())?;
+                let parsed = DeviceFamily::try_from(value)
+                    .map_err(|_| "Invalid device family".to_string())?;
                 self.auto_device_family = false;
                 self.device_family = Some(parsed);
             }
@@ -301,9 +303,11 @@ impl Options {
                 .ok_or_else(|| "--ios-version= requires MAJOR.MINOR[.PATCH]".to_string())?
                 .parse()
                 .map_err(|_| "Invalid minor version for --ios-version=".to_string())?;
-            let patch: i32 = parts.next().unwrap_or("0").parse().map_err(|_| {
-                "Invalid patch version for --ios-version=".to_string()
-            })?;
+            let patch: i32 = parts
+                .next()
+                .unwrap_or("0")
+                .parse()
+                .map_err(|_| "Invalid patch version for --ios-version=".to_string())?;
             if parts.next().is_some() || major < 1 || minor < 0 || patch < 0 {
                 return Err("Invalid value for --ios-version=".to_string());
             }
@@ -455,7 +459,11 @@ impl Options {
                 "off" | "0" => None,
                 "2" => Some(2),
                 "3" => Some(3),
-                _ => return Err("Invalid value for --frame-generation= (use off, 2, or 3)".to_string()),
+                _ => {
+                    return Err(
+                        "Invalid value for --frame-generation= (use off, 2, or 3)".to_string()
+                    )
+                }
             };
         } else if let Some(value) = arg.strip_prefix("--fps-limit=") {
             if value == "off" {

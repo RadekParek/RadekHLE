@@ -101,12 +101,18 @@ pub fn recomposite_if_necessary(env: &mut Environment, force: bool) -> Option<In
 
     let now = Instant::now();
     let interval = if env.options.frame_pacing {
-        env.options.fps_limit.map(|fps| 1.0 / fps).unwrap_or(1.0 / 60.0)
+        env.options
+            .fps_limit
+            .map(|fps| 1.0 / fps)
+            .unwrap_or(1.0 / 60.0)
     } else {
         0.0
     };
     if !env.options.frame_pacing {
-        env.framework_state.core_animation.composition.recomposite_next = None;
+        env.framework_state
+            .core_animation
+            .composition
+            .recomposite_next = None;
     }
     let new_recomposite_next = if !env.options.frame_pacing {
         None
@@ -134,7 +140,11 @@ pub fn recomposite_if_necessary(env: &mut Environment, force: bool) -> Option<In
         let advance_by = ns_time_interval_to_duration_or_zero(interval)
             .checked_mul(advance_by)
             .unwrap_or(Duration::ZERO);
-        Some(recomposite_next.checked_add(advance_by).unwrap_or(recomposite_next))
+        Some(
+            recomposite_next
+                .checked_add(advance_by)
+                .unwrap_or(recomposite_next),
+        )
     } else {
         // Apple's NSTimer/CADisplayLink "missed deadline" handling is
         // tolerant of bogus intervals: if the guest hands us a negative

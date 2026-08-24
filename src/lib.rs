@@ -26,9 +26,9 @@
 
 #[macro_use]
 mod log;
-mod abi;
 mod a64_abi;
 mod a64_runtime;
+mod abi;
 mod audio;
 mod bundle;
 mod cpu;
@@ -412,7 +412,10 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
     if options.fps_limit.is_none() {
         if let Some(refresh_rate) = window::host_refresh_rate() {
             options.fps_limit = Some(refresh_rate);
-            log!("Using host display refresh rate for frame pacing: {:.2} Hz", refresh_rate);
+            log!(
+                "Using host display refresh rate for frame pacing: {:.2} Hz",
+                refresh_rate
+            );
         }
     }
     crate::log::set_file_logging(options.log_file);
@@ -422,9 +425,17 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
         let executable_bytes = fs
             .read(bundle.executable_path())
             .map_err(|_| "Could not read executable to detect its architecture".to_string())?;
-        mach_o::detect_architecture(&executable_bytes, options.force_32_bit, options.force_64_bit).map_err(str::to_string)?
+        mach_o::detect_architecture(
+            &executable_bytes,
+            options.force_32_bit,
+            options.force_64_bit,
+        )
+        .map_err(str::to_string)?
     };
-    echo!("Selected executable architecture: {}", mach_o::architecture_name(architecture));
+    echo!(
+        "Selected executable architecture: {}",
+        mach_o::architecture_name(architecture)
+    );
     crate::gles::present::set_onscreen_hud_architecture(mach_o::architecture_name(architecture));
 
     if architecture == mach_o::MachOArchitecture::Arm64 && !options.force_32_bit {
@@ -434,7 +445,9 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
         return Err("--force-32-bit was requested, but this executable is ARM64-only and cannot run in the 32-bit ARM loader".to_string());
     }
     if options.force_64_bit {
-        return Err("--force-64-bit was requested, but this executable has no ARM64 slice".to_string());
+        return Err(
+            "--force-64-bit was requested, but this executable has no ARM64 slice".to_string(),
+        );
     }
 
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

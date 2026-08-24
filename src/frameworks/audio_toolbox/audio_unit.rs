@@ -8,11 +8,11 @@
 
 use std::time::Instant;
 
+use crate::abi::CallFromHost;
 use crate::audio::openal::al_types::{ALuint, ALvoid};
 use crate::audio::openal::{
-    AL_BUFFERS_PROCESSED, AL_BUFFERS_QUEUED, AL_PLAYING, AL_SOURCE_STATE, OpenAL,
+    OpenAL, AL_BUFFERS_PROCESSED, AL_BUFFERS_QUEUED, AL_PLAYING, AL_SOURCE_STATE,
 };
-use crate::abi::CallFromHost;
 use crate::dyld::FunctionExports;
 use crate::environment::Environment;
 use crate::export_c_func;
@@ -40,7 +40,10 @@ fn create_audio_source(context: &OpenAL<'_>) -> Option<ALuint> {
         context.GenSources(1, &mut source);
         let error = context.GetError();
         if error != 0 || source == 0 {
-            log!("Warning: could not allocate an AudioUnit OpenAL source: {:#x}", error);
+            log!(
+                "Warning: could not allocate an AudioUnit OpenAL source: {:#x}",
+                error
+            );
             if source != 0 {
                 context.DeleteSources(1, &source);
                 let _ = context.GetError();
@@ -50,7 +53,10 @@ fn create_audio_source(context: &OpenAL<'_>) -> Option<ALuint> {
         context.SourcePlay(source);
         let error = context.GetError();
         if error != 0 {
-            log!("Warning: could not start an AudioUnit OpenAL source: {:#x}", error);
+            log!(
+                "Warning: could not start an AudioUnit OpenAL source: {:#x}",
+                error
+            );
             context.DeleteSources(1, &source);
             let _ = context.GetError();
             return None;
@@ -1391,10 +1397,14 @@ pub fn render_audio_unit(env: &mut Environment, audio_unit: AudioUnit) {
 
     let written_bytes = {
         let list = if has_input_format {
-            let list = env.mem.read::<AudioBufferList<1>, true>(audio_buffer_list.cast());
+            let list = env
+                .mem
+                .read::<AudioBufferList<1>, true>(audio_buffer_list.cast());
             list.buffers[0]
         } else {
-            let list = env.mem.read::<AudioBufferList<2>, true>(audio_buffer_list.cast());
+            let list = env
+                .mem
+                .read::<AudioBufferList<2>, true>(audio_buffer_list.cast());
             list.buffers[0]
         };
         let channels = list.number_channels;

@@ -18,8 +18,8 @@ pub mod ui_text_field;
 use crate::frameworks::core_graphics::CGPoint;
 use crate::frameworks::foundation::NSUInteger;
 use crate::objc::{
-    id, impl_HostObject_with_superclass, msg, msg_class, msg_send, msg_super, nil, objc_classes, release,
-    retain, ClassExports, NSZonePtr, SEL,
+    id, impl_HostObject_with_superclass, msg, msg_class, msg_send, msg_super, nil, objc_classes,
+    release, retain, ClassExports, NSZonePtr, SEL,
 };
 use crate::Environment;
 
@@ -88,11 +88,20 @@ fn send_actions(env: &mut Environment, this: id, event: id, control_event: UICon
 
     for (target, action) in action_targets {
         if target == nil {
-            log_dbg!("UIControl {:?} resolving nil target action {:?} through responder chain", this, action);
+            log_dbg!(
+                "UIControl {:?} resolving nil target action {:?} through responder chain",
+                this,
+                action
+            );
             let application: id = msg_class![env; UIApplication sharedApplication];
-            let handled: bool = msg![env; application sendAction:action to:nil from:this forEvent:event];
+            let handled: bool =
+                msg![env; application sendAction:action to:nil from:this forEvent:event];
             if !handled {
-                log!("Warning: UIControl {:?} could not resolve responder-chain action {:?}", this, action);
+                log!(
+                    "Warning: UIControl {:?} could not resolve responder-chain action {:?}",
+                    this,
+                    action
+                );
             }
         } else {
             () = msg![env; this sendAction:action to:target forEvent:event];

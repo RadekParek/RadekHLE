@@ -109,7 +109,11 @@ where
     };
     let res = f(gles.as_mut(), &mut env.mem);
     if crate::gles::translator_tracing_enabled() && gles.is_translator() {
-        crate::gles::trace_translator_event(format!("guest call at {}:{}", caller.file(), caller.line()));
+        crate::gles::trace_translator_event(format!(
+            "guest call at {}:{}",
+            caller.file(),
+            caller.line()
+        ));
     }
     trace_gl_error(trace, unsafe { gles.GetError() }, caller);
     #[allow(clippy::let_and_return)]
@@ -1356,7 +1360,12 @@ fn glDrawArrays(env: &mut Environment, mode: GLenum, first: GLint, count: GLsize
         use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
         static SEEN: AtomicBool = AtomicBool::new(false);
         if !SEEN.swap(true, Ordering::Relaxed) {
-            log_dbg!("First glDrawArrays(mode=0x{:x}, first={}, count={})", mode, first, count);
+            log_dbg!(
+                "First glDrawArrays(mode=0x{:x}, first={}, count={})",
+                mode,
+                first,
+                count
+            );
         }
 
         if trace_potatogold_render() {
@@ -1409,7 +1418,12 @@ fn glDrawElements(
         use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
         static SEEN: AtomicBool = AtomicBool::new(false);
         if !SEEN.swap(true, Ordering::Relaxed) {
-            log_dbg!("First glDrawElements(mode=0x{:x}, count={}, type=0x{:x})", mode, count, type_);
+            log_dbg!(
+                "First glDrawElements(mode=0x{:x}, count={}, type=0x{:x})",
+                mode,
+                count,
+                type_
+            );
         }
 
         if trace_potatogold_render() {
@@ -1480,7 +1494,13 @@ fn glClearColor(
         use std::sync::atomic::{AtomicBool, Ordering};
         static SEEN: AtomicBool = AtomicBool::new(false);
         if !SEEN.swap(true, Ordering::Relaxed) {
-            log_dbg!("First glClearColor({}, {}, {}, {})", red, green, blue, alpha);
+            log_dbg!(
+                "First glClearColor({}, {}, {}, {})",
+                red,
+                green,
+                blue,
+                alpha
+            );
         }
     }
     with_ctx_and_mem(env, |gles, _mem| unsafe {
@@ -1688,8 +1708,11 @@ fn glReadPixels(
     with_ctx_and_mem(env, |gles, mem| {
         let pixels = {
             let mut alignment = 4;
-            unsafe { gles.GetIntegerv(gles11::PACK_ALIGNMENT, &mut alignment); }
-            let size = image_size_estimate(width, height, format, type_, alignment.max(1) as GuestUSize);
+            unsafe {
+                gles.GetIntegerv(gles11::PACK_ALIGNMENT, &mut alignment);
+            }
+            let size =
+                image_size_estimate(width, height, format, type_, alignment.max(1) as GuestUSize);
             mem.ptr_at_mut(pixels.cast::<u8>(), size).cast::<GLvoid>()
         };
         unsafe { gles.ReadPixels(x, y, width, height, format, type_, pixels) }
@@ -1793,7 +1816,12 @@ fn glTexParameteri(env: &mut Environment, target: GLenum, pname: GLenum, param: 
         use std::sync::atomic::{AtomicBool, Ordering};
         static SEEN: AtomicBool = AtomicBool::new(false);
         if !SEEN.swap(true, Ordering::Relaxed) {
-            log_dbg!("First glTexParameteri(target=0x{:x}, pname=0x{:x}, param=0x{:x})", target, pname, param as u32);
+            log_dbg!(
+                "First glTexParameteri(target=0x{:x}, pname=0x{:x}, param=0x{:x})",
+                target,
+                pname,
+                param as u32
+            );
         }
     }
     if pname == gles11::TEXTURE_CROP_RECT_OES {
@@ -2011,7 +2039,14 @@ fn glTexImage2D(
         use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
         static SEEN: AtomicBool = AtomicBool::new(false);
         if !SEEN.swap(true, Ordering::Relaxed) {
-            log_dbg!("First glTexImage2D({}x{}, internalformat=0x{:x}, format=0x{:x}, type=0x{:x})", width, height, internalformat as u32, format, type_);
+            log_dbg!(
+                "First glTexImage2D({}x{}, internalformat=0x{:x}, format=0x{:x}, type=0x{:x})",
+                width,
+                height,
+                internalformat as u32,
+                format,
+                type_
+            );
         }
 
         if trace_potatogold_render() {
@@ -2040,16 +2075,12 @@ fn glTexImage2D(
         let pixels = if pixels.is_null() {
             std::ptr::null()
         } else {
-            let size = image_size_estimate(width, height, format, type_, alignment.max(1) as GuestUSize);
+            let size =
+                image_size_estimate(width, height, format, type_, alignment.max(1) as GuestUSize);
             mem.ptr_at(pixels.cast::<u8>(), size).cast::<GLvoid>()
         };
         if let Some(decoded) = crate::gles::util::decode_texture_to_rgba8(
-            width,
-            height,
-            format,
-            type_,
-            pixels,
-            alignment,
+            width, height, format, type_, pixels, alignment,
         ) {
             gles.PixelStorei(gles11::UNPACK_ALIGNMENT, 1);
             gles.TexImage2D(
@@ -2101,15 +2132,11 @@ fn glTexSubImage2D(
     with_ctx_and_mem(env, |gles, mem| unsafe {
         let mut alignment = 4;
         gles.GetIntegerv(gles11::UNPACK_ALIGNMENT, &mut alignment);
-        let size = image_size_estimate(width, height, format, type_, alignment.max(1) as GuestUSize);
+        let size =
+            image_size_estimate(width, height, format, type_, alignment.max(1) as GuestUSize);
         let pixels = mem.ptr_at(pixels.cast::<u8>(), size).cast::<GLvoid>();
         if let Some(decoded) = crate::gles::util::decode_texture_to_rgba8(
-            width,
-            height,
-            format,
-            type_,
-            pixels,
-            alignment,
+            width, height, format, type_, pixels, alignment,
         ) {
             gles.PixelStorei(gles11::UNPACK_ALIGNMENT, 1);
             gles.TexSubImage2D(
@@ -2146,7 +2173,13 @@ fn glCompressedTexImage2D(
         use std::sync::atomic::{AtomicBool, Ordering};
         static SEEN: AtomicBool = AtomicBool::new(false);
         if !SEEN.swap(true, Ordering::Relaxed) {
-            log_dbg!("First glCompressedTexImage2D({}x{}, internalformat=0x{:x}, image_size={})", width, height, internalformat, image_size);
+            log_dbg!(
+                "First glCompressedTexImage2D({}x{}, internalformat=0x{:x}, image_size={})",
+                width,
+                height,
+                internalformat,
+                image_size
+            );
         }
     }
     let fix_filter = env.options.fix_texture_min_filter && level == 0;
@@ -2520,7 +2553,9 @@ fn glGetRenderbufferParameterivOES(
         let params = mem.ptr_at_mut(params, 1);
         unsafe { gles.GetRenderbufferParameterivOES(target, pname, params) };
         if pname == gles11::RENDERBUFFER_WIDTH_OES || pname == gles11::RENDERBUFFER_HEIGHT_OES {
-            unsafe { params.write_unaligned((params.read_unaligned() as f32 / factor).round() as GLint) }
+            unsafe {
+                params.write_unaligned((params.read_unaligned() as f32 / factor).round() as GLint)
+            }
         }
     })
 }
@@ -3365,7 +3400,9 @@ fn glVertexAttrib1f(env: &mut Environment, index: GLuint, x: GLfloat) {
 }
 fn glVertexAttrib1fv(env: &mut Environment, index: GLuint, values: ConstPtr<GLfloat>) {
     let value = env.mem.read(values);
-    with_ctx_and_mem(env, |gles, _mem| unsafe { gles.VertexAttrib1fv(index, &value) });
+    with_ctx_and_mem(env, |gles, _mem| unsafe {
+        gles.VertexAttrib1fv(index, &value)
+    });
 }
 fn glVertexAttrib2f(env: &mut Environment, index: GLuint, x: GLfloat, y: GLfloat) {
     with_ctx_and_mem(env, |gles, _mem| unsafe {
@@ -5460,7 +5497,10 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(glUnmapBuffer(_)),
     export_c_func_aliased!("glMapBufferRangeEXT", glMapBufferRange(_, _, _, _)),
     export_c_func!(glMapBufferRange(_, _, _, _)),
-    export_c_func_aliased!("glFlushMappedBufferRangeEXT", glFlushMappedBufferRange(_, _, _)),
+    export_c_func_aliased!(
+        "glFlushMappedBufferRangeEXT",
+        glFlushMappedBufferRange(_, _, _)
+    ),
     export_c_func!(glFlushMappedBufferRange(_, _, _)),
     export_c_func!(glCopyBufferSubData(_, _, _, _, _)),
     export_c_func!(glBindBufferBase(_, _, _)),

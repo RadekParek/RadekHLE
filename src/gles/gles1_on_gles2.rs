@@ -2566,11 +2566,32 @@ impl GLES for GLES1OnGLES2<'_> {
     ) {
         if !data.is_null() && image_size > 0 {
             let payload = std::slice::from_raw_parts(data.cast::<u8>(), image_size as usize);
-            if try_decode_pvrtc(self, target, level, internalformat, width, height, border, payload) {
+            if try_decode_pvrtc(
+                self,
+                target,
+                level,
+                internalformat,
+                width,
+                height,
+                border,
+                payload,
+            ) {
                 return;
             }
-            if let Some(decoded) = PalettedTextureFormat::decode_rgba8(internalformat, width, height, payload) {
-                gl::TexImage2D(target, level, es1::RGBA as GLint, width, height, border, es1::RGBA, es1::UNSIGNED_BYTE, decoded.as_ptr().cast());
+            if let Some(decoded) =
+                PalettedTextureFormat::decode_rgba8(internalformat, width, height, payload)
+            {
+                gl::TexImage2D(
+                    target,
+                    level,
+                    es1::RGBA as GLint,
+                    width,
+                    height,
+                    border,
+                    es1::RGBA,
+                    es1::UNSIGNED_BYTE,
+                    decoded.as_ptr().cast(),
+                );
                 return;
             }
         }
@@ -3352,7 +3373,10 @@ impl GLES for GLES1OnGLES2<'_> {
             self.state.material_emission.as_ptr(),
         );
         gl::Uniform1i(
-            gl::GetUniformLocation(program, b"u_light_model_local_viewer\0".as_ptr() as *const _),
+            gl::GetUniformLocation(
+                program,
+                b"u_light_model_local_viewer\0".as_ptr() as *const _,
+            ),
             self.state.light_model_local_viewer as GLint,
         );
         gl::Uniform1i(
@@ -3731,7 +3755,10 @@ impl GLES for GLES1OnGLES2<'_> {
             self.state.material_emission.as_ptr(),
         );
         gl::Uniform1i(
-            gl::GetUniformLocation(program, b"u_light_model_local_viewer\0".as_ptr() as *const _),
+            gl::GetUniformLocation(
+                program,
+                b"u_light_model_local_viewer\0".as_ptr() as *const _,
+            ),
             self.state.light_model_local_viewer as GLint,
         );
         gl::Uniform1i(

@@ -94,15 +94,14 @@ pub fn decode_symphonia_to_pcm(file: Cursor<Vec<u8>>) -> Result<SymphoniaDecoded
 
     // Create the decoder via `get_codecs().make_audio_decoder(...)`.
     let dec_opts = AudioDecoderOptions::default();
-    let mut decoder = match symphonia::default::get_codecs()
-        .make_audio_decoder(&audio_params, &dec_opts)
-    {
-        Ok(d) => d,
-        Err(e) => {
-            log!("Symphonia failed to create decoder: {:?}", e);
-            return Err(());
-        }
-    };
+    let mut decoder =
+        match symphonia::default::get_codecs().make_audio_decoder(&audio_params, &dec_opts) {
+            Ok(d) => d,
+            Err(e) => {
+                log!("Symphonia failed to create decoder: {:?}", e);
+                return Err(());
+            }
+        };
 
     let mut out_pcm = Vec::<u8>::new();
     // Reused scratch buffer for the interleaved bytes of each decoded packet.

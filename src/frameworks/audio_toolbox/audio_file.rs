@@ -6,6 +6,7 @@
  */
 //! `AudioFile.h` (Audio File Services)
 
+use super::audio_converter::AudioStreamPacketDescription;
 use crate::abi::{CallFromHost, GuestFunction};
 use crate::audio; // Избегаем путаницы имен
 use crate::audio::AudioDescription;
@@ -16,7 +17,6 @@ use crate::frameworks::core_audio_types::{
     kAudioFormatFlagIsPacked, kAudioFormatFlagIsSignedInteger, kAudioFormatLinearPCM,
     AudioStreamBasicDescription,
 };
-use super::audio_converter::AudioStreamPacketDescription;
 use crate::frameworks::core_foundation::cf_url::CFURLRef;
 use crate::frameworks::foundation::ns_url::to_rust_path;
 use crate::mem::{guest_size_of, ConstPtr, ConstVoidPtr, GuestUSize, MutPtr, MutVoidPtr, SafeRead};
@@ -187,7 +187,9 @@ pub fn AudioFileCreateWithURL(
     let bpp = format.bytes_per_packet;
     log_dbg!(
         "AudioFileCreateWithURL: creating virtual writable file (rate={}, ch={}, bpp={})",
-        sr, ch, bpp
+        sr,
+        ch,
+        bpp
     );
 
     let host_object = AudioFileHostObject::Writable {
@@ -240,7 +242,9 @@ pub fn AudioFileInitializeWithCallbacks(
     let bpp = format.bytes_per_packet;
     log_dbg!(
         "AudioFileInitializeWithCallbacks: creating virtual writable file (rate={}, ch={}, bpp={})",
-        sr, ch, bpp
+        sr,
+        ch,
+        bpp
     );
 
     let host_object = AudioFileHostObject::Writable {
@@ -656,13 +660,11 @@ pub fn AudioFileReadPackets(
         // (per Apple's Audio File Services documentation, descriptions are
         // required to make sense of VBR data).
         let aac_packet_infos = match host_object {
-            AudioFileHostObject::Real(ref audio_file) => {
-                audio_file.aac_packets().map(|aac| {
-                    (0..packets_to_read)
-                        .map_while(|i| aac.packet_info(in_starting_packet as u64 + u64::from(i)))
-                        .collect::<Vec<(u64, u32)>>()
-                })
-            }
+            AudioFileHostObject::Real(ref audio_file) => audio_file.aac_packets().map(|aac| {
+                (0..packets_to_read)
+                    .map_while(|i| aac.packet_info(in_starting_packet as u64 + u64::from(i)))
+                    .collect::<Vec<(u64, u32)>>()
+            }),
             _ => None,
         };
         let Some(packet_infos) = aac_packet_infos else {
@@ -695,8 +697,7 @@ pub fn AudioFileReadPackets(
         }
 
         if !out_packet_descriptions.is_null() {
-            let descriptions: MutPtr<AudioStreamPacketDescription> =
-                out_packet_descriptions.cast();
+            let descriptions: MutPtr<AudioStreamPacketDescription> = out_packet_descriptions.cast();
             let mut start_offset: i64 = 0;
             for (i, &(_, size)) in packet_infos[..packets_read as usize].iter().enumerate() {
                 env.mem.write(
@@ -713,7 +714,8 @@ pub fn AudioFileReadPackets(
 
         env.mem.write(io_num_packets, packets_read);
         if !out_num_bytes.is_null() {
-            env.mem.write(out_num_bytes, written.try_into().unwrap_or(0));
+            env.mem
+                .write(out_num_bytes, written.try_into().unwrap_or(0));
         }
         return if packets_read < packets_to_read {
             eofErr
@@ -803,7 +805,8 @@ pub fn AudioFileReadPackets(
         // At true EOF this means 0 bytes / 0 packets / noErr, which lets many
         // CoreAudio clients stop cleanly without printing eofErr forever.
         if !out_num_bytes.is_null() {
-            env.mem.write(out_num_bytes, bytes_read.try_into().unwrap_or(0));
+            env.mem
+                .write(out_num_bytes, bytes_read.try_into().unwrap_or(0));
         }
         env.mem.write(io_num_packets, packets_read);
 
@@ -1169,9 +1172,7 @@ pub fn AudioFileGetProperty(
             }
         }
         AudioFileHostObject::Writable {
-            format,
-            ref data,
-            ..
+            format, ref data, ..
         } => {
             let byte_count = data.len() as u64;
             let packet_count = if format.bytes_per_packet > 0 {
@@ -1278,9 +1279,10 @@ pub fn AudioFileCountUserData(
     // for read-only files, most iOS game audio (WAV/CAF PCM) has no user data
     // chunks, so we return 0.
     let count = match host_object {
-        AudioFileHostObject::Writable { ref user_data, .. } => {
-            user_data.iter().filter(|(id, _)| *id == in_user_data_id).count() as u32
-        }
+        AudioFileHostObject::Writable { ref user_data, .. } => user_data
+            .iter()
+            .filter(|(id, _)| *id == in_user_data_id)
+            .count() as u32,
         _ => 0, // Real/Dummy files: no user data parsing implemented
     };
 
@@ -1314,7 +1316,10 @@ pub fn AudioFileGetUserDataSize(
                 .filter(|(id, _)| *id == in_user_data_id)
                 .collect();
             if (in_index as usize) < matching.len() {
-                env.mem.write(out_user_data_size, matching[in_index as usize].1.len() as u32);
+                env.mem.write(
+                    out_user_data_size,
+                    matching[in_index as usize].1.len() as u32,
+                );
                 kAudioFileSuccess
             } else {
                 env.mem.write(out_user_data_size, 0);
@@ -1354,7 +1359,10 @@ pub fn AudioFileGetUserDataSize64(
                 .filter(|(id, _)| *id == in_user_data_id)
                 .collect();
             if (in_index as usize) < matching.len() {
-                env.mem.write(out_user_data_size, matching[in_index as usize].1.len() as u64);
+                env.mem.write(
+                    out_user_data_size,
+                    matching[in_index as usize].1.len() as u64,
+                );
                 kAudioFileSuccess
             } else {
                 env.mem.write(out_user_data_size, 0);
@@ -1478,11 +1486,15 @@ pub fn AudioFileSetUserData(
     };
 
     match host_object {
-        AudioFileHostObject::Writable { ref mut user_data, .. } => {
+        AudioFileHostObject::Writable {
+            ref mut user_data, ..
+        } => {
             let data_bytes = if in_user_data.is_null() || in_user_data_size == 0 {
                 Vec::new()
             } else {
-                env.mem.bytes_at(in_user_data.cast(), in_user_data_size).to_vec()
+                env.mem
+                    .bytes_at(in_user_data.cast(), in_user_data_size)
+                    .to_vec()
             };
 
             // Find and replace existing entry at index, or append
@@ -1528,7 +1540,9 @@ pub fn AudioFileRemoveUserData(
     };
 
     match host_object {
-        AudioFileHostObject::Writable { ref mut user_data, .. } => {
+        AudioFileHostObject::Writable {
+            ref mut user_data, ..
+        } => {
             let matching_indices: Vec<usize> = user_data
                 .iter()
                 .enumerate()

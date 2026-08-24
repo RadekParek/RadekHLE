@@ -1047,7 +1047,10 @@ fn path_for_resource_helper(
     let data_path: id = msg![env; data_path stringByAppendingPathComponent:name];
     let data_path_exists: bool = msg![env; file_manager fileExistsAtPath:data_path];
     if data_path_exists {
-        log_dbg!("NSBundle resource lookup used Unity Data fallback for {:?}", name_str);
+        log_dbg!(
+            "NSBundle resource lookup used Unity Data fallback for {:?}",
+            name_str
+        );
     }
     if data_path_exists {
         return data_path;

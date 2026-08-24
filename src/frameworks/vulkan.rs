@@ -149,7 +149,10 @@ fn vkEnumerateInstanceLayerProperties(
                 description: [0; VK_MAX_EXTENSION_NAME_SIZE],
             };
             write_name(&mut property.layer_name, name);
-            write_name(&mut property.description, "RadekHLE Vulkan compatibility layer");
+            write_name(
+                &mut property.description,
+                "RadekHLE Vulkan compatibility layer",
+            );
             write_struct(env, (properties + index as u32).cast(), property);
         }
         if write_count < layers.len() as u32 {

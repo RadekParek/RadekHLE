@@ -116,7 +116,11 @@ pub fn sqlite3_open(env: &mut Environment, filename_ptr: u32, pp_db: u32) -> u32
             .into_owned()
     };
 
-    log!("libsqlite3: sqlite3_open requested {:?} => {:?}", filename, path);
+    log!(
+        "libsqlite3: sqlite3_open requested {:?} => {:?}",
+        filename,
+        path
+    );
 
     match Connection::open(&path) {
         Ok(conn) => {
@@ -909,7 +913,13 @@ pub const FUNCTIONS: FunctionExports = &[
 
 pub const DYLIB: HostDylib = HostDylib {
     path: "/usr/lib/libsqlite3.dylib",
-    aliases: &["/usr/lib/libsqlite3.0.dylib", "sqlite3", "libsqlite3", "libsqlite3.dylib", "sqlite3.dylib"],
+    aliases: &[
+        "/usr/lib/libsqlite3.0.dylib",
+        "sqlite3",
+        "libsqlite3",
+        "libsqlite3.dylib",
+        "sqlite3.dylib",
+    ],
     class_exports: &[],
     constant_exports: &[],
     function_exports: &[FUNCTIONS],

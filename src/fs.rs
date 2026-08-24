@@ -150,8 +150,8 @@ impl FsNode {
         }
     }
 
-    // ИСПРАВЛЕНИЕ: Рекурсивно обновляем пути хоста во всем дереве VFS 
-    // при перемещении или переименовании директорий. Без этого дочерние 
+    // ИСПРАВЛЕНИЕ: Рекурсивно обновляем пути хоста во всем дереве VFS
+    // при перемещении или переименовании директорий. Без этого дочерние
     // файлы будут ссылаться на старые несуществующие пути.
     fn update_host_paths_recursively(&mut self, new_host_path: PathBuf) {
         match self {
@@ -345,13 +345,12 @@ pub fn resolve_path<'a>(path: &'a GuestPath, relative_to: Option<&'a GuestPath>)
     if components.len() > 6 {
         let marker = ["var", "mobile", "Applications"];
         // Skip the first occurrence (position 0) and look for a second one.
-        if let Some(dup_start) = components.windows(marker.len()).position(|w| {
-            w == marker
-        }) {
+        if let Some(dup_start) = components.windows(marker.len()).position(|w| w == marker) {
             // Check if there's a second occurrence of the same marker.
-            if let Some(second_pos) = components[dup_start + 1..].windows(marker.len()).position(|w| {
-                w == marker
-            }) {
+            if let Some(second_pos) = components[dup_start + 1..]
+                .windows(marker.len())
+                .position(|w| w == marker)
+            {
                 let real_start = dup_start + 1 + second_pos;
                 log_dbg!(
                     "Path deduplication: stripping duplicate prefix at component {}",
@@ -555,10 +554,12 @@ impl GuestFile {
                 std::io::ErrorKind::IsADirectory,
                 "Attempt to resize a directory as a guest file",
             )),
-            GuestFile::PipeRead(_) | GuestFile::PipeWrite(_) | GuestFile::Random(_) => Err(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "Attempt to resize a pipe or character device",
-            )),
+            GuestFile::PipeRead(_) | GuestFile::PipeWrite(_) | GuestFile::Random(_) => {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "Attempt to resize a pipe or character device",
+                ))
+            }
             GuestFile::Socket => Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "set_len not supported on socket",
@@ -579,7 +580,10 @@ impl GuestFile {
         // https://stackoverflow.com/questions/65911066/what-does-lseek-mean-for-a-directory-file-descriptor
         !matches!(
             self,
-            GuestFile::Socket | GuestFile::PipeRead(_) | GuestFile::PipeWrite(_) | GuestFile::Random(_)
+            GuestFile::Socket
+                | GuestFile::PipeRead(_)
+                | GuestFile::PipeWrite(_)
+                | GuestFile::Random(_)
         )
     }
 
@@ -616,12 +620,10 @@ impl GuestFile {
                 pipe.borrow_mut().write_handles += 1;
                 Ok(GuestFile::PipeWrite(pipe.clone()))
             }
-            GuestFile::Socket => {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::Unsupported,
-                    "Cannot duplicate a socket file descriptor",
-                ))
-            }
+            GuestFile::Socket => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Cannot duplicate a socket file descriptor",
+            )),
         }
     }
     pub fn close_pipe_endpoint(&mut self) {
@@ -1297,7 +1299,7 @@ impl Fs {
         }
     }
 
-    // ИСПРАВЛЕНИЕ: ЧЕСТНАЯ РЕАЛИЗАЦИЯ ПЕРЕИМЕНОВАНИЯ 
+    // ИСПРАВЛЕНИЕ: ЧЕСТНАЯ РЕАЛИЗАЦИЯ ПЕРЕИМЕНОВАНИЯ
     // Поддерживает и файлы, и директории, обновляет дерево VFS без паники
     pub fn rename<P: AsRef<GuestPath> + Copy>(&mut self, from: P, to: P) -> Result<(), ()> {
         let from_path = from.as_ref();
@@ -1313,8 +1315,7 @@ impl Fs {
                 writeable: true,
             } => p.clone(),
             FsNode::Directory {
-                writeable: Some(p),
-                ..
+                writeable: Some(p), ..
             } => p.clone(),
             _ => return Err(()), // Нельзя перемещать read-only или системные файлы архива
         };

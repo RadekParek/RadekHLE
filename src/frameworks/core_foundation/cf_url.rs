@@ -13,8 +13,7 @@ use super::cf_allocator::{kCFAllocatorDefault, CFAllocatorRef};
 use super::{CFIndex, CFRelease, CFRetain};
 use crate::dyld::{export_c_func, ConstantExports, FunctionExports, HostConstant};
 use crate::frameworks::core_foundation::cf_string::{
-    kCFStringEncodingUTF8, CFStringConvertEncodingToNSStringEncoding,
-    CFStringEncoding, CFStringRef,
+    kCFStringEncodingUTF8, CFStringConvertEncodingToNSStringEncoding, CFStringEncoding, CFStringRef,
 };
 use crate::frameworks::foundation::ns_string::{
     from_rust_string, get_static_str, to_rust_string, NSUTF8StringEncoding,
@@ -1062,7 +1061,6 @@ fn CFURLCreateStringByAddingPercentEscapes(
         }
     }
 
-    
     from_rust_string(env, result)
 }
 

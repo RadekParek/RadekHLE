@@ -886,7 +886,10 @@ impl GLES1OnGL2<'_> {
         let mut vertex_stride: GLint = 0;
         gl21::GetIntegerv(gl21::VERTEX_ARRAY_STRIDE, &mut vertex_stride);
         let mut vertex_buffer_binding: GLint = 0;
-        gl21::GetIntegerv(gl21::VERTEX_ARRAY_BUFFER_BINDING, &mut vertex_buffer_binding);
+        gl21::GetIntegerv(
+            gl21::VERTEX_ARRAY_BUFFER_BINDING,
+            &mut vertex_buffer_binding,
+        );
         let mut vertex_pointer: *mut GLvoid = std::ptr::null_mut();
         #[allow(clippy::unnecessary_mut_passed)]
         gl21::GetPointerv(gl21::VERTEX_ARRAY_POINTER, &mut vertex_pointer);
@@ -962,8 +965,7 @@ impl GLES1OnGL2<'_> {
                 }
                 weight_sum += w;
                 let mat_index = (indices[u] as i64).clamp(0, (palette_count as i64) - 1) as usize;
-                let transformed =
-                    mat4_transform(&self.state.palette_matrices[mat_index], object);
+                let transformed = mat4_transform(&self.state.palette_matrices[mat_index], object);
                 for c in 0..4 {
                     blended[c] += w * transformed[c];
                 }
@@ -1011,7 +1013,10 @@ impl GLES1OnGL2<'_> {
             return None;
         }
         let mut index_buffer_binding = 0;
-        gl21::GetIntegerv(gl21::ELEMENT_ARRAY_BUFFER_BINDING, &mut index_buffer_binding);
+        gl21::GetIntegerv(
+            gl21::ELEMENT_ARRAY_BUFFER_BINDING,
+            &mut index_buffer_binding,
+        );
         let base = if index_buffer_binding != 0 {
             let mapped = gl21::MapBuffer(gl21::ELEMENT_ARRAY_BUFFER, gl21::READ_ONLY);
             if mapped.is_null() {
@@ -1104,7 +1109,12 @@ impl GLES1OnGL2<'_> {
 
         // Restore the previous vertex array binding/pointer.
         gl21::BindBuffer(gl21::ARRAY_BUFFER, old_buffer as GLuint);
-        gl21::VertexPointer(old_size, old_type as GLenum, old_stride, old_pointer.cast_const());
+        gl21::VertexPointer(
+            old_size,
+            old_type as GLenum,
+            old_stride,
+            old_pointer.cast_const(),
+        );
         gl21::BindBuffer(gl21::ARRAY_BUFFER, 0);
     }
 
@@ -2239,9 +2249,7 @@ impl GLES for GLES1OnGL2<'_> {
         // GL_OES_matrix_palette skinning for indexed draws: skin the full
         // range of referenced vertices, then draw with blended positions.
         if self.matrix_palette_active() {
-            if let Some((first, vcount)) =
-                self.indexed_draw_vertex_range(count, type_, indices)
-            {
+            if let Some((first, vcount)) = self.indexed_draw_vertex_range(count, type_, indices) {
                 if let Some(skinned) = self.skin_vertices(first, vcount) {
                     self.draw_elements_skinned(mode, count, type_, indices, &skinned);
                     return;
@@ -2660,19 +2668,14 @@ impl GLES for GLES1OnGL2<'_> {
         );
         if is_pvrtc_2bit || is_pvrtc_4bit {
             let Ok(width_u) = u32::try_from(width) else {
-                log!(
-                    "Warning: CompressedTexSubImage2D: invalid width {width}; skipping."
-                );
+                log!("Warning: CompressedTexSubImage2D: invalid width {width}; skipping.");
                 return;
             };
             let Ok(height_u) = u32::try_from(height) else {
-                log!(
-                    "Warning: CompressedTexSubImage2D: invalid height {height}; skipping."
-                );
+                log!("Warning: CompressedTexSubImage2D: invalid height {height}; skipping.");
                 return;
             };
-            let pixels =
-                crate::image::decode_pvrtc(data_slice, is_pvrtc_2bit, width_u, height_u);
+            let pixels = crate::image::decode_pvrtc(data_slice, is_pvrtc_2bit, width_u, height_u);
             gl21::TexSubImage2D(
                 target,
                 level,
@@ -3226,13 +3229,7 @@ impl GLES for GLES1OnGL2<'_> {
         width: GLsizei,
         height: GLsizei,
     ) {
-        gl21::RenderbufferStorageMultisampleEXT(
-            target,
-            samples,
-            internalformat,
-            width,
-            height,
-        )
+        gl21::RenderbufferStorageMultisampleEXT(target, samples, internalformat, width, height)
     }
     unsafe fn ResolveMultisampleFramebufferAPPLE(&mut self) {
         // Apple's GL_APPLE_framebuffer_multisample doesn't take any arguments:

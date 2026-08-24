@@ -1657,8 +1657,7 @@ impl<'gl_ctx> GLES1Native<'gl_ctx> {
         // The synthetic error must be queued on *every* call, because the
         // ES 2.0 spec requires `GL_INVALID_OPERATION` to be reported each
         // time one of these entry points is hit on an ES 1.1 context.
-        self.pending_synthetic_error
-            .set(gles11::INVALID_OPERATION);
+        self.pending_synthetic_error.set(gles11::INVALID_OPERATION);
 
         // The accompanying human-readable warning, however, must only be
         // emitted once per distinct entry point. Apps such as Cut the Rope

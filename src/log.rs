@@ -29,7 +29,9 @@ pub fn file_logging_enabled() -> bool {
 /// who don't have access to ADB, so we also write to a log file.
 pub fn get_log_file() -> &'static Mutex<File> {
     static LOG_FILE: LazyLock<Mutex<File>> = LazyLock::new(|| {
-        Mutex::new(File::create(crate::paths::user_data_base_path().join("touchHLE_log.txt")).unwrap())
+        Mutex::new(
+            File::create(crate::paths::user_data_base_path().join("touchHLE_log.txt")).unwrap(),
+        )
     });
 
     &LOG_FILE
@@ -143,7 +145,4 @@ macro_rules! echo_no_panic {
 
 /// Put modules to enable [log_dbg] for here, e.g. "touchHLE::mem" to see when
 /// memory is allocated and freed.
-pub const ENABLED_MODULES: &[&str] = &[
-    "touchHLE::environment64",
-    "touchHLE::a64_runtime",
-];
+pub const ENABLED_MODULES: &[&str] = &["touchHLE::environment64", "touchHLE::a64_runtime"];

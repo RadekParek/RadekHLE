@@ -378,43 +378,83 @@ pub struct PalettedTextureFormat {
     pub palette_entry_type: GLenum,
 }
 impl PalettedTextureFormat {
-    pub fn decode_rgba8(internalformat: GLenum, width: GLsizei, height: GLsizei, payload: &[u8]) -> Option<Vec<u8>> {
+    pub fn decode_rgba8(
+        internalformat: GLenum,
+        width: GLsizei,
+        height: GLsizei,
+        payload: &[u8],
+    ) -> Option<Vec<u8>> {
         let info = Self::get_info(internalformat)?;
         let width = usize::try_from(width).ok()?;
         let height = usize::try_from(height).ok()?;
         let entry_size = match info.palette_entry_type {
-            gles11::UNSIGNED_BYTE => if info.palette_entry_format == gles11::RGB { 3 } else { 4 },
-            gles11::UNSIGNED_SHORT_5_6_5 | gles11::UNSIGNED_SHORT_4_4_4_4 | gles11::UNSIGNED_SHORT_5_5_5_1 => 2,
+            gles11::UNSIGNED_BYTE => {
+                if info.palette_entry_format == gles11::RGB {
+                    3
+                } else {
+                    4
+                }
+            }
+            gles11::UNSIGNED_SHORT_5_6_5
+            | gles11::UNSIGNED_SHORT_4_4_4_4
+            | gles11::UNSIGNED_SHORT_5_5_5_1 => 2,
             _ => return None,
         };
         let palette_count: usize = if info.index_is_nibble { 16 } else { 256 };
         let palette_size = palette_count.checked_mul(entry_size)?;
         let pixel_count = width.checked_mul(height)?;
-        let index_size = if info.index_is_nibble { pixel_count.checked_add(1)? / 2 } else { pixel_count };
+        let index_size = if info.index_is_nibble {
+            pixel_count.checked_add(1)? / 2
+        } else {
+            pixel_count
+        };
         let total_size = palette_size.checked_add(index_size)?;
-        if payload.len() < total_size { return None; }
+        if payload.len() < total_size {
+            return None;
+        }
         let (palette, indices) = payload.split_at(palette_size);
         let mut output = Vec::with_capacity(pixel_count.checked_mul(4)?);
         for pixel in 0..pixel_count {
             let index = if info.index_is_nibble {
                 let byte = indices[pixel / 2];
-                if pixel % 2 == 0 { byte >> 4 } else { byte & 0xf }
-            } else { indices[pixel] } as usize;
+                if pixel % 2 == 0 {
+                    byte >> 4
+                } else {
+                    byte & 0xf
+                }
+            } else {
+                indices[pixel]
+            } as usize;
             let entry = &palette[index * entry_size..][..entry_size];
             let (r, g, b, a) = match info.palette_entry_type {
                 gles11::UNSIGNED_BYTE if entry_size == 3 => (entry[0], entry[1], entry[2], 255),
                 gles11::UNSIGNED_BYTE => (entry[0], entry[1], entry[2], entry[3]),
                 gles11::UNSIGNED_SHORT_5_6_5 => {
                     let value = u16::from_ne_bytes([entry[0], entry[1]]);
-                    ((((value >> 11) & 31) as u32 * 255 / 31) as u8, (((value >> 5) & 63) as u32 * 255 / 63) as u8, ((value & 31) as u32 * 255 / 31) as u8, 255)
+                    (
+                        (((value >> 11) & 31) as u32 * 255 / 31) as u8,
+                        (((value >> 5) & 63) as u32 * 255 / 63) as u8,
+                        ((value & 31) as u32 * 255 / 31) as u8,
+                        255,
+                    )
                 }
                 gles11::UNSIGNED_SHORT_4_4_4_4 => {
                     let value = u16::from_ne_bytes([entry[0], entry[1]]);
-                    ((((value >> 12) & 15) as u8) * 17, (((value >> 8) & 15) as u8) * 17, (((value >> 4) & 15) as u8) * 17, ((value & 15) as u8) * 17)
+                    (
+                        (((value >> 12) & 15) as u8) * 17,
+                        (((value >> 8) & 15) as u8) * 17,
+                        (((value >> 4) & 15) as u8) * 17,
+                        ((value & 15) as u8) * 17,
+                    )
                 }
                 gles11::UNSIGNED_SHORT_5_5_5_1 => {
                     let value = u16::from_ne_bytes([entry[0], entry[1]]);
-                    ((((value >> 11) & 31) as u32 * 255 / 31) as u8, (((value >> 6) & 31) as u32 * 255 / 31) as u8, (((value >> 1) & 31) as u32 * 255 / 31) as u8, if value & 1 == 0 { 0 } else { 255 })
+                    (
+                        (((value >> 11) & 31) as u32 * 255 / 31) as u8,
+                        (((value >> 6) & 31) as u32 * 255 / 31) as u8,
+                        (((value >> 1) & 31) as u32 * 255 / 31) as u8,
+                        if value & 1 == 0 { 0 } else { 255 },
+                    )
                 }
                 _ => return None,
             };

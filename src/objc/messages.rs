@@ -1207,7 +1207,7 @@ fn try_cocos_missing_selector_compat(
             | "supportedInterfaceOrientationsForWindow:" => 0x18, // landscape left/right mask on old UIKit-style callers.
             "targetFrameRate" | "preferredFramesPerSecond" => {
                 env.options.fps_limit.unwrap_or(60.0).round() as u32
-            },
+            }
             _ => 0,
         };
         cocos_selector_log_once(class_name, selector_name, "integer default");

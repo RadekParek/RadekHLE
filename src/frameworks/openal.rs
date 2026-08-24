@@ -397,7 +397,10 @@ fn alcDestroyContext(env: &mut Environment, context: MutPtr<GuestALCcontext>) {
     }
     let Some(host_context) = State::get(env).contexts.remove(&context) else {
         // Check if it's already been destroyed (idempotent destroy)
-        if State::get(env).destroyed_context_devices.contains_key(&context) {
+        if State::get(env)
+            .destroyed_context_devices
+            .contains_key(&context)
+        {
             log_dbg!(
                 "alcDestroyContext({:?}): already destroyed (idempotent call); ignoring.",
                 context
@@ -1232,9 +1235,15 @@ fn alcGetEnumValue(
     device: MutPtr<GuestALCdevice>,
     enum_name: ConstPtr<u8>,
 ) -> ALenum {
-    let host_device = *State::get(env).devices.get(&device).unwrap_or(&std::ptr::null_mut());
+    let host_device = *State::get(env)
+        .devices
+        .get(&device)
+        .unwrap_or(&std::ptr::null_mut());
     let Ok(s) = env.mem.cstr_at_utf8(enum_name) else {
-        log!("Warning: alcGetEnumValue({:?}): name is not valid UTF-8, returning 0", enum_name);
+        log!(
+            "Warning: alcGetEnumValue({:?}): name is not valid UTF-8, returning 0",
+            enum_name
+        );
         return 0;
     };
     let cs = match CString::new(s) {
@@ -1278,7 +1287,10 @@ fn alcGetIntegerv(
     }
     log_dbg!(
         "alcGetIntegerv({:?}, {:#x}, {}) => {:?}",
-        device, param, size, buf
+        device,
+        param,
+        size,
+        buf
     );
 }
 

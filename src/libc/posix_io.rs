@@ -12,7 +12,9 @@ pub mod statvfs;
 use crate::abi::DotDotDot;
 use crate::dyld::{export_c_func, FunctionExports};
 use crate::fs::{GuestFile, GuestOpenOptions, GuestPath};
-use crate::libc::errno::{set_errno, EBADF, EAGAIN, EINTR, EINVAL, EIO, EISDIR, EMFILE, EOVERFLOW, EPIPE, ESPIPE};
+use crate::libc::errno::{
+    set_errno, EAGAIN, EBADF, EINTR, EINVAL, EIO, EISDIR, EMFILE, EOVERFLOW, EPIPE, ESPIPE,
+};
 use crate::libc::sys::socket::close_socket;
 use crate::libc::unistd::pid_t;
 use crate::mem::{
@@ -375,17 +377,19 @@ pub fn open_direct(env: &mut Environment, path: ConstPtr<u8>, flags: i32) -> Fil
     // Без этой проверки приложения, использующие O_EXCL как lock-файл,
     // получали паник вместо штатного EEXIST.
     use crate::libc::errno::EEXIST;
-    if (flags & O_EXCL) != 0 && (flags & O_CREAT) != 0
-        && env.fs.exists(GuestPath::new(&actual_path_string)) {
-            set_errno(env, EEXIST);
-            log_dbg!(
-                "open({:?} {:?}, {:#x}) => -1 (O_EXCL: file exists)",
-                path,
-                actual_path_string,
-                flags
-            );
-            return -1;
-        }
+    if (flags & O_EXCL) != 0
+        && (flags & O_CREAT) != 0
+        && env.fs.exists(GuestPath::new(&actual_path_string))
+    {
+        set_errno(env, EEXIST);
+        log_dbg!(
+            "open({:?} {:?}, {:#x}) => -1 (O_EXCL: file exists)",
+            path,
+            actual_path_string,
+            flags
+        );
+        return -1;
+    }
 
     let res = match env
         .fs
@@ -1080,7 +1084,9 @@ fn fcntl(
                 Err(_e) => {
                     log!(
                         "fcntl({}, F_DUPFD, {}) — try_clone failed: {}",
-                        fd, min_fd, _e
+                        fd,
+                        min_fd,
+                        _e
                     );
                     set_errno(env, EMFILE);
                     return -1;
@@ -1088,7 +1094,11 @@ fn fcntl(
             };
             let src_status_flags = src_file.status_flags;
             let src_path = src_file.path.clone();
-            let new_flags = if cmd == F_DUPFD_CLOEXEC { FD_CLOEXEC } else { 0 };
+            let new_flags = if cmd == F_DUPFD_CLOEXEC {
+                FD_CLOEXEC
+            } else {
+                0
+            };
             let host_object = PosixFileHostObject {
                 file: cloned,
                 needs_flush: false,
@@ -1106,7 +1116,9 @@ fn fcntl(
                 0
             };
             let files = &mut env.libc_state.posix_io.files;
-            let new_idx = files.iter().enumerate()
+            let new_idx = files
+                .iter()
+                .enumerate()
                 .skip(min_idx)
                 .find(|(_, slot)| slot.is_none())
                 .map(|(idx, _)| idx);
@@ -1131,7 +1143,10 @@ fn fcntl(
             let new_fd = file_idx_to_fd(idx);
             log_dbg!(
                 "fcntl({}, {}, {}) => {} (duplicated fd)",
-                fd, cmd, min_fd, new_fd
+                fd,
+                cmd,
+                min_fd,
+                new_fd
             );
             return new_fd;
         }
@@ -1391,32 +1406,38 @@ pub fn find_or_create_pipe_read_fd(
     env: &mut Environment,
     buffer: std::rc::Rc<std::cell::RefCell<crate::fs::PipeBuffer>>,
 ) -> FileDescriptor {
-    find_or_create_fd(env, PosixFileHostObject {
-        file: GuestFile::PipeRead(buffer),
-        needs_flush: false,
-        reached_eof: false,
-        flags: 0,
-        status_flags: O_RDONLY,
-        path: None,
-        locks: Vec::new(),
-        flock_state: None,
-    })
+    find_or_create_fd(
+        env,
+        PosixFileHostObject {
+            file: GuestFile::PipeRead(buffer),
+            needs_flush: false,
+            reached_eof: false,
+            flags: 0,
+            status_flags: O_RDONLY,
+            path: None,
+            locks: Vec::new(),
+            flock_state: None,
+        },
+    )
 }
 
 pub fn find_or_create_pipe_write_fd(
     env: &mut Environment,
     buffer: std::rc::Rc<std::cell::RefCell<crate::fs::PipeBuffer>>,
 ) -> FileDescriptor {
-    find_or_create_fd(env, PosixFileHostObject {
-        file: GuestFile::PipeWrite(buffer),
-        needs_flush: false,
-        reached_eof: false,
-        flags: 0,
-        status_flags: O_WRONLY,
-        path: None,
-        locks: Vec::new(),
-        flock_state: None,
-    })
+    find_or_create_fd(
+        env,
+        PosixFileHostObject {
+            file: GuestFile::PipeWrite(buffer),
+            needs_flush: false,
+            reached_eof: false,
+            flags: 0,
+            status_flags: O_WRONLY,
+            path: None,
+            locks: Vec::new(),
+            flock_state: None,
+        },
+    )
 }
 
 pub fn find_or_create_socket(env: &mut Environment) -> FileDescriptor {

@@ -10,7 +10,9 @@
 use crate::dyld::FunctionExports;
 use crate::libc::mach::core_types::natural_t;
 use crate::libc::mach::port::mach_port_t;
-use crate::libc::mach::thread_info::{kern_return_t, mach_msg_type_number_t, KERN_INVALID_ARGUMENT, KERN_SUCCESS};
+use crate::libc::mach::thread_info::{
+    kern_return_t, mach_msg_type_number_t, KERN_INVALID_ARGUMENT, KERN_SUCCESS,
+};
 use crate::mem::{guest_size_of, MutPtr, SafeRead, PAGE_SIZE};
 use crate::{export_c_func, Environment};
 
@@ -125,8 +127,7 @@ fn host_statistics(
         return KERN_INVALID_ARGUMENT;
     }
     let out_size_available = env.mem.read(host_info_out_count);
-    let out_size_expected =
-        guest_size_of::<vm_statistics>() / guest_size_of::<natural_t>();
+    let out_size_expected = guest_size_of::<vm_statistics>() / guest_size_of::<natural_t>();
     if (out_size_available as u32) < (out_size_expected as u32) {
         log!(
             "host_statistics: caller buffer too small: available={}, expected={}; \
@@ -169,7 +170,10 @@ fn host_statistics(
     // natural_t-sized fields actually written, so callers that passed a
     // larger-than-needed buffer (e.g. Unreal Engine passing byte-size) still
     // receive a valid, stable count back.
-    env.mem.write(host_info_out_count, out_size_expected as mach_msg_type_number_t);
+    env.mem.write(
+        host_info_out_count,
+        out_size_expected as mach_msg_type_number_t,
+    );
     KERN_SUCCESS
 }
 

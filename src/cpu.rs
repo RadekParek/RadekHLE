@@ -133,11 +133,7 @@ fn touchHLE_cpu_read_64_impl<T: SafeRead + Default + Copy>(
     }
 }
 
-fn touchHLE_cpu_write_64_impl<T: SafeWrite>(
-    mem: *mut touchHLE_Mem,
-    addr: u64,
-    value: T,
-) -> bool {
+fn touchHLE_cpu_write_64_impl<T: SafeWrite>(mem: *mut touchHLE_Mem, addr: u64, value: T) -> bool {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mem = unsafe { &mut *mem.cast::<Mem64>() };
         mem.write(addr, value)
@@ -148,25 +144,53 @@ fn touchHLE_cpu_write_64_impl<T: SafeWrite>(
 }
 
 #[no_mangle]
-extern "C" fn touchHLE_cpu_read_u8_64(mem: *mut touchHLE_Mem, addr: u64, error: *mut bool) -> u8 { touchHLE_cpu_read_64_impl(mem, addr, error) }
+extern "C" fn touchHLE_cpu_read_u8_64(mem: *mut touchHLE_Mem, addr: u64, error: *mut bool) -> u8 {
+    touchHLE_cpu_read_64_impl(mem, addr, error)
+}
 #[no_mangle]
-extern "C" fn touchHLE_cpu_read_u16_64(mem: *mut touchHLE_Mem, addr: u64, error: *mut bool) -> u16 { touchHLE_cpu_read_64_impl(mem, addr, error) }
+extern "C" fn touchHLE_cpu_read_u16_64(mem: *mut touchHLE_Mem, addr: u64, error: *mut bool) -> u16 {
+    touchHLE_cpu_read_64_impl(mem, addr, error)
+}
 #[no_mangle]
-extern "C" fn touchHLE_cpu_read_u32_64(mem: *mut touchHLE_Mem, addr: u64, error: *mut bool) -> u32 { touchHLE_cpu_read_64_impl(mem, addr, error) }
+extern "C" fn touchHLE_cpu_read_u32_64(mem: *mut touchHLE_Mem, addr: u64, error: *mut bool) -> u32 {
+    touchHLE_cpu_read_64_impl(mem, addr, error)
+}
 #[no_mangle]
-extern "C" fn touchHLE_cpu_read_u64_64(mem: *mut touchHLE_Mem, addr: u64, error: *mut bool) -> u64 { touchHLE_cpu_read_64_impl(mem, addr, error) }
+extern "C" fn touchHLE_cpu_read_u64_64(mem: *mut touchHLE_Mem, addr: u64, error: *mut bool) -> u64 {
+    touchHLE_cpu_read_64_impl(mem, addr, error)
+}
 #[no_mangle]
-extern "C" fn touchHLE_cpu_read_u128_64(mem: *mut touchHLE_Mem, addr: u64, error: *mut bool) -> [u64; 2] { touchHLE_cpu_read_64_impl(mem, addr, error) }
+extern "C" fn touchHLE_cpu_read_u128_64(
+    mem: *mut touchHLE_Mem,
+    addr: u64,
+    error: *mut bool,
+) -> [u64; 2] {
+    touchHLE_cpu_read_64_impl(mem, addr, error)
+}
 #[no_mangle]
-extern "C" fn touchHLE_cpu_write_u8_64(mem: *mut touchHLE_Mem, addr: u64, value: u8) -> bool { touchHLE_cpu_write_64_impl(mem, addr, value) }
+extern "C" fn touchHLE_cpu_write_u8_64(mem: *mut touchHLE_Mem, addr: u64, value: u8) -> bool {
+    touchHLE_cpu_write_64_impl(mem, addr, value)
+}
 #[no_mangle]
-extern "C" fn touchHLE_cpu_write_u16_64(mem: *mut touchHLE_Mem, addr: u64, value: u16) -> bool { touchHLE_cpu_write_64_impl(mem, addr, value) }
+extern "C" fn touchHLE_cpu_write_u16_64(mem: *mut touchHLE_Mem, addr: u64, value: u16) -> bool {
+    touchHLE_cpu_write_64_impl(mem, addr, value)
+}
 #[no_mangle]
-extern "C" fn touchHLE_cpu_write_u32_64(mem: *mut touchHLE_Mem, addr: u64, value: u32) -> bool { touchHLE_cpu_write_64_impl(mem, addr, value) }
+extern "C" fn touchHLE_cpu_write_u32_64(mem: *mut touchHLE_Mem, addr: u64, value: u32) -> bool {
+    touchHLE_cpu_write_64_impl(mem, addr, value)
+}
 #[no_mangle]
-extern "C" fn touchHLE_cpu_write_u64_64(mem: *mut touchHLE_Mem, addr: u64, value: u64) -> bool { touchHLE_cpu_write_64_impl(mem, addr, value) }
+extern "C" fn touchHLE_cpu_write_u64_64(mem: *mut touchHLE_Mem, addr: u64, value: u64) -> bool {
+    touchHLE_cpu_write_64_impl(mem, addr, value)
+}
 #[no_mangle]
-extern "C" fn touchHLE_cpu_write_u128_64(mem: *mut touchHLE_Mem, addr: u64, value: [u64; 2]) -> bool { touchHLE_cpu_write_64_impl(mem, addr, value) }
+extern "C" fn touchHLE_cpu_write_u128_64(
+    mem: *mut touchHLE_Mem,
+    addr: u64,
+    value: [u64; 2],
+) -> bool {
+    touchHLE_cpu_write_64_impl(mem, addr, value)
+}
 
 pub struct Cpu {
     dynarmic_wrapper: *mut touchHLE_DynarmicWrapper,
@@ -438,7 +462,10 @@ impl A64Cpu {
     }
 
     pub fn load_context(&mut self, context: &touchHLE_DynarmicA64Context) {
-        if let A64Backend::Jit { wrapper, disabled, .. } = self.backend {
+        if let A64Backend::Jit {
+            wrapper, disabled, ..
+        } = self.backend
+        {
             if !disabled {
                 unsafe { touchHLE_DynarmicA64Wrapper_load_context(wrapper, context) }
             }
@@ -447,20 +474,37 @@ impl A64Cpu {
 
     pub fn save_context(&mut self, context: &mut touchHLE_DynarmicA64Context) {
         match &mut self.backend {
-            A64Backend::Jit { wrapper, disabled, .. } if !*disabled => {
-                unsafe { touchHLE_DynarmicA64Wrapper_save_context(*wrapper, context) }
-            }
+            A64Backend::Jit {
+                wrapper, disabled, ..
+            } if !*disabled => unsafe {
+                touchHLE_DynarmicA64Wrapper_save_context(*wrapper, context)
+            },
             A64Backend::Jit { .. } | A64Backend::Interpreter(_) => {}
         }
     }
 
-    pub fn run_or_step(&mut self, mem: &mut Mem64, context: &mut touchHLE_DynarmicA64Context, mut ticks: Option<&mut u64>) -> i32 {
+    pub fn run_or_step(
+        &mut self,
+        mem: &mut Mem64,
+        context: &mut touchHLE_DynarmicA64Context,
+        mut ticks: Option<&mut u64>,
+    ) -> i32 {
         match &mut self.backend {
-            A64Backend::Jit { wrapper, interpreter, disabled } => {
+            A64Backend::Jit {
+                wrapper,
+                interpreter,
+                disabled,
+            } => {
                 if *disabled {
                     return interpreter.run_or_step(mem, context, ticks);
                 }
-                let result = unsafe { touchHLE_DynarmicA64Wrapper_run_or_step(*wrapper, mem as *mut _ as *mut _, ticks.as_deref_mut()) };
+                let result = unsafe {
+                    touchHLE_DynarmicA64Wrapper_run_or_step(
+                        *wrapper,
+                        mem as *mut _ as *mut _,
+                        ticks.as_deref_mut(),
+                    )
+                };
                 if result == -3 || result == -6 {
                     unsafe { touchHLE_DynarmicA64Wrapper_save_context(*wrapper, context) };
                     *disabled = true;
@@ -474,7 +518,10 @@ impl A64Cpu {
     }
 
     pub fn clear_halt(&mut self, reason: u32) {
-        if let A64Backend::Jit { wrapper, disabled, .. } = self.backend {
+        if let A64Backend::Jit {
+            wrapper, disabled, ..
+        } = self.backend
+        {
             if !disabled {
                 unsafe { touchHLE_DynarmicA64Wrapper_clear_halt(wrapper, reason) }
             }
@@ -499,19 +546,15 @@ mod tests {
         const CODE: u64 = 0x1_0000_1000;
         const STACK: u64 = 0x2_0000_0000;
         let instructions = [
-            0xd503201f,
-            0xd2800540,
-            0x91001401,
-            0xd1000822,
-            0xa9bf07e0,
-            0xa8c113e3,
-            0xd65f03c0,
+            0xd503201f, 0xd2800540, 0x91001401, 0xd1000822, 0xa9bf07e0, 0xa8c113e3, 0xd65f03c0,
         ];
         let mut memory = Mem64::new();
         memory.map_zeroed(CODE, 0x1000).unwrap();
         memory.map_zeroed(STACK, 0x1000).unwrap();
         for (index, instruction) in instructions.iter().enumerate() {
-            memory.write_u32(CODE + index as u64 * 4, *instruction).unwrap();
+            memory
+                .write_u32(CODE + index as u64 * 4, *instruction)
+                .unwrap();
         }
         let mut context = touchHLE_DynarmicA64Context::default();
         context.pc = CODE;
@@ -522,7 +565,12 @@ mod tests {
         cpu.load_context(&context);
 
         for (index, instruction) in instructions.iter().take(6).enumerate() {
-            assert_eq!(cpu.run_or_step(&mut memory, &mut context, None), -1, "instruction {} {instruction:#010x}", index + 1);
+            assert_eq!(
+                cpu.run_or_step(&mut memory, &mut context, None),
+                -1,
+                "instruction {} {instruction:#010x}",
+                index + 1
+            );
             cpu.save_context(&mut context);
             assert_eq!(context.pc, CODE + (index as u64 + 1) * 4);
         }

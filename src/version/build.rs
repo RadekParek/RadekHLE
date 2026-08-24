@@ -22,7 +22,10 @@ pub fn main() {
     if let Ok(sha) = std::env::var("GITHUB_SHA") {
         std::fs::write(out_dir.join("git_sha.txt"), sha.trim()).unwrap();
     } else {
-        let sha = Command::new("git").args(["rev-parse", "HEAD"]).output().unwrap();
+        let sha = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
         let sha = std::str::from_utf8(&sha.stdout).unwrap().trim();
         std::fs::write(out_dir.join("git_sha.txt"), sha).unwrap();
     }

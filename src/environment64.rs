@@ -1,4 +1,7 @@
-use crate::a64_runtime::{dispatch, materialize_import, schedule_display_link_callback, A64GraphicsBackend, LoadedImage, RuntimeState};
+use crate::a64_runtime::{
+    dispatch, materialize_import, schedule_display_link_callback, A64GraphicsBackend, LoadedImage,
+    RuntimeState,
+};
 use crate::bundle::Bundle;
 use crate::cpu::A64Cpu;
 use crate::fs::Fs;
@@ -32,13 +35,18 @@ fn sign_extend(value: u64, bits: u32) -> i64 {
 
 fn branch_target(instruction: u32, pc: u64) -> Option<u64> {
     let instruction = u64::from(instruction);
-    let immediate = if instruction & 0xfc00_0000 == 0x1400_0000 || instruction & 0xfc00_0000 == 0x9400_0000 {
-        sign_extend(instruction & 0x03ff_ffff, 26) << 2
-    } else if instruction & 0x7e00_0000 == 0x3400_0000 {
-        sign_extend((instruction >> 5) & 0x7f_ffff, 19) << 2
-    } else {
-        return None;
-    };
+    let immediate =
+        if instruction & 0xfc00_0000 == 0x1400_0000 || instruction & 0xfc00_0000 == 0x9400_0000 {
+            sign_extend(instruction & 0x03ff_ffff, 26) << 2
+        } else if instruction & 0xff00_0010 == 0x5400_0000 {
+            sign_extend((instruction >> 5) & 0x7f_ffff, 19) << 2
+        } else if instruction & 0x7e00_0000 == 0x3400_0000 {
+            sign_extend((instruction >> 5) & 0x7f_ffff, 19) << 2
+        } else if instruction & 0x7e00_0000 == 0x3600_0000 {
+            sign_extend((instruction >> 5) & 0x3fff, 14) << 2
+        } else {
+            return None;
+        };
     pc.checked_add_signed(immediate)
 }
 
@@ -67,7 +75,10 @@ fn decode_instruction(instruction: u32, pc: u64) -> String {
     if instruction & 0x3b00_0000 == 0x3900_0000 {
         let width = 1_u64 << ((instruction >> 30) & 3);
         let load = instruction & 0x0040_0000 != 0;
-        let signed = matches!(instruction & 0xffc0_0000, 0x3980_0000 | 0x7980_0000 | 0xb980_0000);
+        let signed = matches!(
+            instruction & 0xffc0_0000,
+            0x3980_0000 | 0x7980_0000 | 0xb980_0000
+        );
         let mnemonic = match (load, signed, width) {
             (true, false, 1) => "ldrb",
             (true, false, 2) => "ldrh",
@@ -84,7 +95,11 @@ fn decode_instruction(instruction: u32, pc: u64) -> String {
         return format!(
             "{} {}, [x{}, #{:#x}]",
             mnemonic,
-            if width == 1 || width == 2 || (width == 4 && signed) { format!("w{}", instruction & 31) } else { format!("x{}", instruction & 31) },
+            if width == 1 || width == 2 || (width == 4 && signed) {
+                format!("w{}", instruction & 31)
+            } else {
+                format!("x{}", instruction & 31)
+            },
             (instruction >> 5) & 31,
             ((instruction >> 10) & 0xfff) as u64 * width,
         );
@@ -97,23 +112,40 @@ fn decode_instruction(instruction: u32, pc: u64) -> String {
     } else if instruction & 0xfc00_0000 == 0x9400_0000 {
         let immediate = (((instruction & 0x03ff_ffff) as i32) << 6 >> 4) as i64;
         format!("bl {:#x}", pc.wrapping_add_signed(immediate))
+    } else if instruction & 0xff00_0010 == 0x5400_0000 {
+        let immediate = ((((instruction >> 5) & 0x7f_ffff) as i32) << 13 >> 11) as i64;
+        format!("b.cond cond={:#x} {:#x}", instruction & 0xf, pc.wrapping_add_signed(immediate))
     } else if instruction & 0x7e00_0000 == 0x3400_0000 {
         let immediate = ((((instruction >> 5) & 0x7f_ffff) as i32) << 13 >> 11) as i64;
         format!("cbz/cbnz {:#x}", pc.wrapping_add_signed(immediate))
+    } else if instruction & 0x7e00_0000 == 0x3600_0000 {
+        let immediate = ((((instruction >> 5) & 0x3fff) as i32) << 18 >> 16) as i64;
+        format!("tbz/tbnz {:#x}", pc.wrapping_add_signed(immediate))
     } else if (instruction & 0x1fe0_0000 == 0x1a80_0000
         || instruction & 0x1fe0_0000 == 0x5a80_0000
         || instruction & 0x1fe0_0000 == 0x1ac0_0000)
         && instruction & 0x0000_0810 == 0
     {
         let mnemonic = if instruction & 0x4000_0000 != 0 {
-            if instruction & 0x0000_0400 != 0 { "csneg" } else { "csinv" }
+            if instruction & 0x0000_0400 != 0 {
+                "csneg"
+            } else {
+                "csinv"
+            }
         } else if instruction & 0x0000_0400 != 0 {
             "csinc"
         } else {
             "csel"
         };
         let condition = (instruction >> 12) & 0xf;
-        format!("{} cond={:#x} rn={} rm={} rd={}", mnemonic, condition, (instruction >> 5) & 31, (instruction >> 16) & 31, instruction & 31)
+        format!(
+            "{} cond={:#x} rn={} rm={} rd={}",
+            mnemonic,
+            condition,
+            (instruction >> 5) & 31,
+            (instruction >> 16) & 31,
+            instruction & 31
+        )
     } else if instruction & 0xffff_fc1f == 0xd61f_0000 {
         "br/blr".to_string()
     } else {
@@ -122,21 +154,54 @@ fn decode_instruction(instruction: u32, pc: u64) -> String {
 }
 
 fn register_dump(context: &touchHLE_DynarmicA64Context) -> String {
-    context.regs.iter().enumerate().map(|(index, value)| format!("x{index}={value:#018x}")).collect::<Vec<_>>().join(" ")
+    context
+        .regs
+        .iter()
+        .enumerate()
+        .map(|(index, value)| format!("x{index}={value:#018x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn vector_dump(context: &touchHLE_DynarmicA64Context) -> String {
-    context.vectors.iter().enumerate().map(|(index, value)| format!("v{index}={:#018x}{:#018x}", value[1], value[0])).collect::<Vec<_>>().join(" ")
+    context
+        .vectors
+        .iter()
+        .enumerate()
+        .map(|(index, value)| format!("v{index}={:#018x}{:#018x}", value[1], value[0]))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn processor_state_dump(context: &touchHLE_DynarmicA64Context) -> String {
-    format!("pstate={:#010x} fpcr={:#010x} fpsr={:#010x} {}", context.pstate, context.fpcr, context.fpsr, vector_dump(context))
+    format!(
+        "pstate={:#010x} fpcr={:#010x} fpsr={:#010x} {}",
+        context.pstate,
+        context.fpcr,
+        context.fpsr,
+        vector_dump(context)
+    )
 }
 
 fn stack_dump(memory: &Mem64, sp: u64) -> String {
     let start = sp.saturating_sub(64);
     match memory.read_bytes(start, 128) {
-        Ok(bytes) => bytes.chunks(16).enumerate().map(|(index, chunk)| format!("{:#x}: {}", start + index as u64 * 16, chunk.iter().map(|byte| format!("{byte:02x}")).collect::<Vec<_>>().join(" "))).collect::<Vec<_>>().join(" | "),
+        Ok(bytes) => bytes
+            .chunks(16)
+            .enumerate()
+            .map(|(index, chunk)| {
+                format!(
+                    "{:#x}: {}",
+                    start + index as u64 * 16,
+                    chunk
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" | "),
         Err(error) => format!("unavailable around sp={sp:#x}: {error}"),
     }
 }
@@ -145,14 +210,26 @@ fn call_stack_dump(memory: &Mem64, context: &touchHLE_DynarmicA64Context) -> Str
     let mut frame = context.regs[29];
     let mut frames = Vec::new();
     for _ in 0..8 {
-        if frame == 0 { break; }
-        let Ok(previous) = memory.read_u64(frame) else { break; };
-        let Ok(lr) = memory.read_u64(frame + 8) else { break; };
+        if frame == 0 {
+            break;
+        }
+        let Ok(previous) = memory.read_u64(frame) else {
+            break;
+        };
+        let Ok(lr) = memory.read_u64(frame + 8) else {
+            break;
+        };
         frames.push(format!("fp={:#x} lr={:#x}", frame, lr));
-        if previous <= frame || previous - frame > 0x100000 { break; }
+        if previous <= frame || previous - frame > 0x100000 {
+            break;
+        }
         frame = previous;
     }
-    if frames.is_empty() { "unavailable".to_string() } else { frames.join(" -> ") }
+    if frames.is_empty() {
+        "unavailable".to_string()
+    } else {
+        frames.join(" -> ")
+    }
 }
 fn verify_abi(context: &touchHLE_DynarmicA64Context, module: &str) {
     if context.sp == 0 {
@@ -167,10 +244,16 @@ fn verify_abi(context: &touchHLE_DynarmicA64Context, module: &str) {
             context.regs[3],
         );
     } else if context.sp & 15 != 0 {
-        echo!("ARM64 ABI violation in {module}: SP is not 16-byte aligned: {:#x}", context.sp);
+        echo!(
+            "ARM64 ABI violation in {module}: SP is not 16-byte aligned: {:#x}",
+            context.sp
+        );
     }
     if context.regs[8] != 0 {
-        log_dbg!("ARM64 ABI indirect-result register x8={:#x} in {module}", context.regs[8]);
+        log_dbg!(
+            "ARM64 ABI indirect-result register x8={:#x} in {module}",
+            context.regs[8]
+        );
     }
 }
 
@@ -180,9 +263,9 @@ fn verify_guest_mappings(memory: &Mem64, pc: u64, sp: u64) {
         .any(|region| pc >= region.base && pc.saturating_sub(region.base) < region.size);
     let stack_store = sp.saturating_sub(0x30);
     let stack_store_end = stack_store.saturating_add(16);
-    let stack_store_mapped = memory
-        .mapped_regions()
-        .any(|region| stack_store >= region.base && stack_store_end <= region.base.saturating_add(region.size));
+    let stack_store_mapped = memory.mapped_regions().any(|region| {
+        stack_store >= region.base && stack_store_end <= region.base.saturating_add(region.size)
+    });
     echo!(
         "ARM64 guest mappings: entry_pc={:#x} executable_page_mapped={} stack_sp={:#x} writable_stack_mapping={} stp_range={:#x}..{:#x} stp_range_mapped={}",
         pc,
@@ -198,7 +281,11 @@ fn verify_guest_mappings(memory: &Mem64, pc: u64, sp: u64) {
 fn mapping_dump(memory: &Mem64) -> String {
     let regions = memory.mapped_regions().collect::<Vec<_>>();
     let total_bytes = regions.iter().map(|region| region.size).sum::<u64>();
-    format!("{} mapped regions, {} total bytes", regions.len(), total_bytes)
+    format!(
+        "{} mapped regions, {} total bytes",
+        regions.len(),
+        total_bytes
+    )
 }
 
 fn display_boot_screen(
@@ -210,25 +297,25 @@ fn display_boot_screen(
     let launch_image_path = bundle.launch_image_path(fs, device_family);
     if let Ok(bytes) = fs.read(&launch_image_path) {
         if let Ok(image) = crate::image::Image::from_bytes(&bytes) {
-            window.display_compatibility_image(
-                image,
-                crate::window::DeviceOrientation::Portrait,
+            window.display_compatibility_image(image, crate::window::DeviceOrientation::Portrait);
+            echo!(
+                "ARM64 boot screen reached: displaying {}",
+                launch_image_path.as_str()
             );
-            echo!("ARM64 boot screen reached: displaying {}", launch_image_path.as_str());
             return true;
         }
     }
     match bundle.load_icon(fs) {
         Ok(image) => {
-            window.display_compatibility_image(
-                image,
-                crate::window::DeviceOrientation::Portrait,
-            );
+            window.display_compatibility_image(image, crate::window::DeviceOrientation::Portrait);
             echo!("ARM64 boot/logo fallback: displaying the app icon");
             true
         }
         Err(error) => {
-            log!("ARM64 boot screen: no usable launch image or icon: {}", error);
+            log!(
+                "ARM64 boot screen: no usable launch image or icon: {}",
+                error
+            );
             false
         }
     }
@@ -280,18 +367,41 @@ fn failure_diagnostics(
 ) {
     let instruction = memory.read_u32(context.pc).unwrap_or(0);
     let decoded = decode_instruction(instruction, context.pc);
-    echo!("ARM64 failure diagnostics: reason={} pc={:#x} instruction={:#010x} decoded={}", reason, context.pc, instruction, decoded);
-    echo!("ARM64 failure registers: {}", register_dump(context));
-    echo!("ARM64 failure processor state: {}", processor_state_dump(context));
-    echo!("ARM64 failure previous_pcs={:?} branch_history={:?}", previous_pcs, previous_branches);
-    echo!("ARM64 failure stack: {}", stack_dump(memory, context.sp));
-    echo!("ARM64 failure call stack: {}", call_stack_dump(memory, context));
-    let previous_instruction = context.pc.checked_sub(4).and_then(|pc| memory.read_u32(pc).ok());
-    let next_instruction = context.pc.checked_add(4).and_then(|pc| memory.read_u32(pc).ok());
     echo!(
-        "ARM64 failure instruction window: prev_pc={:#x} prev={:#010x} current_pc={:#x} current={:#010x} next_pc={:#x} next={:#010x} image_offset={:#x}",
+        "ARM64 failure diagnostics: reason={} pc={:#x} instruction={:#010x} decoded={}",
+        reason,
+        context.pc,
+        instruction,
+        decoded
+    );
+    echo!("ARM64 failure registers: {}", register_dump(context));
+    echo!(
+        "ARM64 failure processor state: {}",
+        processor_state_dump(context)
+    );
+    echo!(
+        "ARM64 failure previous_pcs={:?} branch_history={:?}",
+        previous_pcs,
+        previous_branches
+    );
+    echo!("ARM64 failure stack: {}", stack_dump(memory, context.sp));
+    echo!(
+        "ARM64 failure call stack: {}",
+        call_stack_dump(memory, context)
+    );
+    let previous_instruction = context
+        .pc
+        .checked_sub(4)
+        .and_then(|pc| memory.read_u32(pc).ok());
+    let next_instruction = context
+        .pc
+        .checked_add(4)
+        .and_then(|pc| memory.read_u32(pc).ok());
+    echo!(
+        "ARM64 failure instruction window: prev_pc={:#x} prev={:#010x} prev_decoded={} current_pc={:#x} current={:#010x} next_pc={:#x} next={:#010x} image_offset={:#x}",
         context.pc.saturating_sub(4),
         previous_instruction.unwrap_or(0),
+        decode_instruction(previous_instruction.unwrap_or(0), context.pc.saturating_sub(4)),
         context.pc,
         instruction,
         context.pc.saturating_add(4),
@@ -316,9 +426,12 @@ fn failure_diagnostics(
 
 fn put_string(mem: &mut Mem64, cursor: &mut u64, value: &str) -> Result<u64, String> {
     let bytes = value.as_bytes();
-    *cursor = cursor.checked_sub(bytes.len() as u64 + 1).ok_or("ARM64 stack overflow")?;
+    *cursor = cursor
+        .checked_sub(bytes.len() as u64 + 1)
+        .ok_or("ARM64 stack overflow")?;
     mem.write_bytes(*cursor, bytes).map_err(str::to_owned)?;
-    mem.write_u8(*cursor + bytes.len() as u64, 0).map_err(str::to_owned)?;
+    mem.write_u8(*cursor + bytes.len() as u64, 0)
+        .map_err(str::to_owned)?;
     Ok(*cursor)
 }
 
@@ -328,7 +441,12 @@ fn prepare_stack(
     envp: &[String],
     apple: &[String],
 ) -> Result<(u64, u64, u64, u64), String> {
-    mem.map_zeroed_with_permissions(STACK_BASE - STACK_SIZE, STACK_SIZE, crate::mem64::Permissions::read_write()).map_err(str::to_owned)?;
+    mem.map_zeroed_with_permissions(
+        STACK_BASE - STACK_SIZE,
+        STACK_SIZE,
+        crate::mem64::Permissions::read_write(),
+    )
+    .map_err(str::to_owned)?;
     let mut string_cursor = STACK_BASE & !15;
     let mut argv_strings = Vec::with_capacity(argv.len());
     let mut envp_strings = Vec::with_capacity(envp.len());
@@ -381,7 +499,12 @@ fn prepare_stack(
 }
 
 fn write_svc_stub(mem: &mut Mem64, svc: u32) -> Result<u64, String> {
-    let stub = mem.alloc_zeroed_with_permissions(HOST_STUB_SIZE, crate::mem64::Permissions::read_write_execute()).map_err(str::to_owned)?;
+    let stub = mem
+        .alloc_zeroed_with_permissions(
+            HOST_STUB_SIZE,
+            crate::mem64::Permissions::read_write_execute(),
+        )
+        .map_err(str::to_owned)?;
     let instruction = 0xd4000001u32 | ((u64::from(svc) << 5) as u32);
     mem.write_u32(stub, instruction).map_err(str::to_owned)?;
     mem.write_u32(stub + 4, 0xd65f03c0).map_err(str::to_owned)?;
@@ -389,8 +512,7 @@ fn write_svc_stub(mem: &mut Mem64, svc: u32) -> Result<u64, String> {
 }
 
 fn lookup_host_symbol(symbol: &str) -> Option<&'static str> {
-    crate::dyld::search_host_dylibs(|dylib| dylib.function_exports, symbol)
-        .map(|(name, _)| *name)
+    crate::dyld::search_host_dylibs(|dylib| dylib.function_exports, symbol).map(|(name, _)| *name)
 }
 
 fn load_embedded_unity_framework(
@@ -432,26 +554,37 @@ fn load_embedded_unity_framework(
     Ok(())
 }
 
-fn detect_graphics_backend(executable: &MachO64, requested: crate::options::GraphicsApi) -> (A64GraphicsBackend, &'static str) {
+fn detect_graphics_backend(
+    executable: &MachO64,
+    requested: crate::options::GraphicsApi,
+) -> (A64GraphicsBackend, &'static str) {
     match requested {
         crate::options::GraphicsApi::GLES10
         | crate::options::GraphicsApi::GLES11
         | crate::options::GraphicsApi::GLES20
         | crate::options::GraphicsApi::GLES30
         | crate::options::GraphicsApi::Translator
-        | crate::options::GraphicsApi::TranslatorGLES30 => {
-            (A64GraphicsBackend::OpenGLESCompatibility, "graphics option explicitly selects OpenGL ES compatibility")
-        }
-        crate::options::GraphicsApi::Metal => {
-            (A64GraphicsBackend::MetalCompatibility, "graphics option explicitly selects Metal compatibility")
-        }
+        | crate::options::GraphicsApi::TranslatorGLES30 => (
+            A64GraphicsBackend::OpenGLESCompatibility,
+            "graphics option explicitly selects OpenGL ES compatibility",
+        ),
+        crate::options::GraphicsApi::Metal => (
+            A64GraphicsBackend::MetalCompatibility,
+            "graphics option explicitly selects Metal compatibility",
+        ),
         crate::options::GraphicsApi::Default => {
-            let uses_gles = executable.dynamic_libraries.iter().any(|library| library.contains("OpenGLES"))
+            let uses_gles = executable
+                .dynamic_libraries
+                .iter()
+                .any(|library| library.contains("OpenGLES"))
                 || executable.bindings.iter().any(|binding| {
                     let symbol = binding.symbol.trim_start_matches('_');
                     symbol.starts_with("gl") || symbol.starts_with("EAGL")
                 });
-            let uses_metal = executable.dynamic_libraries.iter().any(|library| library.contains("Metal"))
+            let uses_metal = executable
+                .dynamic_libraries
+                .iter()
+                .any(|library| library.contains("Metal"))
                 || executable.bindings.iter().any(|binding| {
                     let symbol = binding.symbol.trim_start_matches('_');
                     symbol.starts_with("MTL") || symbol == "MTLCreateSystemDefaultDevice"
@@ -463,7 +596,10 @@ fn detect_graphics_backend(executable: &MachO64, requested: crate::options::Grap
                     (A64GraphicsBackend::OpenGLESCompatibility, "application imports OpenGL ES; OpenGL ES compatibility is selected automatically")
                 }
             } else if uses_metal {
-                (A64GraphicsBackend::MetalCompatibility, "application imports Metal; Metal compatibility is selected")
+                (
+                    A64GraphicsBackend::MetalCompatibility,
+                    "application imports Metal; Metal compatibility is selected",
+                )
             } else {
                 (A64GraphicsBackend::OpenGLESCompatibility, "application graphics API is not declared; OpenGL ES compatibility is the safe ARM64 fallback")
             }
@@ -483,16 +619,25 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     );
     let executable_path = bundle.executable_path();
     let executable = MachO64::load_from_file(&executable_path, &fs, 0)?;
-    let (graphics_backend, graphics_reason) = detect_graphics_backend(&executable, options.graphics_api);
-    let entry = executable.entry_point_pc.ok_or("ARM64 Mach-O has no entry point")?;
+    let (graphics_backend, graphics_reason) =
+        detect_graphics_backend(&executable, options.graphics_api);
+    let entry = executable
+        .entry_point_pc
+        .ok_or("ARM64 Mach-O has no entry point")?;
     let image_end = executable.last_segment_end;
-    echo!("ARM64 image loaded: entry {:#x}, image range ends at {:#x}", entry, image_end);
+    echo!(
+        "ARM64 image loaded: entry {:#x}, image range ends at {:#x}",
+        entry,
+        image_end
+    );
     let mut memory = executable.memory;
     let argv = std::iter::once(executable_path.as_str().to_owned())
         .chain(app_args)
         .collect::<Vec<_>>();
     let apple = vec![format!("executable_path={}", executable_path.as_str())];
-    let ios_version = options.ios_version.unwrap_or(crate::options::LATEST_IOS_VERSION);
+    let ios_version = options
+        .ios_version
+        .unwrap_or(crate::options::LATEST_IOS_VERSION);
     let declared = bundle.device_family_array();
     let supports_ipad = declared.iter().any(DeviceFamily::is_ipad);
     let supports_phone = declared.iter().any(|family| !family.is_ipad());
@@ -507,7 +652,10 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
         Some(requested)
             if requested.supports_arm64()
                 && ((requested.is_ipad() && supports_ipad)
-                    || (!requested.is_ipad() && supports_phone)) => requested,
+                    || (!requested.is_ipad() && supports_phone)) =>
+        {
+            requested
+        }
         Some(requested) => {
             log!(
                 "ARM64 device override {} is unavailable for this app; using oldest compatible model {} ({})",
@@ -533,25 +681,44 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
         ));
     }
     let orientation = if options.initial_orientation == crate::window::DeviceOrientation::Portrait
-        && !bundle.supported_interface_orientations().iter().any(|orientation| *orientation == "UIInterfaceOrientationPortrait")
+        && !bundle
+            .supported_interface_orientations()
+            .iter()
+            .any(|orientation| *orientation == "UIInterfaceOrientationPortrait")
     {
-        bundle.supported_interface_orientations().iter().find_map(|orientation| match *orientation {
-            "UIInterfaceOrientationLandscapeLeft" => Some(crate::window::DeviceOrientation::LandscapeRight),
-            "UIInterfaceOrientationLandscapeRight" => Some(crate::window::DeviceOrientation::LandscapeLeft),
-            "UIInterfaceOrientationPortraitUpsideDown" => Some(crate::window::DeviceOrientation::PortraitUpsideDown),
-            _ => None,
-        }).unwrap_or(crate::window::DeviceOrientation::Portrait)
+        bundle
+            .supported_interface_orientations()
+            .iter()
+            .find_map(|orientation| match *orientation {
+                "UIInterfaceOrientationLandscapeLeft" => {
+                    Some(crate::window::DeviceOrientation::LandscapeRight)
+                }
+                "UIInterfaceOrientationLandscapeRight" => {
+                    Some(crate::window::DeviceOrientation::LandscapeLeft)
+                }
+                "UIInterfaceOrientationPortraitUpsideDown" => {
+                    Some(crate::window::DeviceOrientation::PortraitUpsideDown)
+                }
+                _ => None,
+            })
+            .unwrap_or(crate::window::DeviceOrientation::Portrait)
     } else {
         options.initial_orientation
     };
-    let mut runtime_state = RuntimeState::new(ios_version, graphics_backend, device_family, orientation);
+    let mut runtime_state =
+        RuntimeState::new(ios_version, graphics_backend, device_family, orientation);
     runtime_state.current_module = Some(executable.name.clone());
     runtime_state.bundle_identifier = bundle.bundle_identifier().to_owned();
     runtime_state.bundle_path = bundle.bundle_path().as_str().to_owned();
     runtime_state.bundle_name = bundle.bundle_name().to_owned();
-    runtime_state.main_nib_name = bundle.main_nib_filename(Some(device_family)).map(str::to_owned);
+    runtime_state.main_nib_name = bundle
+        .main_nib_filename(Some(device_family))
+        .map(str::to_owned);
     runtime_state.objc_classes = executable.objc_classes.clone();
-    echo!("ARM64 Objective-C metadata: {} guest classes loaded", runtime_state.objc_classes.len());
+    echo!(
+        "ARM64 Objective-C metadata: {} guest classes loaded",
+        runtime_state.objc_classes.len()
+    );
     load_embedded_unity_framework(&bundle, &fs, &mut memory, &mut runtime_state)?;
     let mut window = if options.headless {
         None
@@ -629,26 +796,76 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     runtime_state.guest_method_return_stub = Some(guest_method_return_stub);
     runtime_state.display_link_return_stub = Some(display_link_return_stub);
     let mut host_stubs = HashMap::new();
-    host_stubs.insert((SVC_HOST_BASE + 0x7ffc) as i32, ("ARM64_display_link_return".to_owned(), "ARM64_display_link_return"));
-    host_stubs.insert((SVC_HOST_BASE + 0x7ffb) as i32, ("ARM64_nib_awake_return".to_owned(), "ARM64_nib_awake_return"));
-    host_stubs.insert((SVC_HOST_BASE + 0x7ffa) as i32, ("ARM64_guest_method_return".to_owned(), "ARM64_guest_method_return"));
-    host_stubs.insert((SVC_HOST_BASE + 0x7ffd) as i32, ("ARM64_application_return".to_owned(), "ARM64_application_return"));
-    host_stubs.insert((SVC_HOST_BASE + 0x7ffe) as i32, ("ARM64_application_launch_return".to_owned(), "ARM64_application_launch_return"));
-    host_stubs.insert((SVC_HOST_BASE + 0x7fff) as i32, ("ARM64_application_active_return".to_owned(), "ARM64_application_active_return"));
+    host_stubs.insert(
+        (SVC_HOST_BASE + 0x7ffc) as i32,
+        (
+            "ARM64_display_link_return".to_owned(),
+            "ARM64_display_link_return",
+        ),
+    );
+    host_stubs.insert(
+        (SVC_HOST_BASE + 0x7ffb) as i32,
+        (
+            "ARM64_nib_awake_return".to_owned(),
+            "ARM64_nib_awake_return",
+        ),
+    );
+    host_stubs.insert(
+        (SVC_HOST_BASE + 0x7ffa) as i32,
+        (
+            "ARM64_guest_method_return".to_owned(),
+            "ARM64_guest_method_return",
+        ),
+    );
+    host_stubs.insert(
+        (SVC_HOST_BASE + 0x7ffd) as i32,
+        (
+            "ARM64_application_return".to_owned(),
+            "ARM64_application_return",
+        ),
+    );
+    host_stubs.insert(
+        (SVC_HOST_BASE + 0x7ffe) as i32,
+        (
+            "ARM64_application_launch_return".to_owned(),
+            "ARM64_application_launch_return",
+        ),
+    );
+    host_stubs.insert(
+        (SVC_HOST_BASE + 0x7fff) as i32,
+        (
+            "ARM64_application_active_return".to_owned(),
+            "ARM64_application_active_return",
+        ),
+    );
     let mut stub_by_symbol: HashMap<String, (u32, u64)> = HashMap::new();
     let mut unresolved = Vec::new();
     let mut materialized_imports = 0usize;
     for (binding_index, binding) in executable.bindings.iter().enumerate() {
         if let Some(value) = materialize_import(&mut memory, &binding.symbol)? {
             if binding_index < 32 {
-                log_dbg!("ARM64 materialized import #{}: {} -> {:#x}", binding_index, binding.symbol, value);
+                log_dbg!(
+                    "ARM64 materialized import #{}: {} -> {:#x}",
+                    binding_index,
+                    binding.symbol,
+                    value
+                );
             }
-            memory.load_u64(binding.address, value.checked_add_signed(binding.addend).ok_or("ARM64 import address overflows")?).map_err(str::to_owned)?;
+            memory
+                .load_u64(
+                    binding.address,
+                    value
+                        .checked_add_signed(binding.addend)
+                        .ok_or("ARM64 import address overflows")?,
+                )
+                .map_err(str::to_owned)?;
             materialized_imports += 1;
             continue;
         }
         let symbol = lookup_host_symbol(&binding.symbol)
-            .or_else(|| lookup_host_symbol(binding.symbol.strip_prefix('_').unwrap_or(&binding.symbol)))
+            .or_else(|| {
+                lookup_host_symbol(binding.symbol.strip_prefix('_').unwrap_or(&binding.symbol))
+            })
             .unwrap_or("<unimplemented>");
         if symbol == "<unimplemented>" && !crate::a64_runtime::can_dispatch(&binding.symbol) {
             unresolved.push(binding.symbol.clone());
@@ -666,11 +883,15 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
         let target = stub
             .checked_add_signed(binding.addend)
             .ok_or("ARM64 import target overflows")?;
-        memory.load_u64(binding.address, target).map_err(str::to_owned)?;
+        memory
+            .load_u64(binding.address, target)
+            .map_err(str::to_owned)?;
     }
 
     if !unresolved.is_empty() {
-        runtime_state.unimplemented_symbols.extend(unresolved.iter().cloned());
+        runtime_state
+            .unimplemented_symbols
+            .extend(unresolved.iter().cloned());
     }
     echo!(
         "ARM64 runtime: entry point {:#x}, image_end {:#x}, {} unique host stubs for {} bindings, {} materialized imports, {} unresolved, stack {:#x}, argv {:#x}, envp {:#x}, apple {:#x}",
@@ -686,12 +907,28 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
         apple_ptr,
     );
     if !unresolved.is_empty() {
-        echo!("ARM64 unresolved imports: {} (details available with --log-debug)", unresolved.len());
+        echo!(
+            "ARM64 unresolved imports: {} (details available with --log-debug)",
+            unresolved.len()
+        );
         for symbol in unresolved.iter().take(8) {
             log_dbg!("ARM64 unresolved import: {}", symbol);
         }
     }
-    log_dbg!("ARM64 first bindings: {}", executable.bindings.iter().take(16).enumerate().map(|(i, binding)| format!("{}:{}@{:x}+{}", i, binding.symbol, binding.address, binding.addend)).collect::<Vec<_>>().join(", "));
+    log_dbg!(
+        "ARM64 first bindings: {}",
+        executable
+            .bindings
+            .iter()
+            .take(16)
+            .enumerate()
+            .map(|(i, binding)| format!(
+                "{}:{}@{:x}+{}",
+                i, binding.symbol, binding.address, binding.addend
+            ))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     let mut context = touchHLE_DynarmicA64Context::default();
     context.sp = sp;
     context.pc = entry;
@@ -710,10 +947,16 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     let mut last_host_call: Option<(u64, u64)> = None;
     let mut repeated_host_call = 0_u64;
     let mut guest_progress_since_host_call = true;
-    let watchdog_ms = std::env::var("TOUCHHLE_ARM64_WATCHDOG_MS").ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or(2000);
+    let watchdog_ms = std::env::var("TOUCHHLE_ARM64_WATCHDOG_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(2000);
     let mut no_progress_since = Instant::now();
     let mut no_progress_slices = 0_u64;
-    let trace_limit = std::env::var("TOUCHHLE_ARM64_TRACE_INSTRUCTIONS").ok().and_then(|value| value.parse::<u64>().ok()).unwrap_or(0);
+    let trace_limit = std::env::var("TOUCHHLE_ARM64_TRACE_INSTRUCTIONS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
     let mut trace_count = 0_u64;
     let mut previous_pcs = VecDeque::with_capacity(20);
     let mut previous_branches = VecDeque::with_capacity(20);
@@ -725,18 +968,21 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     loop {
         let trace_this_instruction = trace_count < trace_limit;
         let instruction_pc = context.pc;
-        let instruction = if trace_this_instruction { memory.read_u32(instruction_pc).unwrap_or(0) } else { 0 };
-        let result = cpu.run_or_step(
-            &mut memory,
-            &mut context,
-            ticks.as_mut(),
-        );
+        let instruction = if trace_this_instruction {
+            memory.read_u32(instruction_pc).unwrap_or(0)
+        } else {
+            0
+        };
+        let ticks_before = ticks;
+        let result = cpu.run_or_step(&mut memory, &mut context, ticks.as_mut());
         cpu.save_context(&mut context);
         if result >= SVC_HOST_BASE as i32 && instruction_pc != context.pc {
             guest_progress_since_host_call = true;
         }
         runtime_state.render_diagnostics.last_guest_pc = context.pc;
-        if runtime_state.render_diagnostics.callback_active && runtime_state.render_diagnostics.callback_entry_lr == 0 {
+        if runtime_state.render_diagnostics.callback_active
+            && runtime_state.render_diagnostics.callback_entry_lr == 0
+        {
             runtime_state.render_diagnostics.callback_entry_lr = context.regs[30];
         }
         if trace_this_instruction {
@@ -744,29 +990,53 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             echo!("ARM64 run slice #{}: result={} entry_pc={:#x} final_pc={:#x} sp={:#x} lr={:#x} instruction={:#010x} decoded={}", trace_count, result, instruction_pc, context.pc, context.sp, context.regs[30], instruction, decode_instruction(instruction, instruction_pc));
         }
         if result == -1 {
-            if context.pc == instruction_pc {
-                no_progress_slices = no_progress_slices.saturating_add(1);
-            } else {
+            let consumed_ticks = match (ticks_before, ticks) {
+                (Some(before), Some(after)) => after < before,
+                _ => context.pc != instruction_pc,
+            };
+            if consumed_ticks || context.pc != instruction_pc {
                 no_progress_slices = 0;
                 no_progress_since = Instant::now();
+            } else {
+                no_progress_slices = no_progress_slices.saturating_add(1);
             }
-            if no_progress_slices >= STALL_THRESHOLD || no_progress_since.elapsed() >= Duration::from_millis(watchdog_ms) {
-                failure_diagnostics(&memory, &context, &previous_pcs, &previous_branches, &runtime_state, "no PC progress watchdog");
-                return Err(format!("ARM64 execution stalled without PC progress at {:#x}", context.pc));
+            if no_progress_slices >= STALL_THRESHOLD
+                || no_progress_since.elapsed() >= Duration::from_millis(watchdog_ms)
+            {
+                failure_diagnostics(
+                    &memory,
+                    &context,
+                    &previous_pcs,
+                    &previous_branches,
+                    &runtime_state,
+                    "no PC progress watchdog",
+                );
+                return Err(format!(
+                    "ARM64 execution stalled without PC progress at {:#x}",
+                    context.pc
+                ));
             }
         }
         if trace_this_instruction {
-            if previous_pcs.len() == 20 { previous_pcs.pop_front(); }
+            if previous_pcs.len() == 20 {
+                previous_pcs.pop_front();
+            }
             previous_pcs.push_back(instruction_pc);
             if let Some(target) = branch_target(instruction, instruction_pc) {
-                if previous_branches.len() == 20 { previous_branches.pop_front(); }
+                if previous_branches.len() == 20 {
+                    previous_branches.pop_front();
+                }
                 previous_branches.push_back((instruction_pc, target));
             }
         } else {
-            if previous_pcs.len() == 20 { previous_pcs.pop_front(); }
+            if previous_pcs.len() == 20 {
+                previous_pcs.pop_front();
+            }
             previous_pcs.push_back(instruction_pc);
             if let Some(target) = branch_target(instruction, instruction_pc) {
-                if previous_branches.len() == 20 { previous_branches.pop_front(); }
+                if previous_branches.len() == 20 {
+                    previous_branches.pop_front();
+                }
                 previous_branches.push_back((instruction_pc, target));
             }
         }
@@ -776,7 +1046,14 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 continue;
             }
             -2 => {
-                failure_diagnostics(&memory, &context, &previous_pcs, &previous_branches, &runtime_state, "memory abort");
+                failure_diagnostics(
+                    &memory,
+                    &context,
+                    &previous_pcs,
+                    &previous_branches,
+                    &runtime_state,
+                    "memory abort",
+                );
                 return Err(format!(
                     "ARM64 guest memory fault at pc {:#x}, sp {:#x}, lr {:#x}, fp {:#x}, x0 {:#x}, x1 {:#x}, x2 {:#x}, x3 {:#x}",
                     context.pc,
@@ -790,7 +1067,14 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 ));
             }
             -3 => {
-                failure_diagnostics(&memory, &context, &previous_pcs, &previous_branches, &runtime_state, "undefined instruction");
+                failure_diagnostics(
+                    &memory,
+                    &context,
+                    &previous_pcs,
+                    &previous_branches,
+                    &runtime_state,
+                    "undefined instruction",
+                );
                 return Err(format!(
                     "ARM64 undefined instruction at pc {:#x}, sp {:#x}, lr {:#x}, fp {:#x}, x0 {:#x}, x1 {:#x}, x2 {:#x}, x3 {:#x}",
                     context.pc,
@@ -804,7 +1088,14 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 ));
             }
             -4 => {
-                failure_diagnostics(&memory, &context, &previous_pcs, &previous_branches, &runtime_state, "breakpoint");
+                failure_diagnostics(
+                    &memory,
+                    &context,
+                    &previous_pcs,
+                    &previous_branches,
+                    &runtime_state,
+                    "breakpoint",
+                );
                 return Err(format!(
                     "ARM64 breakpoint at pc {:#x}, sp {:#x}, lr {:#x}, fp {:#x}, x0 {:#x}, x1 {:#x}, x2 {:#x}, x3 {:#x}",
                     context.pc,
@@ -824,7 +1115,8 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                             "ARM64 guest entry returned while UIApplicationMain is active; presenting compatibility boot state before continuing the application lifecycle"
                         );
                         if let Some(window) = window.as_mut() {
-                            bootstrap_displayed = display_boot_screen(&bundle, &fs, device_family, window);
+                            bootstrap_displayed =
+                                display_boot_screen(&bundle, &fs, device_family, window);
                         }
                         if bootstrap_displayed {
                             runtime_state.mark_boot_screen_reached();
@@ -836,9 +1128,16 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                         runtime_state.boot_screen_reached,
                         runtime_state.last_selector.as_deref().unwrap_or("<none>"),
                     );
-                    if schedule_display_link_callback(&mut memory, &mut context, &mut runtime_state)? {
+                    if schedule_display_link_callback(
+                        &mut memory,
+                        &mut context,
+                        &mut runtime_state,
+                    )? {
                         if let Some(transfer_pc) = runtime_state.take_guest_transfer() {
-                            echo!("ARM64 starting scheduled display-link guest callback at {:#x}", transfer_pc);
+                            echo!(
+                                "ARM64 starting scheduled display-link guest callback at {:#x}",
+                                transfer_pc
+                            );
                             context.pc = transfer_pc;
                             cpu.load_context(&context);
                             cpu.clear_halt(A64_HALT_USER_DEFINED1);
@@ -861,7 +1160,10 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             value if value >= SVC_HOST_BASE as i32 => {
                 host_dispatches += 1;
                 host_dispatches_since_callback += 1;
-                let symbol = host_stubs.get(&value).map(|(name, _)| name.as_str()).unwrap_or("<unknown>");
+                let symbol = host_stubs
+                    .get(&value)
+                    .map(|(name, _)| name.as_str())
+                    .unwrap_or("<unknown>");
                 let continuation_pc = host_call_continuation(&context);
                 let call_site = host_call_site(&context);
                 let host_call = host_call_identity(&context);
@@ -904,7 +1206,19 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                         symbol, context.regs[0], context.regs[0], context.regs[1], context.regs[2], context.regs[3], context.pc, context.regs[30],
                     );
                 }
-                if host_dispatches <= 16 || host_dispatches.is_power_of_two() || matches!(symbol, "pthread_mutex_unlock" | "__ZdlPv" | "_ZdlPv" | "ZdlPv" | "__Znam" | "_Znam" | "Znam") {
+                if host_dispatches <= 16
+                    || host_dispatches.is_power_of_two()
+                    || matches!(
+                        symbol,
+                        "pthread_mutex_unlock"
+                            | "__ZdlPv"
+                            | "_ZdlPv"
+                            | "ZdlPv"
+                            | "__Znam"
+                            | "_Znam"
+                            | "Znam"
+                    )
+                {
                     log_dbg!(
                         "ARM64 host binding #{}: {} host_stub_pc={:#x} guest_run_entry_pc={:#x} guest_call_site={:#x} continuation_pc={:#x} {}",
                         host_dispatches,
@@ -919,13 +1233,26 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 verify_abi(&context, symbol);
                 let sp_before_dispatch = context.sp;
                 runtime_state.last_symbol = Some(symbol.to_owned());
-                let handled = match dispatch(&mut memory, &mut context, symbol, &mut runtime_state, window.as_deref_mut()) {
+                let handled = match dispatch(
+                    &mut memory,
+                    &mut context,
+                    symbol,
+                    &mut runtime_state,
+                    window.as_deref_mut(),
+                ) {
                     Ok(handled) => {
                         runtime_state.last_successful_symbol = Some(symbol.to_owned());
                         handled
                     }
                     Err(error) => {
-                        failure_diagnostics(&memory, &context, &previous_pcs, &previous_branches, &runtime_state, &format!("host callback {} failed: {}", symbol, error));
+                        failure_diagnostics(
+                            &memory,
+                            &context,
+                            &previous_pcs,
+                            &previous_branches,
+                            &runtime_state,
+                            &format!("host callback {} failed: {}", symbol, error),
+                        );
                         return Err(format!("ARM64 host callback {} failed: {}", symbol, error));
                     }
                 };
@@ -938,8 +1265,33 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                     );
                 }
                 verify_abi(&context, symbol);
-                if matches!(symbol, "malloc" | "calloc" | "valloc" | "posix_memalign" | "free" | "malloc_zone_free" | "_ZdlPv" | "_ZdaPv" | "__ZdlPv" | "__ZdaPv" | "_Znwm" | "_Znam" | "__Znwm" | "__Znam" | "Znwm" | "Znam" | "ZnwmRKSt9nothrow_t" | "__ZnwmRKSt9nothrow_t" | "memcpy" | "memmove" | "memcpy_chk" | "memmove_chk" | "memset" | "memset_chk")
-                    && (host_dispatches <= 16 || host_dispatches.is_power_of_two())
+                if matches!(
+                    symbol,
+                    "malloc"
+                        | "calloc"
+                        | "valloc"
+                        | "posix_memalign"
+                        | "free"
+                        | "malloc_zone_free"
+                        | "_ZdlPv"
+                        | "_ZdaPv"
+                        | "__ZdlPv"
+                        | "__ZdaPv"
+                        | "_Znwm"
+                        | "_Znam"
+                        | "__Znwm"
+                        | "__Znam"
+                        | "Znwm"
+                        | "Znam"
+                        | "ZnwmRKSt9nothrow_t"
+                        | "__ZnwmRKSt9nothrow_t"
+                        | "memcpy"
+                        | "memmove"
+                        | "memcpy_chk"
+                        | "memmove_chk"
+                        | "memset"
+                        | "memset_chk"
+                ) && (host_dispatches <= 16 || host_dispatches.is_power_of_two())
                 {
                     log_dbg!(
                         "ARM64 host callback return: symbol={} host_stub_pc={:#x} guest_run_entry_pc={:#x} guest_call_site={:#x} continuation_pc={:#x} result_x0={:#x} {}",
@@ -968,7 +1320,10 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 }
                 let guest_transfer = runtime_state.take_guest_transfer();
                 if let Some(transfer_pc) = guest_transfer {
-                    log_dbg!("ARM64 continuing guest execution at transferred Objective-C method {:#x}", transfer_pc);
+                    log_dbg!(
+                        "ARM64 continuing guest execution at transferred Objective-C method {:#x}",
+                        transfer_pc
+                    );
                     context.pc = transfer_pc;
                     cpu.load_context(&context);
                     cpu.clear_halt(A64_HALT_USER_DEFINED1);
@@ -985,7 +1340,8 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                     bootstrap_grace_slices = ARM64_BOOTSTRAP_GRACE_SLICES;
                     if !bootstrap_displayed {
                         if let Some(window) = window.as_mut() {
-                            bootstrap_displayed = display_boot_screen(&bundle, &fs, device_family, window);
+                            bootstrap_displayed =
+                                display_boot_screen(&bundle, &fs, device_family, window);
                             if bootstrap_displayed {
                                 runtime_state.mark_boot_screen_reached();
                             }
@@ -1031,11 +1387,17 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                     context.pc = context.regs[30];
                 }
                 if runtime_state.take_guest_yield() {
-                    let callback_return_pc = runtime_state.display_link_return_pc.unwrap_or(context.regs[30]);
+                    let callback_return_pc = runtime_state
+                        .display_link_return_pc
+                        .unwrap_or(context.regs[30]);
                     runtime_state.render_diagnostics.callback_return_pc = callback_return_pc;
                     runtime_state.trace_render_event(format!("frame={} callback_return=drawFrame display_link_return_pc={:#x} lr={:#x} present={} next_scheduled={} last_gl={} last_guest_pc={:#x}", runtime_state.render_diagnostics.display_link_callbacks, context.pc, callback_return_pc, runtime_state.render_diagnostics.present_framebuffer_calls, runtime_state.display_link_is_scheduled(), runtime_state.render_diagnostics.last_gl_symbol.as_deref().unwrap_or("<none>"), runtime_state.render_diagnostics.last_guest_pc));
                     host_dispatches_since_callback = 0;
-                    let callback_scheduled = schedule_display_link_callback(&mut memory, &mut context, &mut runtime_state)?;
+                    let callback_scheduled = schedule_display_link_callback(
+                        &mut memory,
+                        &mut context,
+                        &mut runtime_state,
+                    )?;
                     if let Some(transfer_pc) = runtime_state.take_guest_transfer() {
                         log_dbg!(
                             "ARM64 scheduling next display-link guest callback at {:#x} (scheduled={})",
@@ -1058,13 +1420,38 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 continue;
             }
             -6 => {
-                failure_diagnostics(&memory, &context, &previous_pcs, &previous_branches, &runtime_state, "watchdog timeout");
-                return Err(format!("ARM64 execution watchdog stopped the CPU at pc {:#x}", context.pc));
+                failure_diagnostics(
+                    &memory,
+                    &context,
+                    &previous_pcs,
+                    &previous_branches,
+                    &runtime_state,
+                    "watchdog timeout",
+                );
+                return Err(format!(
+                    "ARM64 execution watchdog stopped the CPU at pc {:#x}",
+                    context.pc
+                ));
             }
-            value if value >= 0 => return Err(format!("ARM64 runtime reached unimplemented SVC {} at {:#x}", value, context.pc)),
+            value if value >= 0 => {
+                return Err(format!(
+                    "ARM64 runtime reached unimplemented SVC {} at {:#x}",
+                    value, context.pc
+                ))
+            }
             value => {
-                failure_diagnostics(&memory, &context, &previous_pcs, &previous_branches, &runtime_state, &format!("Dynarmic exit code {}", value));
-                return Err(format!("ARM64 runtime failed with code {} at {:#x}", value, context.pc));
+                failure_diagnostics(
+                    &memory,
+                    &context,
+                    &previous_pcs,
+                    &previous_branches,
+                    &runtime_state,
+                    &format!("Dynarmic exit code {}", value),
+                );
+                return Err(format!(
+                    "ARM64 runtime failed with code {} at {:#x}",
+                    value, context.pc
+                ));
             }
         }
     }

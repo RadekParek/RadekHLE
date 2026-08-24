@@ -49,8 +49,7 @@ const kAudioSessionProperty_OverrideCategoryDefaultToSpeaker: AudioSessionProper
     fourcc(b"cspk");
 const kAudioSessionProperty_OverrideCategoryEnableBluetoothInput: AudioSessionPropertyID =
     fourcc(b"cblu");
-const kAudioSessionProperty_OtherMixableAudioShouldDuck: AudioSessionPropertyID =
-    fourcc(b"duck");
+const kAudioSessionProperty_OtherMixableAudioShouldDuck: AudioSessionPropertyID = fourcc(b"duck");
 
 // Значения категорий (из AudioSession.h)
 const kAudioSessionCategory_AmbientSound: u32 = fourcc(b"ambi");
@@ -252,8 +251,7 @@ pub fn AudioSessionGetProperty(
                 .write(out_data.cast::<u32>(), session.bluetooth_input);
         }
         kAudioSessionProperty_OtherMixableAudioShouldDuck => {
-            env.mem
-                .write(out_data.cast::<u32>(), session.duck_others);
+            env.mem.write(out_data.cast::<u32>(), session.duck_others);
         }
         _ => {
             log!(

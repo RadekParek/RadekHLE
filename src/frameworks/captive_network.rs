@@ -15,18 +15,12 @@
 use crate::dyld::{ConstantExports, FunctionExports, HostConstant};
 
 pub const CONSTANTS: ConstantExports = &[
-    (
-        "_kCNNetworkInfoKeySSID",
-        HostConstant::NSString("SSID"),
-    ),
+    ("_kCNNetworkInfoKeySSID", HostConstant::NSString("SSID")),
     (
         "_kCNNetworkInfoKeySSIDData",
         HostConstant::NSString("SSIDDATA"),
     ),
-    (
-        "_kCNNetworkInfoKeyBSSID",
-        HostConstant::NSString("BSSID"),
-    ),
+    ("_kCNNetworkInfoKeyBSSID", HostConstant::NSString("BSSID")),
 ];
 
 pub const FUNCTIONS: FunctionExports = &[];

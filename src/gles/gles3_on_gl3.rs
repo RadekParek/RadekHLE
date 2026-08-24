@@ -16,9 +16,9 @@
 //! [super::gles3_on_gl3] instead, which translates ES 3.0 to desktop
 //! OpenGL 3.3 Core.
 
+use super::gl33core_raw as gl33;
 use super::gles11_raw as gles11;
 use super::gles11_raw::types::*;
-use super::gl33core_raw as gl33;
 use super::gles_generic::{GLchar, GLES};
 use super::util::{try_decode_pvrtc, PalettedTextureFormat};
 use super::GLESContext;
@@ -949,8 +949,7 @@ impl GLES for GLES3OnGL3<'_> {
             let s = if !length.is_null() {
                 let len = *length.add(i);
                 if len >= 0 {
-                    let slice =
-                        std::slice::from_raw_parts(raw_ptr as *const u8, len as usize);
+                    let slice = std::slice::from_raw_parts(raw_ptr as *const u8, len as usize);
                     std::str::from_utf8(slice).unwrap_or("").to_owned()
                 } else {
                     CStr::from_ptr(raw_ptr).to_string_lossy().into_owned()
@@ -1504,12 +1503,7 @@ impl GLES for GLES3OnGL3<'_> {
     ) {
         gl33::GetBufferPointerv(target, pname, params)
     }
-    unsafe fn GetBufferParameteri64v(
-        &mut self,
-        target: GLenum,
-        pname: GLenum,
-        params: *mut i64,
-    ) {
+    unsafe fn GetBufferParameteri64v(&mut self, target: GLenum, pname: GLenum, params: *mut i64) {
         gl33::GetBufferParameteri64v(target, pname, params as *mut gl33::types::GLint64)
     }
     unsafe fn CopyBufferSubData(
@@ -1581,8 +1575,7 @@ impl GLES for GLES3OnGL3<'_> {
         pixels: *const GLvoid,
     ) {
         gl33::TexSubImage3D(
-            target, level, xoffset, yoffset, zoffset, width, height, depth, format, type_,
-            pixels,
+            target, level, xoffset, yoffset, zoffset, width, height, depth, format, type_, pixels,
         )
     }
     unsafe fn CopyTexSubImage3D(
@@ -1710,7 +1703,11 @@ impl GLES for GLES3OnGL3<'_> {
         let mut width: GLint = 0;
         let mut height: GLint = 0;
         gl33::GetRenderbufferParameteriv(gl33::RENDERBUFFER, gl33::RENDERBUFFER_WIDTH, &mut width);
-        gl33::GetRenderbufferParameteriv(gl33::RENDERBUFFER, gl33::RENDERBUFFER_HEIGHT, &mut height);
+        gl33::GetRenderbufferParameteriv(
+            gl33::RENDERBUFFER,
+            gl33::RENDERBUFFER_HEIGHT,
+            &mut height,
+        );
 
         gl33::BindRenderbuffer(gl33::RENDERBUFFER, old_rb as GLuint);
 
@@ -1755,15 +1752,7 @@ impl GLES for GLES3OnGL3<'_> {
         width: GLsizei,
         height: GLsizei,
     ) {
-        gl33::InvalidateSubFramebuffer(
-            target,
-            num_attachments,
-            attachments,
-            x,
-            y,
-            width,
-            height,
-        )
+        gl33::InvalidateSubFramebuffer(target, num_attachments, attachments, x, y, width, height)
     }
     unsafe fn ReadBuffer(&mut self, src: GLenum) {
         gl33::ReadBuffer(src)
@@ -1782,28 +1771,13 @@ impl GLES for GLES3OnGL3<'_> {
     ) {
         gl33::DrawRangeElements(mode, start, end, count, type_, indices)
     }
-    unsafe fn ClearBufferiv(
-        &mut self,
-        buffer: GLenum,
-        drawbuffer: GLint,
-        value: *const GLint,
-    ) {
+    unsafe fn ClearBufferiv(&mut self, buffer: GLenum, drawbuffer: GLint, value: *const GLint) {
         gl33::ClearBufferiv(buffer, drawbuffer, value)
     }
-    unsafe fn ClearBufferuiv(
-        &mut self,
-        buffer: GLenum,
-        drawbuffer: GLint,
-        value: *const GLuint,
-    ) {
+    unsafe fn ClearBufferuiv(&mut self, buffer: GLenum, drawbuffer: GLint, value: *const GLuint) {
         gl33::ClearBufferuiv(buffer, drawbuffer, value)
     }
-    unsafe fn ClearBufferfv(
-        &mut self,
-        buffer: GLenum,
-        drawbuffer: GLint,
-        value: *const GLfloat,
-    ) {
+    unsafe fn ClearBufferfv(&mut self, buffer: GLenum, drawbuffer: GLint, value: *const GLfloat) {
         gl33::ClearBufferfv(buffer, drawbuffer, value)
     }
     unsafe fn ClearBufferfi(
@@ -1855,12 +1829,7 @@ impl GLES for GLES3OnGL3<'_> {
     unsafe fn SamplerParameteri(&mut self, sampler: GLuint, pname: GLenum, param: GLint) {
         gl33::SamplerParameteri(sampler, pname, param)
     }
-    unsafe fn SamplerParameteriv(
-        &mut self,
-        sampler: GLuint,
-        pname: GLenum,
-        params: *const GLint,
-    ) {
+    unsafe fn SamplerParameteriv(&mut self, sampler: GLuint, pname: GLenum, params: *const GLint) {
         gl33::SamplerParameteriv(sampler, pname, params)
     }
     unsafe fn SamplerParameterf(&mut self, sampler: GLuint, pname: GLenum, param: GLfloat) {
@@ -1874,12 +1843,7 @@ impl GLES for GLES3OnGL3<'_> {
     ) {
         gl33::SamplerParameterfv(sampler, pname, params)
     }
-    unsafe fn GetSamplerParameteriv(
-        &mut self,
-        sampler: GLuint,
-        pname: GLenum,
-        params: *mut GLint,
-    ) {
+    unsafe fn GetSamplerParameteriv(&mut self, sampler: GLuint, pname: GLenum, params: *mut GLint) {
         gl33::GetSamplerParameteriv(sampler, pname, params)
     }
     unsafe fn GetSamplerParameterfv(
@@ -1935,9 +1899,7 @@ impl GLES for GLES3OnGL3<'_> {
         type_: *mut GLenum,
         name: *mut GLchar,
     ) {
-        gl33::GetTransformFeedbackVarying(
-            program, index, buf_size, length, size, type_, name,
-        )
+        gl33::GetTransformFeedbackVarying(program, index, buf_size, length, size, type_, name)
     }
 
     // -- Integer vertex attributes --
@@ -1951,30 +1913,13 @@ impl GLES for GLES3OnGL3<'_> {
     ) {
         gl33::VertexAttribIPointer(index, size, type_, stride, pointer)
     }
-    unsafe fn GetVertexAttribIiv(
-        &mut self,
-        index: GLuint,
-        pname: GLenum,
-        params: *mut GLint,
-    ) {
+    unsafe fn GetVertexAttribIiv(&mut self, index: GLuint, pname: GLenum, params: *mut GLint) {
         gl33::GetVertexAttribIiv(index, pname, params)
     }
-    unsafe fn GetVertexAttribIuiv(
-        &mut self,
-        index: GLuint,
-        pname: GLenum,
-        params: *mut GLuint,
-    ) {
+    unsafe fn GetVertexAttribIuiv(&mut self, index: GLuint, pname: GLenum, params: *mut GLuint) {
         gl33::GetVertexAttribIuiv(index, pname, params)
     }
-    unsafe fn VertexAttribI4i(
-        &mut self,
-        index: GLuint,
-        x: GLint,
-        y: GLint,
-        z: GLint,
-        w: GLint,
-    ) {
+    unsafe fn VertexAttribI4i(&mut self, index: GLuint, x: GLint, y: GLint, z: GLint, w: GLint) {
         gl33::VertexAttribI4i(index, x, y, z, w)
     }
     unsafe fn VertexAttribI4ui(
@@ -2026,12 +1971,7 @@ impl GLES for GLES3OnGL3<'_> {
     unsafe fn Uniform4uiv(&mut self, location: GLint, count: GLsizei, value: *const GLuint) {
         gl33::Uniform4uiv(location, count, value)
     }
-    unsafe fn GetUniformuiv(
-        &mut self,
-        program: GLuint,
-        location: GLint,
-        params: *mut GLuint,
-    ) {
+    unsafe fn GetUniformuiv(&mut self, program: GLuint, location: GLint, params: *mut GLuint) {
         gl33::GetUniformuiv(program, location, params)
     }
     unsafe fn UniformMatrix2x3fv(
@@ -2189,12 +2129,7 @@ impl GLES for GLES3OnGL3<'_> {
     unsafe fn DeleteSync(&mut self, sync: usize) {
         gl33::DeleteSync(sync as gl33::types::GLsync)
     }
-    unsafe fn ClientWaitSync(
-        &mut self,
-        sync: usize,
-        flags: GLbitfield,
-        timeout: u64,
-    ) -> GLenum {
+    unsafe fn ClientWaitSync(&mut self, sync: usize, flags: GLbitfield, timeout: u64) -> GLenum {
         gl33::ClientWaitSync(sync as gl33::types::GLsync, flags, timeout)
     }
     unsafe fn WaitSync(&mut self, sync: usize, flags: GLbitfield, timeout: u64) {
@@ -2250,11 +2185,7 @@ impl GLES for GLES3OnGL3<'_> {
     unsafe fn GetStringi(&mut self, name: GLenum, index: GLuint) -> *const GLubyte {
         gl33::GetStringi(name, index)
     }
-    unsafe fn GetFragDataLocation(
-        &mut self,
-        program: GLuint,
-        name: *const GLchar,
-    ) -> GLint {
+    unsafe fn GetFragDataLocation(&mut self, program: GLuint, name: *const GLchar) -> GLint {
         gl33::GetFragDataLocation(program, name)
     }
     unsafe fn GetInternalformativ(

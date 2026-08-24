@@ -590,8 +590,7 @@ pub fn printf_inner<const NS_LOG: bool, F: Fn(&Mem, GuestUSize) -> u8>(
                     } else {
                         trimmed_result.to_string()
                     };
-                    let trimmed_result =
-                        apply_float_sign(&trimmed_result, float, prepend_sign);
+                    let trimmed_result = apply_float_sign(&trimmed_result, float, prepend_sign);
                     res.extend_from_slice(trimmed_result.as_bytes());
                 } else {
                     let precision: usize = (P - 1).try_into().unwrap();

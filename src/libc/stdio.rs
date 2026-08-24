@@ -86,9 +86,9 @@ impl State {
                 );
             }
             FILEHostObject {
-                    pushbacks: Vec::new(),
-                    error: false,
-                }
+                pushbacks: Vec::new(),
+                error: false,
+            }
         });
         self.file_streams.get_mut(&file_ptr).unwrap()
     }
@@ -966,5 +966,8 @@ pub const FUNCTIONS: FunctionExports = &[
     // this symbol directly because the SDK headers expand getc() to an
     // inline that calls ___srget on buffer miss.
     // The Mach-O symbol is "___srget" (C name "__srget" with _ prefix).
-    ("___srget", &(fgetc as fn(&mut crate::Environment, MutPtr<FILE>) -> i32)),
+    (
+        "___srget",
+        &(fgetc as fn(&mut crate::Environment, MutPtr<FILE>) -> i32),
+    ),
 ];

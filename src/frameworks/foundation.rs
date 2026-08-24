@@ -45,13 +45,14 @@ pub mod ns_exception;
 pub mod ns_file_handle;
 pub mod ns_file_manager;
 pub mod ns_garbage_collector;
+pub mod ns_hash_table;
 pub mod ns_host;
 pub mod ns_http_cookie_storage;
 pub mod ns_index_path;
 pub mod ns_index_set;
-pub mod ns_json_serialization;
 pub mod ns_input_stream;
 pub mod ns_invocation;
+pub mod ns_json_serialization;
 pub mod ns_keyed_archiver;
 pub mod ns_keyed_unarchiver;
 pub mod ns_locale;
@@ -67,14 +68,13 @@ pub mod ns_object;
 pub mod ns_operation;
 pub mod ns_ordered_set;
 pub mod ns_persistent_store_coordinator;
-pub mod ns_predicate;
 pub mod ns_port;
+pub mod ns_predicate;
 pub mod ns_process_info;
 pub mod ns_property_list_serialization;
 pub mod ns_regular_expression;
 pub mod ns_run_loop;
 pub mod ns_scanner;
-pub mod ns_hash_table;
 pub mod ns_set;
 pub mod ns_sort_descriptor;
 pub mod ns_string;
@@ -770,10 +770,7 @@ pub const STUB_CONSTANTS: ConstantExports = &[
         HostConstant::NSString("NSPlainText"),
     ),
     ("_NSRTFTextDocumentType", HostConstant::NSString("NSRTF")),
-    (
-        "_NSRTFDTextDocumentType",
-        HostConstant::NSString("NSRTFD"),
-    ),
+    ("_NSRTFDTextDocumentType", HostConstant::NSString("NSRTFD")),
     // -----------------------------------------------------------------
     // NSProgress kind constants (NSProgress.h).
     // -----------------------------------------------------------------
@@ -1005,10 +1002,7 @@ pub const STUB_CONSTANTS: ConstantExports = &[
     // as a cookie-property dictionary key whose literal value is
     // `"Version"`. Apple's CFNetwork uses it to read the cookie's
     // RFC-2965 version field.
-    (
-        "_NSHTTPCookieVersion",
-        HostConstant::NSString("Version"),
-    ),
+    ("_NSHTTPCookieVersion", HostConstant::NSString("Version")),
     (
         "_NSUbiquityIdentityDidChangeNotification",
         HostConstant::NSString("NSUbiquityIdentityDidChangeNotification"),
@@ -1067,42 +1061,15 @@ pub const STUB_CONSTANTS: ConstantExports = &[
     // values match Apple's headers (some are short legacy strings, see
     // `<https://developer.apple.com/documentation/foundation/nshttpcookie>`).
     // -----------------------------------------------------------------
-    (
-        "_NSHTTPCookieExpires",
-        HostConstant::NSString("Expires"),
-    ),
-    (
-        "_NSHTTPCookieName",
-        HostConstant::NSString("Name"),
-    ),
-    (
-        "_NSHTTPCookieValue",
-        HostConstant::NSString("Value"),
-    ),
-    (
-        "_NSHTTPCookieDomain",
-        HostConstant::NSString("Domain"),
-    ),
-    (
-        "_NSHTTPCookiePath",
-        HostConstant::NSString("Path"),
-    ),
-    (
-        "_NSHTTPCookieSecure",
-        HostConstant::NSString("Secure"),
-    ),
-    (
-        "_NSHTTPCookieDiscard",
-        HostConstant::NSString("Discard"),
-    ),
-    (
-        "_NSHTTPCookieMaximumAge",
-        HostConstant::NSString("Max-Age"),
-    ),
-    (
-        "_NSHTTPCookieComment",
-        HostConstant::NSString("Comment"),
-    ),
+    ("_NSHTTPCookieExpires", HostConstant::NSString("Expires")),
+    ("_NSHTTPCookieName", HostConstant::NSString("Name")),
+    ("_NSHTTPCookieValue", HostConstant::NSString("Value")),
+    ("_NSHTTPCookieDomain", HostConstant::NSString("Domain")),
+    ("_NSHTTPCookiePath", HostConstant::NSString("Path")),
+    ("_NSHTTPCookieSecure", HostConstant::NSString("Secure")),
+    ("_NSHTTPCookieDiscard", HostConstant::NSString("Discard")),
+    ("_NSHTTPCookieMaximumAge", HostConstant::NSString("Max-Age")),
+    ("_NSHTTPCookieComment", HostConstant::NSString("Comment")),
     (
         "_NSHTTPCookieCommentURL",
         HostConstant::NSString("CommentURL"),
@@ -1111,10 +1078,7 @@ pub const STUB_CONSTANTS: ConstantExports = &[
         "_NSHTTPCookieOriginURL",
         HostConstant::NSString("OriginURL"),
     ),
-    (
-        "_NSHTTPCookiePort",
-        HostConstant::NSString("Port"),
-    ),
+    ("_NSHTTPCookiePort", HostConstant::NSString("Port")),
     (
         "_NSHTTPCookieManagerCookiesChangedNotification",
         HostConstant::NSString("NSHTTPCookieManagerCookiesChangedNotification"),
@@ -1183,10 +1147,7 @@ pub const STUB_CONSTANTS: ConstantExports = &[
     // -----------------------------------------------------------------
     // Security constants.
     // -----------------------------------------------------------------
-    (
-        "_kSecAttrIsPermanent",
-        HostConstant::NSString("isper"),
-    ),
+    ("_kSecAttrIsPermanent", HostConstant::NSString("isper")),
     (
         "_kSecUseAuthenticationUI",
         HostConstant::NSString("u_AuthUI"),
@@ -1215,7 +1176,10 @@ pub const STUB_CONSTANTS: ConstantExports = &[
     // hardware-keyboard events, but the symbols must resolve to a stable
     // non-nil NSString so the app's +keyCommands setup does not crash.
     // -----------------------------------------------------------------
-    ("_UIKeyInputUpArrow", HostConstant::NSString("UIKeyInputUpArrow")),
+    (
+        "_UIKeyInputUpArrow",
+        HostConstant::NSString("UIKeyInputUpArrow"),
+    ),
     (
         "_UIKeyInputDownArrow",
         HostConstant::NSString("UIKeyInputDownArrow"),
@@ -1228,7 +1192,10 @@ pub const STUB_CONSTANTS: ConstantExports = &[
         "_UIKeyInputRightArrow",
         HostConstant::NSString("UIKeyInputRightArrow"),
     ),
-    ("_UIKeyInputEscape", HostConstant::NSString("UIKeyInputEscape")),
+    (
+        "_UIKeyInputEscape",
+        HostConstant::NSString("UIKeyInputEscape"),
+    ),
     (
         "_UIUserNotificationActionResponseTypedTextKey",
         HostConstant::NSString("UIUserNotificationActionResponseTypedTextKey"),
@@ -1240,7 +1207,10 @@ pub const STUB_CONSTANTS: ConstantExports = &[
     ("_kCAAlignmentLeft", HostConstant::NSString("left")),
     ("_kCAAlignmentRight", HostConstant::NSString("right")),
     ("_kCAAlignmentCenter", HostConstant::NSString("center")),
-    ("_kCAAlignmentJustified", HostConstant::NSString("justified")),
+    (
+        "_kCAAlignmentJustified",
+        HostConstant::NSString("justified"),
+    ),
     ("_kCAAlignmentNatural", HostConstant::NSString("natural")),
     // -----------------------------------------------------------------
     // AVFoundation time-pitch algorithm identifiers
@@ -1328,7 +1298,10 @@ pub const STUB_CONSTANTS: ConstantExports = &[
         HostConstant::NSString("MasterCard"),
     ),
     ("_PKPaymentNetworkAmex", HostConstant::NSString("Amex")),
-    ("_PKPaymentNetworkDiscover", HostConstant::NSString("Discover")),
+    (
+        "_PKPaymentNetworkDiscover",
+        HostConstant::NSString("Discover"),
+    ),
     // -----------------------------------------------------------------
     // MapKit launch-options keys (<MapKit/MKTypes.h>).
     // -----------------------------------------------------------------
@@ -1463,27 +1436,42 @@ pub const STUB_CONSTANTS: ConstantExports = &[
     // -----------------------------------------------------------------
     ("_kCAEmitterLayerPoint", HostConstant::NSString("point")),
     ("_kCAEmitterLayerLine", HostConstant::NSString("line")),
-    ("_kCAEmitterLayerRectangle", HostConstant::NSString("rectangle")),
+    (
+        "_kCAEmitterLayerRectangle",
+        HostConstant::NSString("rectangle"),
+    ),
     ("_kCAEmitterLayerCuboid", HostConstant::NSString("cuboid")),
     ("_kCAEmitterLayerCircle", HostConstant::NSString("circle")),
     ("_kCAEmitterLayerSphere", HostConstant::NSString("sphere")),
     ("_kCAEmitterLayerSurface", HostConstant::NSString("surface")),
-    ("_kCAEmitterLayerUnordered", HostConstant::NSString("unordered")),
+    (
+        "_kCAEmitterLayerUnordered",
+        HostConstant::NSString("unordered"),
+    ),
     (
         "_kCAEmitterLayerOldestFirst",
         HostConstant::NSString("oldestFirst"),
     ),
-    ("_kCAEmitterLayerOldestLast", HostConstant::NSString("oldestLast")),
+    (
+        "_kCAEmitterLayerOldestLast",
+        HostConstant::NSString("oldestLast"),
+    ),
     (
         "_kCAEmitterLayerBackToFront",
         HostConstant::NSString("backToFront"),
     ),
-    ("_kCAEmitterLayerAdditive", HostConstant::NSString("additive")),
+    (
+        "_kCAEmitterLayerAdditive",
+        HostConstant::NSString("additive"),
+    ),
     // -----------------------------------------------------------------
     // UIKit table-view section-index search magic string
     // (<UIKit/UITableView.h>). Documented value is "{search}".
     // -----------------------------------------------------------------
-    ("_UITableViewIndexSearch", HostConstant::NSString("{search}")),
+    (
+        "_UITableViewIndexSearch",
+        HostConstant::NSString("{search}"),
+    ),
     // -----------------------------------------------------------------
     // AVFoundation audio-encoder setting key
     // (<AVFoundation/AVAudioSettings.h>).
@@ -1495,10 +1483,7 @@ pub const STUB_CONSTANTS: ConstantExports = &[
     // -----------------------------------------------------------------
     // sqlite3 constants.
     // -----------------------------------------------------------------
-    (
-        "_sqlite3_temp_directory",
-        HostConstant::NullPtr,
-    ),
+    ("_sqlite3_temp_directory", HostConstant::NullPtr),
 ];
 
 pub const DYLIB: crate::dyld::HostDylib = crate::dyld::HostDylib {

@@ -11,9 +11,9 @@ use super::GLES;
 use crate::matrix::Matrix;
 use std::time::{Duration, Instant};
 
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::OnceLock;
 
 pub struct FpsCounter {
     time: std::time::Instant,
@@ -57,11 +57,7 @@ impl FpsCounter {
         if duration >= Duration::from_secs(1) {
             self.time = now;
             let fps = std::mem::take(&mut self.frames) as f32 / duration.as_secs_f32();
-            echo!(
-                "touchHLE: {} FPS: {:.2}",
-                label,
-                fps
-            );
+            echo!("touchHLE: {} FPS: {:.2}", label, fps);
             // Update global text cache for on-screen overlay if enabled via
             // environment variable or the runtime flag.
             let onscreen_env = std::env::var_os("TOUCHHLE_ONSCREEN_FPS").is_some();
@@ -79,7 +75,9 @@ impl FpsCounter {
 
 /// Runtime API: enable/disable the on-screen FPS overlay at runtime.
 pub fn set_onscreen_fps_enabled(enabled: bool) {
-    ONSCREEN_FPS_ENABLED.get_or_init(|| AtomicBool::new(false)).store(enabled, Ordering::SeqCst);
+    ONSCREEN_FPS_ENABLED
+        .get_or_init(|| AtomicBool::new(false))
+        .store(enabled, Ordering::SeqCst);
 }
 
 pub fn set_onscreen_hud_architecture(architecture: &str) {
@@ -108,9 +106,15 @@ fn update_hud_text() {
         .ok()
         .map(|metrics| metrics.clone())
         .unwrap_or_default();
-    let cpu = metrics.cpu_percent.map_or_else(|| "--".to_owned(), |value| format!("{value:.0}"));
-    let gpu = metrics.gpu_percent.map_or_else(|| "--".to_owned(), |value| format!("{value:.0}"));
-    let ram = metrics.ram_mb.map_or_else(|| "--".to_owned(), |value| value.to_string());
+    let cpu = metrics
+        .cpu_percent
+        .map_or_else(|| "--".to_owned(), |value| format!("{value:.0}"));
+    let gpu = metrics
+        .gpu_percent
+        .map_or_else(|| "--".to_owned(), |value| format!("{value:.0}"));
+    let ram = metrics
+        .ram_mb
+        .map_or_else(|| "--".to_owned(), |value| value.to_string());
     let architecture = if metrics.architecture.is_empty() {
         "ARM32/ARM64"
     } else {
@@ -126,8 +130,16 @@ fn update_hud_text() {
 fn process_cpu_percent() -> Option<f32> {
     static SAMPLE: OnceLock<Mutex<Option<(u64, u64)>>> = OnceLock::new();
     let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
-    let fields = stat.rsplit_once(") ")?.1.split_whitespace().collect::<Vec<_>>();
-    let process_ticks = fields.get(11)?.parse::<u64>().ok()?.checked_add(fields.get(12)?.parse::<u64>().ok()?)?;
+    let fields = stat
+        .rsplit_once(") ")?
+        .1
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    let process_ticks = fields
+        .get(11)?
+        .parse::<u64>()
+        .ok()?
+        .checked_add(fields.get(12)?.parse::<u64>().ok()?)?;
     let total_ticks = std::fs::read_to_string("/proc/stat")
         .ok()?
         .lines()
@@ -143,7 +155,8 @@ fn process_cpu_percent() -> Option<f32> {
         let total_delta = total_ticks.saturating_sub(old_total);
         (total_delta > 0).then(|| {
             let cores = std::thread::available_parallelism().map_or(1, |value| value.get()) as f32;
-            (process_delta as f32 / total_delta as f32 * cores * 100.0).clamp(0.0, 100.0 * cores as f32)
+            (process_delta as f32 / total_delta as f32 * cores * 100.0)
+                .clamp(0.0, 100.0 * cores as f32)
         })
     });
     *previous = Some((process_ticks, total_ticks));
@@ -171,7 +184,14 @@ fn gpu_percent() -> Option<f32> {
     ];
     PATHS.iter().find_map(|path| {
         let value = std::fs::read_to_string(path).ok()?;
-        let value = value.trim().trim_end_matches('%').split('@').next()?.trim().parse::<f32>().ok()?;
+        let value = value
+            .trim()
+            .trim_end_matches('%')
+            .split('@')
+            .next()?
+            .trim()
+            .parse::<f32>()
+            .ok()?;
         Some(value.clamp(0.0, 100.0))
     })
 }
@@ -230,14 +250,7 @@ pub unsafe fn present_frame(
     gles.EnableClientState(gles11::VERTEX_ARRAY);
     gles.VertexPointer(2, gles11::FLOAT, 0, vertices.as_ptr() as *const GLvoid);
 
-    let tex_coords: [f32; 12] = [
-        0.0, 0.0,
-        0.0, 1.0,
-        1.0, 0.0,
-        1.0, 0.0,
-        0.0, 1.0,
-        1.0, 1.0,
-    ];
+    let tex_coords: [f32; 12] = [0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
     gles.EnableClientState(gles11::TEXTURE_COORD_ARRAY);
     gles.TexCoordPointer(2, gles11::FLOAT, 0, tex_coords.as_ptr() as *const GLvoid);
     // Apply the device-rotation matrix to the TEXTURE matrix, but rotate
@@ -312,51 +325,51 @@ const GLYPH_CHARS: &str = "0123456789:.FPSCUGRAMB%";
 // Each glyph is 8 bytes, each bit is a pixel (MSB left).
 const GLYPH_BITMAPS: &[[u8; 8]] = &[
     // 0
-    [0x3C,0x66,0x6E,0x7E,0x76,0x66,0x3C,0x00],
+    [0x3C, 0x66, 0x6E, 0x7E, 0x76, 0x66, 0x3C, 0x00],
     // 1
-    [0x18,0x38,0x18,0x18,0x18,0x18,0x7E,0x00],
+    [0x18, 0x38, 0x18, 0x18, 0x18, 0x18, 0x7E, 0x00],
     // 2
-    [0x3C,0x66,0x06,0x0C,0x18,0x30,0x7E,0x00],
+    [0x3C, 0x66, 0x06, 0x0C, 0x18, 0x30, 0x7E, 0x00],
     // 3
-    [0x3C,0x66,0x06,0x1C,0x06,0x66,0x3C,0x00],
+    [0x3C, 0x66, 0x06, 0x1C, 0x06, 0x66, 0x3C, 0x00],
     // 4
-    [0x0C,0x1C,0x3C,0x6C,0x7E,0x0C,0x1E,0x00],
+    [0x0C, 0x1C, 0x3C, 0x6C, 0x7E, 0x0C, 0x1E, 0x00],
     // 5
-    [0x7E,0x60,0x7C,0x06,0x06,0x66,0x3C,0x00],
+    [0x7E, 0x60, 0x7C, 0x06, 0x06, 0x66, 0x3C, 0x00],
     // 6
-    [0x3C,0x66,0x60,0x7C,0x66,0x66,0x3C,0x00],
+    [0x3C, 0x66, 0x60, 0x7C, 0x66, 0x66, 0x3C, 0x00],
     // 7
-    [0x7E,0x66,0x0C,0x18,0x18,0x18,0x18,0x00],
+    [0x7E, 0x66, 0x0C, 0x18, 0x18, 0x18, 0x18, 0x00],
     // 8
-    [0x3C,0x66,0x66,0x3C,0x66,0x66,0x3C,0x00],
+    [0x3C, 0x66, 0x66, 0x3C, 0x66, 0x66, 0x3C, 0x00],
     // 9
-    [0x3C,0x66,0x66,0x3E,0x06,0x66,0x3C,0x00],
+    [0x3C, 0x66, 0x66, 0x3E, 0x06, 0x66, 0x3C, 0x00],
     // : (colon)
-    [0x00,0x18,0x18,0x00,0x00,0x18,0x18,0x00],
+    [0x00, 0x18, 0x18, 0x00, 0x00, 0x18, 0x18, 0x00],
     // . (dot)
-    [0x00,0x00,0x00,0x00,0x00,0x18,0x18,0x00],
+    [0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x18, 0x00],
     // F
-    [0x7E,0x60,0x60,0x7C,0x60,0x60,0x60,0x00],
+    [0x7E, 0x60, 0x60, 0x7C, 0x60, 0x60, 0x60, 0x00],
     // P
-    [0x7C,0x66,0x66,0x7C,0x60,0x60,0x60,0x00],
+    [0x7C, 0x66, 0x66, 0x7C, 0x60, 0x60, 0x60, 0x00],
     // S
-    [0x3C,0x66,0x30,0x1C,0x06,0x66,0x3C,0x00],
+    [0x3C, 0x66, 0x30, 0x1C, 0x06, 0x66, 0x3C, 0x00],
     // C
-    [0x3C,0x66,0x60,0x60,0x60,0x66,0x3C,0x00],
+    [0x3C, 0x66, 0x60, 0x60, 0x60, 0x66, 0x3C, 0x00],
     // U
-    [0x66,0x66,0x66,0x66,0x66,0x66,0x3C,0x00],
+    [0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x3C, 0x00],
     // G
-    [0x3C,0x66,0x60,0x6E,0x66,0x66,0x3E,0x00],
+    [0x3C, 0x66, 0x60, 0x6E, 0x66, 0x66, 0x3E, 0x00],
     // R
-    [0x7C,0x66,0x66,0x7C,0x6C,0x66,0x66,0x00],
+    [0x7C, 0x66, 0x66, 0x7C, 0x6C, 0x66, 0x66, 0x00],
     // A
-    [0x18,0x3C,0x66,0x66,0x7E,0x66,0x66,0x00],
+    [0x18, 0x3C, 0x66, 0x66, 0x7E, 0x66, 0x66, 0x00],
     // M
-    [0x63,0x77,0x7F,0x6B,0x63,0x63,0x63,0x00],
+    [0x63, 0x77, 0x7F, 0x6B, 0x63, 0x63, 0x63, 0x00],
     // B
-    [0x7C,0x66,0x66,0x7C,0x66,0x66,0x7C,0x00],
+    [0x7C, 0x66, 0x66, 0x7C, 0x66, 0x66, 0x7C, 0x00],
     // %
-    [0x62,0x64,0x08,0x10,0x26,0x46,0x00,0x00],
+    [0x62, 0x64, 0x08, 0x10, 0x26, 0x46, 0x00, 0x00],
 ];
 
 fn glyph_index(ch: char) -> Option<usize> {
@@ -414,10 +427,26 @@ unsafe fn ensure_glyph_textures(gles: &mut dyn GLES) -> Option<Vec<u32>> {
             gles11::UNSIGNED_BYTE,
             data.as_ptr() as *const _,
         );
-        gles.TexParameteri(gles11::TEXTURE_2D, gles11::TEXTURE_MIN_FILTER, gles11::NEAREST as _);
-        gles.TexParameteri(gles11::TEXTURE_2D, gles11::TEXTURE_MAG_FILTER, gles11::NEAREST as _);
-        gles.TexParameteri(gles11::TEXTURE_2D, gles11::TEXTURE_WRAP_S, gles11::CLAMP_TO_EDGE as _);
-        gles.TexParameteri(gles11::TEXTURE_2D, gles11::TEXTURE_WRAP_T, gles11::CLAMP_TO_EDGE as _);
+        gles.TexParameteri(
+            gles11::TEXTURE_2D,
+            gles11::TEXTURE_MIN_FILTER,
+            gles11::NEAREST as _,
+        );
+        gles.TexParameteri(
+            gles11::TEXTURE_2D,
+            gles11::TEXTURE_MAG_FILTER,
+            gles11::NEAREST as _,
+        );
+        gles.TexParameteri(
+            gles11::TEXTURE_2D,
+            gles11::TEXTURE_WRAP_S,
+            gles11::CLAMP_TO_EDGE as _,
+        );
+        gles.TexParameteri(
+            gles11::TEXTURE_2D,
+            gles11::TEXTURE_WRAP_T,
+            gles11::CLAMP_TO_EDGE as _,
+        );
         texs.push(tex);
     }
     *guard = Some(texs.clone());
@@ -434,7 +463,9 @@ unsafe fn draw_onscreen_text(gles: &mut dyn GLES, viewport: (u32, u32, u32, u32)
 
     // Ensure textures
     let texs_opt = ensure_glyph_textures(gles);
-    if texs_opt.is_none() { return; }
+    if texs_opt.is_none() {
+        return;
+    }
     let texs = texs_opt.unwrap();
 
     // Save state
