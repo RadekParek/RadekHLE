@@ -169,9 +169,7 @@ private:
   void MemoryWrite16(VAddr a, std::uint16_t v) override { write(a, v, touchHLE_cpu_write_u16_64, "write16"); }
   void MemoryWrite32(VAddr a, std::uint32_t v) override { write(a, v, touchHLE_cpu_write_u32_64, "write32"); }
   void MemoryWrite64(VAddr a, std::uint64_t v) override {
-    trace("JIT memory write64: address=%#llx value=%#llx pc=%#llx sp=%#llx", static_cast<unsigned long long>(a), static_cast<unsigned long long>(v), static_cast<unsigned long long>(cpu ? cpu->GetPC() : 0), static_cast<unsigned long long>(cpu ? cpu->GetSP() : 0));
     write(a, v, touchHLE_cpu_write_u64_64, "write64");
-    trace("JIT memory write64 complete: address=%#llx pc=%#llx sp=%#llx", static_cast<unsigned long long>(a), static_cast<unsigned long long>(cpu ? cpu->GetPC() : 0), static_cast<unsigned long long>(cpu ? cpu->GetSP() : 0));
   }
   void MemoryWrite128(VAddr a, A64Vector v) override { write(a, v, touchHLE_cpu_write_u128_64, "write128"); }
 
@@ -314,16 +312,12 @@ public:
       env.ticks_remaining = *ticks;
       env.trace("Dynarmic configuration: Run mode, single_step=false, cycle_counting=true, tick_budget=%llu, watchdog_ms=%llu", static_cast<unsigned long long>(*ticks), static_cast<unsigned long long>(watchdog_ms));
       env.trace("DYNARMIC_RUN_ENTER");
-      env.trace("DEBUG_MARKER_BEFORE_DYNARMIC");
       reason = cpu->Run();
-      env.trace("DEBUG_MARKER_AFTER_DYNARMIC");
       env.trace("DYNARMIC_RUN_RETURN reason=%#x pc=%#llx", static_cast<unsigned>(reason), static_cast<unsigned long long>(cpu->GetPC()));
     } else {
       env.trace("Dynarmic configuration: Step mode, cycle_counting=true, watchdog_ms=%llu", static_cast<unsigned long long>(watchdog_ms));
       env.trace("DYNARMIC_STEP_ENTER");
-      env.trace("DEBUG_MARKER_BEFORE_DYNARMIC");
       reason = cpu->Step();
-      env.trace("DEBUG_MARKER_AFTER_DYNARMIC");
       env.trace("DYNARMIC_STEP_RETURN reason=%#x pc=%#llx", static_cast<unsigned>(reason), static_cast<unsigned long long>(cpu->GetPC()));
       const auto step_bit = Dynarmic::HaltReason::Step;
       const bool completed_step = Dynarmic::Has(reason, step_bit);

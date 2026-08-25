@@ -600,6 +600,10 @@ fn cxx_string_bytes(mem: &Mem64, object: u64) -> Option<Vec<u8>> {
         mem.read_bytes(object + 1, length).ok()
     } else {
         let length = mem.read_u64(object + 8).ok()?;
+        let capacity = mem.read_u64(object + 16).ok()?;
+        if length > capacity || length > MAX_CSTRING {
+            return None;
+        }
         mem.read_bytes(first & !1, length).ok()
     }
 }
@@ -630,11 +634,31 @@ fn cxx_find(text: &[u8], needle: &[u8], position: u64, reverse: bool) -> u64 {
 
 fn next_prime(value: u64) -> u64 {
     fn is_prime(value: u64) -> bool {
-        value >= 2 && (2..=((value as f64).sqrt() as u64)).all(|divisor| value % divisor != 0)
+        if value < 2 {
+            return false;
+        }
+        if value == 2 {
+            return true;
+        }
+        if value & 1 == 0 {
+            return false;
+        }
+        let mut divisor = 3;
+        while divisor <= value / divisor {
+            if value % divisor == 0 {
+                return false;
+            }
+            divisor += 2;
+        }
+        true
     }
+
     let mut candidate = value.max(2);
     while !is_prime(candidate) {
         candidate = candidate.saturating_add(1);
+        if candidate == 0 {
+            return 2;
+        }
     }
     candidate
 }
@@ -2168,13 +2192,22 @@ pub fn dispatch(
         }
         "_Znwm" | "_Znam" | "__Znwm" | "__Znam"
         | "Znwm" | "Znam" | "ZnwmRKSt9nothrow_t" | "__ZnwmRKSt9nothrow_t" => {
-            let size = A64Abi::arg(context, 0);
+            let requested_size = A64Abi::arg(context, 0);
+            let size = if requested_size > 0x2000_0000 && (requested_size as i64) < 0 {
+                let corrected = requested_size.wrapping_neg();
+                log_once_fmt!(
+                    "ARM64 allocator: corrected signed negative size {requested_size:#x} to {corrected:#x} for {symbol} [repeated corrections suppressed]"
+                );
+                corrected
+            } else {
+                requested_size
+            };
             match mem.alloc_zeroed(size) {
                 Ok(address) => {
                     if state.host_dispatches <= 16 || state.host_dispatches.is_power_of_two() {
                         log_dbg!(
-                            "ARM64 allocation: symbol={} size={} size_hex={size:#x} size_signed={} result={address:#x} pc={:#x} lr={:#x} sp={:#x}",
-                            symbol, size, size as i64, context.pc, context.regs[30], context.sp,
+                            "ARM64 allocation: symbol={} size={} size_hex={size:#x} result={address:#x} pc={:#x} lr={:#x} sp={:#x}",
+                            symbol, size, context.pc, context.regs[30], context.sp,
                         );
                     }
                     return_value(context, address);
@@ -2182,10 +2215,11 @@ pub fn dispatch(
                 }
                 Err(error) => {
                     log_dbg!(
-                        "ARM64 allocation failed: symbol={} size={} size_hex={size:#x} size_signed={} reason={} pc={:#x} lr={:#x} sp={:#x}",
-                        symbol, size, size as i64, error, context.pc, context.regs[30], context.sp,
+                        "ARM64 allocation failed: symbol={} size={} requested={requested_size:#x} reason={} pc={:#x} lr={:#x} sp={:#x}",
+                        symbol, size, error, context.pc, context.regs[30], context.sp,
                     );
-                    Err(error.to_owned())
+                    return_value(context, 0);
+                    Ok(true)
                 }
             }
         }
@@ -2569,17 +2603,20 @@ pub fn dispatch(
             return_value(context, context.regs[0]);
             Ok(true)
         }
-        value if value.starts_with("ZNSt3__") || value.starts_with("ZNKSt3__") => {
-            return_value(context, if context.regs[0] != 0 { context.regs[0] } else { 0 });
+        "ZNSt3__112__next_primeEm" => {
+            return_value(context, next_prime(context.regs[0]));
             Ok(true)
         }
         "ZNKSt3__120__vector_base_commonILb1EE20__throw_length_errorEv"
         | "ZNKSt3__120__vector_base_commonILb1EE20__throw_out_of_rangeEv"
         | "ZNKSt3__121__basic_string_commonILb1EE20__throw_length_errorEv"
         | "ZNKSt3__16locale9has_facetERNS0_2idE" | "ZNKSt3__16locale9use_facetERNS0_2idE"
-        | "ZNKSt3__18ios_base6getlocEv" | "ZNSt3__111this_thread9sleep_forERKNS_6chrono8durationIxNS_5ratioILl1ELl1000000000EEEEE"
-        | "ZNSt3__112__next_primeEm" => {
-            return_value(context, if symbol.ends_with("next_primeEm") { next_prime(context.regs[0]) } else { 0 });
+        | "ZNKSt3__18ios_base6getlocEv" | "ZNSt3__111this_thread9sleep_forERKNS_6chrono8durationIxNS_5ratioILl1ELl1000000000EEEEE" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        value if value.starts_with("ZNSt3__") || value.starts_with("ZNKSt3__") => {
+            return_value(context, if context.regs[0] != 0 { context.regs[0] } else { 0 });
             Ok(true)
         }
         "compressBound" => {

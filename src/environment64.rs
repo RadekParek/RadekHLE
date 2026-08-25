@@ -141,7 +141,14 @@ fn decode_instruction(instruction: u32, pc: u64) -> String {
             0x7c00 => "frinti",
             _ => "frint",
         };
-        return format!("{} {}{}, {}{}", mnemonic, if double { "d" } else { "s" }, instruction & 31, if double { "d" } else { "s" }, source);
+        return format!(
+            "{} {}{}, {}{}",
+            mnemonic,
+            if double { "d" } else { "s" },
+            instruction & 31,
+            if double { "d" } else { "s" },
+            source
+        );
     } else if instruction & 0x1fa0_fc00 == 0x1e20_2000 {
         let double = instruction & 0x0040_0000 != 0;
         let signaling = instruction & 0x10 != 0;
@@ -292,12 +299,6 @@ fn verify_abi(context: &touchHLE_DynarmicA64Context, module: &str) {
         echo!(
             "ARM64 ABI violation in {module}: SP is not 16-byte aligned: {:#x}",
             context.sp
-        );
-    }
-    if context.regs[8] != 0 {
-        log_dbg!(
-            "ARM64 ABI indirect-result register x8={:#x} in {module}",
-            context.regs[8]
         );
     }
 }
@@ -982,10 +983,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     context.regs[2] = envp_ptr;
     context.regs[3] = apple_ptr;
     context.regs[30] = return_stub;
-    let mut cpu = A64Cpu::with_backend_and_fallback(
-        options.arm64_backend,
-        options.arm64_fallback,
-    );
+    let mut cpu = A64Cpu::with_backend_and_fallback(options.arm64_backend, options.arm64_fallback);
     cpu.set_trace(false);
     echo!("ARM64 execution transition: context loaded; entering Dynarmic with pc={:#x} sp={:#x} lr={:#x}", context.pc, context.sp, context.regs[30]);
     cpu.load_context(&context);
@@ -1248,25 +1246,16 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 if symbol == "<unimplemented>" {
                     runtime_state.mark_unresolved_call(symbol, context.pc);
                 }
-                if symbol == "__Znam" || symbol == "_Znam" || symbol == "Znam" {
+                if matches!(
+                    symbol,
+                    "__Znam" | "_Znam" | "Znam" | "__Znwm" | "_Znwm" | "Znwm"
+                ) {
                     log_once_fmt!(
-                        "ARM64 allocation call: symbol={} size={:#x} x0={:#x} x1={:#x} x2={:#x} x3={:#x} pc={:#x} lr={:#x} [repeated allocation calls suppressed]",
-                        symbol, context.regs[0], context.regs[0], context.regs[1], context.regs[2], context.regs[3], context.pc, context.regs[30],
+                        "ARM64 allocation call: symbol={} size={:#x} pc={:#x} lr={:#x} [repeated allocation calls suppressed]",
+                        symbol, context.regs[0], context.pc, context.regs[30],
                     );
                 }
-                if host_dispatches <= 16
-                    || host_dispatches.is_power_of_two()
-                    || matches!(
-                        symbol,
-                        "pthread_mutex_unlock"
-                            | "__ZdlPv"
-                            | "_ZdlPv"
-                            | "ZdlPv"
-                            | "__Znam"
-                            | "_Znam"
-                            | "Znam"
-                    )
-                {
+                if host_dispatches <= 16 || host_dispatches.is_power_of_two() {
                     log_dbg!(
                         "ARM64 host binding #{}: {} host_stub_pc={:#x} guest_run_entry_pc={:#x} guest_call_site={:#x} continuation_pc={:#x} {}",
                         host_dispatches,

@@ -426,8 +426,7 @@ impl A64Interpreter {
                 set_flags(context, result, carry, overflow, sf);
             }
         } else {
-            context.pstate = (context.pstate & !(NZCV_N | NZCV_Z | NZCV_C | NZCV_V))
-                | (nzcv << 28);
+            context.pstate = (context.pstate & !(NZCV_N | NZCV_Z | NZCV_C | NZCV_V)) | (nzcv << 28);
         }
         Ok(())
     }
@@ -448,7 +447,11 @@ impl A64Interpreter {
                 context.vectors[destination][1] = 0;
             }
         } else {
-            let value = if double { context.vectors[source][0] } else { context.vectors[source][0] as u32 as u64 };
+            let value = if double {
+                context.vectors[source][0]
+            } else {
+                context.vectors[source][0] as u32 as u64
+            };
             set_reg(context, destination, value, double);
         }
         Ok(())
@@ -1635,7 +1638,10 @@ mod scalar_floating_tests {
             context.vectors[0][0] = (left as f32).to_bits() as u64;
             context.vectors[1][0] = (right as f32).to_bits() as u64;
         }
-        assert_eq!(A64Interpreter::new().run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(
+            A64Interpreter::new().run_or_step(&mut memory, &mut context, None),
+            -1
+        );
         assert_eq!(context.pc, CODE + 4);
         context.vectors[0][0]
     }
@@ -1652,7 +1658,10 @@ mod scalar_floating_tests {
 
     #[test]
     fn scalar_frintp_is_decoded_and_executed() {
-        assert_eq!(run(0x1e24_c000, f32::INFINITY as f64, 0.0), f32::INFINITY.to_bits() as u64);
+        assert_eq!(
+            run(0x1e24_c000, f32::INFINITY as f64, 0.0),
+            f32::INFINITY.to_bits() as u64
+        );
     }
 
     #[test]
