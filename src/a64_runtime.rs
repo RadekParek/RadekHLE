@@ -2259,8 +2259,20 @@ pub fn dispatch(
             Ok(true)
         }
         "objc_alloc" | "objc_allocWithZone" => {
-            let class_name = receiver_class_name(mem, context.regs[0], A64_KIND_CLASS)
-                .ok_or("ARM64 objc_alloc received an invalid class")?;
+            let class = context.regs[0];
+            let class_name = c_string(mem, objc_field(mem, class, 56))
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .or_else(|| receiver_class_name(mem, class, A64_KIND_CLASS));
+            let Some(class_name) = class_name else {
+                return_value(context, 0);
+                return Ok(true);
+            };
+            log_dbg!(
+                "ARM64 objc_alloc: class={:#x} name={} zone={:#x}",
+                class,
+                class_name,
+                context.regs[1]
+            );
             let object = objc_instance_for_class(mem, state, &class_name)?;
             return_value(context, object);
             Ok(true)
@@ -2663,10 +2675,48 @@ pub fn dispatch(
             let application = state.application_object.unwrap_or(objc_instance_for_class(mem, state, "UIApplication")?);
             state.application_object = Some(application);
             let delegate_name = if context.regs[3] != 0 {
-                objc_text(mem, context.regs[3]).and_then(|bytes| String::from_utf8(bytes).ok())
+                objc_text(mem, context.regs[3])
+                    .and_then(|bytes| String::from_utf8(bytes).ok())
+                    .filter(|name| {
+                        guest_method(state, name, "application:didFinishLaunchingWithOptions:", false)
+                            .is_some()
+                            || guest_method(state, name, "applicationDidFinishLaunching:", false)
+                                .is_some()
+                    })
             } else {
-                state.objc_classes.iter().find(|class| guest_method(state, &class.name, "application:didFinishLaunchingWithOptions:", false).is_some()).map(|class| class.name.clone())
-            };
+                None
+            }
+            .or_else(|| {
+                state
+                    .objc_classes
+                    .iter()
+                    .find(|class| {
+                        guest_method(
+                            state,
+                            &class.name,
+                            "application:didFinishLaunchingWithOptions:",
+                            false,
+                        )
+                        .is_some()
+                            || guest_method(
+                                state,
+                                &class.name,
+                                "applicationDidFinishLaunching:",
+                                false,
+                            )
+                            .is_some()
+                    })
+                    .map(|class| class.name.clone())
+            });
+            log_dbg!(
+                "ARM64 UIApplicationMain delegate candidate: arg={:#x} name={} selected={}",
+                context.regs[3],
+                objc_text(mem, context.regs[3])
+                    .and_then(|bytes| String::from_utf8(bytes).ok())
+                    .as_deref()
+                    .unwrap_or("<invalid>"),
+                delegate_name.as_deref().unwrap_or("<none>")
+            );
             if let Some(delegate_name) = delegate_name {
                 if state.arm64_application_bootstrap_dispatched {
                     return_value(context, 0);
