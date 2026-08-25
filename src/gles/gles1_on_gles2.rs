@@ -520,6 +520,7 @@ fn create_program(gles3: bool) -> Result<GLuint, String> {
         gl::VERTEX_SHADER,
         r#"#version 100
 precision mediump float;
+precision mediump int;
 attribute vec4 a_position;
 attribute vec4 a_color;
 attribute vec3 a_normal;
@@ -642,6 +643,7 @@ void main() {
         gl::FRAGMENT_SHADER,
         r#"#version 100
 precision mediump float;
+precision mediump int;
 varying vec4 v_color;
 varying vec2 v_tex0;
 varying vec2 v_tex1;
