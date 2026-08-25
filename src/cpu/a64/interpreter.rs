@@ -106,6 +106,24 @@ impl A64Interpreter {
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
+        if instruction & 0x1fe0_0000 == 0x1a40_0000 {
+            self.execute_conditional_compare(context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
+        if instruction & 0x1fe0_0000 == 0x1a80_0000
+            || instruction & 0x1fe0_0000 == 0x5a80_0000
+            || instruction & 0x1fe0_0000 == 0x1ac0_0000
+        {
+            self.execute_conditional_select(context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
+        if instruction & 0x1f00_0000 == 0x1a00_0000 {
+            self.execute_add_sub_carry(context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
         if instruction & 0xffe0_fc00 == 0x9e60_0000 || instruction & 0xffe0_fc00 == 0x1e60_0000 {
             self.execute_scalar_integer_to_float(context, instruction)?;
             context.pc = pc.wrapping_add(4);
@@ -247,15 +265,6 @@ impl A64Interpreter {
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
-        if (instruction & 0x1fe0_0000 == 0x1a80_0000
-            || instruction & 0x1fe0_0000 == 0x5a80_0000
-            || instruction & 0x1fe0_0000 == 0x1ac0_0000)
-            && instruction & 0x0000_0810 == 0
-        {
-            self.execute_conditional_select(context, instruction)?;
-            context.pc = pc.wrapping_add(4);
-            return Ok(None);
-        }
         if instruction & 0x1fe0_fc00 == 0x1b40_7c00 {
             let left = read_reg(context, ((instruction >> 5) & 31) as usize, true) as i64 as i128;
             let right = read_reg(context, ((instruction >> 16) & 31) as usize, true) as i64 as i128;
@@ -343,6 +352,62 @@ impl A64Interpreter {
             return Ok(None);
         }
         Err(InterpreterError::Undefined)
+    }
+
+    fn execute_add_sub_carry(
+        &self,
+        context: &mut touchHLE_DynarmicA64Context,
+        instruction: u32,
+    ) -> Result<(), InterpreterError> {
+        let sf = instruction & 0x8000_0000 != 0;
+        let subtract = instruction & 0x4000_0000 != 0;
+        let update_flags = instruction & 0x2000_0000 != 0;
+        let left = read_reg(context, ((instruction >> 5) & 31) as usize, sf);
+        let right = read_reg(context, ((instruction >> 16) & 31) as usize, sf);
+        let carry_in = context.pstate & NZCV_C != 0;
+        let width_mask = if sf { u64::MAX } else { u32::MAX as u64 };
+        let right_with_carry = if subtract {
+            right.wrapping_add(u64::from(!carry_in))
+        } else {
+            right.wrapping_add(u64::from(carry_in))
+        };
+        let (value, carry, overflow) = add_sub(left, right_with_carry & width_mask, subtract, sf);
+        set_reg(context, (instruction & 31) as usize, value, sf);
+        if update_flags {
+            set_flags(context, value, carry, overflow, sf);
+        }
+        Ok(())
+    }
+
+    fn execute_conditional_compare(
+        &self,
+        context: &mut touchHLE_DynarmicA64Context,
+        instruction: u32,
+    ) -> Result<(), InterpreterError> {
+        let sf = instruction & 0x8000_0000 != 0;
+        let immediate = instruction & 0x0000_0800 != 0;
+        let compare_negative = instruction & 0x4000_0000 != 0;
+        let condition = instruction & 0xf;
+        let nzcv = (instruction >> 12) & 0xf;
+        if condition_holds(context, condition) {
+            let left = read_reg(context, ((instruction >> 5) & 31) as usize, sf);
+            let right = if immediate {
+                ((instruction >> 16) & 31) as u64
+            } else {
+                read_reg(context, ((instruction >> 16) & 31) as usize, sf)
+            };
+            if compare_negative {
+                let (result, carry, overflow) = add_sub(left, right, false, sf);
+                set_flags(context, result, carry, overflow, sf);
+            } else {
+                let (result, carry, overflow) = add_sub(left, right, true, sf);
+                set_flags(context, result, carry, overflow, sf);
+            }
+        } else {
+            context.pstate = (context.pstate & !(NZCV_N | NZCV_Z | NZCV_C | NZCV_V))
+                | (nzcv << 28);
+        }
+        Ok(())
     }
 
     fn execute_scalar_integer_to_float(
