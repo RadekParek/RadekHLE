@@ -124,6 +124,14 @@ impl A64Interpreter {
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
+        if matches!(
+            instruction & 0xffff_fc00,
+            0x9e66_0000 | 0x9e67_0000 | 0x1e26_0000 | 0x1e27_0000
+        ) {
+            self.execute_scalar_fmov(context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
         if instruction & 0xffe0_fc00 == 0x9e60_0000 || instruction & 0xffe0_fc00 == 0x1e60_0000 {
             self.execute_scalar_integer_to_float(context, instruction)?;
             context.pc = pc.wrapping_add(4);
@@ -410,6 +418,28 @@ impl A64Interpreter {
         Ok(())
     }
 
+    fn execute_scalar_fmov(
+        &self,
+        context: &mut touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context,
+        instruction: u32,
+    ) -> Result<(), InterpreterError> {
+        let source = ((instruction >> 5) & 31) as usize;
+        let destination = (instruction & 31) as usize;
+        let to_fp = instruction & 0x0001_0000 != 0;
+        let double = instruction & 0x8000_0000 != 0;
+        if to_fp {
+            let value = read_reg(context, source, double);
+            context.vectors[destination][0] = if double { value } else { value as u32 as u64 };
+            if !double {
+                context.vectors[destination][1] = 0;
+            }
+        } else {
+            let value = if double { context.vectors[source][0] } else { context.vectors[source][0] as u32 as u64 };
+            set_reg(context, destination, value, double);
+        }
+        Ok(())
+    }
+
     fn execute_scalar_integer_to_float(
         &self,
         context: &mut touchHLE_DynarmicA64Context,
@@ -583,6 +613,7 @@ impl A64Interpreter {
         }
         let result = match operation {
             0x0000_0800 => left * right,
+            0x0000_1800 => left / right,
             0x0000_2800 => left + right,
             0x0000_3800 => left - right,
             _ => return Err(InterpreterError::Undefined),
@@ -1530,6 +1561,47 @@ fn is_control_flow(instruction: u32, pc: u64, next_pc: u64) -> bool {
         || instruction & 0xff00_0010 == 0x5400_0000
         || instruction & 0x7e00_0000 == 0x3400_0000
         || instruction & 0x7e00_0000 == 0x3600_0000
+}
+
+#[cfg(test)]
+mod scalar_floating_tests {
+    use super::A64Interpreter;
+    use crate::mem64::{Mem64, Permissions};
+    use touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context;
+
+    const CODE: u64 = 0x5_0000_0000;
+
+    fn run(instruction: u32, left: f64, right: f64) -> u64 {
+        let mut memory = Mem64::new();
+        memory
+            .map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute())
+            .unwrap();
+        memory.load_bytes(CODE, &instruction.to_le_bytes()).unwrap();
+        let mut context = touchHLE_DynarmicA64Context {
+            pc: CODE,
+            ..Default::default()
+        };
+        if instruction & 0x0040_0000 != 0 {
+            context.vectors[0][0] = left.to_bits();
+            context.vectors[1][0] = right.to_bits();
+        } else {
+            context.vectors[0][0] = (left as f32).to_bits() as u64;
+            context.vectors[1][0] = (right as f32).to_bits() as u64;
+        }
+        assert_eq!(A64Interpreter::new().run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(context.pc, CODE + 4);
+        context.vectors[0][0]
+    }
+
+    #[test]
+    fn reported_single_precision_fdiv_is_decoded_and_executed() {
+        assert_eq!(run(0x1e21_1800, 6.0, 2.0), (3.0f32).to_bits() as u64);
+    }
+
+    #[test]
+    fn double_precision_fdiv_is_decoded_and_executed() {
+        assert_eq!(run(0x1e61_1800, 7.5, 2.5), (3.0f64).to_bits());
+    }
 }
 
 #[cfg(test)]
