@@ -432,7 +432,7 @@ impl Drop for A64Cpu {
 impl A64Cpu {
     pub fn new() -> Self {
         Self::with_backend_and_fallback(
-            crate::options::Arm64Backend::Auto,
+            crate::options::Arm64Backend::Interpreter,
             crate::options::Arm64Fallback::Interpreter,
         )
     }

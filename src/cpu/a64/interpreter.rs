@@ -258,6 +258,20 @@ impl A64Interpreter {
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
+        if matches!(
+            instruction & 0x1f3f_fc00,
+            0x1e24_4000
+                | 0x1e24_c000
+                | 0x1e25_4000
+                | 0x1e25_c000
+                | 0x1e26_4000
+                | 0x1e27_4000
+                | 0x1e27_c000
+        ) {
+            self.execute_scalar_rounding(context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
         if instruction & 0x1f00_0000 == 0x1e00_0000 {
             self.execute_scalar_floating(context, instruction)?;
             context.pc = pc.wrapping_add(4);
@@ -582,6 +596,39 @@ impl A64Interpreter {
             NZCV_Z | NZCV_C
         };
         context.pstate = (context.pstate & !(NZCV_N | NZCV_Z | NZCV_C | NZCV_V)) | flags;
+        Ok(())
+    }
+
+    fn execute_scalar_rounding(
+        &self,
+        context: &mut touchHLE_DynarmicA64Context,
+        instruction: u32,
+    ) -> Result<(), InterpreterError> {
+        let double = instruction & 0x0040_0000 != 0;
+        let rd = (instruction & 31) as usize;
+        let rn = ((instruction >> 5) & 31) as usize;
+        let input = if double {
+            f64::from_bits(context.vectors[rn][0])
+        } else {
+            f32::from_bits(context.vectors[rn][0] as u32) as f64
+        };
+        let operation = instruction & 0x1f3f_fc00;
+        let result = match operation {
+            0x1e24_4000 => input.round_ties_even(),
+            0x1e24_c000 => input.ceil(),
+            0x1e25_4000 => input.floor(),
+            0x1e25_c000 => input.trunc(),
+            0x1e26_4000 => input.round(),
+            0x1e27_4000 => input.round_ties_even(),
+            0x1e27_c000 => input,
+            _ => return Err(InterpreterError::Undefined),
+        };
+        if double {
+            context.vectors[rd][0] = result.to_bits();
+        } else {
+            context.vectors[rd][0] = (result as f32).to_bits() as u64;
+            context.vectors[rd][1] = 0;
+        }
         Ok(())
     }
 
@@ -1601,6 +1648,16 @@ mod scalar_floating_tests {
     #[test]
     fn double_precision_fdiv_is_decoded_and_executed() {
         assert_eq!(run(0x1e61_1800, 7.5, 2.5), (3.0f64).to_bits());
+    }
+
+    #[test]
+    fn scalar_frintp_is_decoded_and_executed() {
+        assert_eq!(run(0x1e24_c000, f32::INFINITY as f64, 0.0), f32::INFINITY.to_bits() as u64);
+    }
+
+    #[test]
+    fn scalar_frintz_truncates_negative_fraction() {
+        assert_eq!(run(0x1e25_c000, -3.75, 0.0), (-3.0f32).to_bits() as u64);
     }
 }
 

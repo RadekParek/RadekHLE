@@ -788,7 +788,7 @@ fn app_picker_inner(
     let mut quick_options_device_model_scroll: isize = 0;
     let mut quick_options_ios_version: Option<(i32, i32, i32)> = None;
     let mut quick_options_graphics_api = crate::options::GraphicsApi::Default;
-    let mut quick_options_arm64_backend = crate::options::Arm64Backend::Jit;
+    let mut quick_options_arm64_backend = crate::options::Arm64Backend::Interpreter;
     let mut quick_options_arm64_fallback = crate::options::Arm64Fallback::Interpreter;
     let mut quick_options_metal_translator = true;
 
@@ -1236,6 +1236,8 @@ fn app_picker_inner(
         option_args.push("--print-fps".to_string());
         std::env::set_var("TOUCHHLE_ONSCREEN_FPS", "1");
         crate::gles::present::set_onscreen_fps_enabled(true);
+    } else {
+        crate::gles::present::set_onscreen_fps_enabled(false);
     }
     option_args.push(
         if quick_options_frame_pacing {
@@ -2208,7 +2210,7 @@ fn setup_quick_options(
         RowKind::Label("Graphics API"),
         RowKind::GraphicsApiDropdown,
         RowKind::Label("Dynarmic JIT"),
-        RowKind::Switch("arm64Backend:", true),
+        RowKind::Switch("arm64Backend:", false),
         RowKind::Label("ARM64 Fallback"),
         RowKind::Switch("arm64Fallback:", false),
         RowKind::Label("Metal translator (ARM64)"),

@@ -323,11 +323,11 @@ impl RuntimeState {
     }
 
     pub fn trace_render_event(&mut self, message: impl std::fmt::Display) {
-        if self.render_diagnostics.trace_events >= 512 {
+        if self.render_diagnostics.trace_events >= 64 {
             return;
         }
         self.render_diagnostics.trace_events += 1;
-        log!(
+        log_dbg!(
             "ARM64 render trace #{}: {}",
             self.render_diagnostics.trace_events,
             message

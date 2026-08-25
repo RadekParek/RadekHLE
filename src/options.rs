@@ -260,7 +260,7 @@ impl Default for Options {
             direct_memory_access: true,
             force_32_bit: false,
             force_64_bit: false,
-            arm64_backend: Arm64Backend::Auto,
+            arm64_backend: Arm64Backend::Interpreter,
             arm64_fallback: Arm64Fallback::Interpreter,
             metal_translator: true,
             gdb_listen_addrs: None,

@@ -119,6 +119,29 @@ fn decode_instruction(instruction: u32, pc: u64) -> String {
             instruction & 0xf,
             pc.wrapping_add_signed(immediate)
         )
+    } else if matches!(
+        instruction & 0x1f3f_fc00,
+        0x1e24_4000
+            | 0x1e24_c000
+            | 0x1e25_4000
+            | 0x1e25_c000
+            | 0x1e26_4000
+            | 0x1e27_4000
+            | 0x1e27_c000
+    ) {
+        let double = instruction & 0x0040_0000 != 0;
+        let source = (instruction >> 5) & 31;
+        let mnemonic = match instruction & 0x0000_fc00 {
+            0x4400 => "frintn",
+            0x4c00 => "frintp",
+            0x5400 => "frintm",
+            0x5c00 => "frintz",
+            0x6400 => "frinta",
+            0x7400 => "frintx",
+            0x7c00 => "frinti",
+            _ => "frint",
+        };
+        return format!("{} {}{}, {}{}", mnemonic, if double { "d" } else { "s" }, instruction & 31, if double { "d" } else { "s" }, source);
     } else if instruction & 0x1fa0_fc00 == 0x1e20_2000 {
         let double = instruction & 0x0040_0000 != 0;
         let signaling = instruction & 0x10 != 0;
