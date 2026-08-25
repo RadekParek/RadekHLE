@@ -2177,6 +2177,32 @@ mod tests {
     }
 
     #[test]
+    fn sbfiz_and_umulh_support_minecraft_growth_overflow_check() {
+        let mut memory = Mem64::new();
+        memory
+            .map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute())
+            .unwrap();
+        let instructions = [0x937c7d08u32, 0x9bca7d29u32];
+        for (index, instruction) in instructions.iter().enumerate() {
+            memory
+                .load_bytes(CODE + index as u64 * 4, &instruction.to_le_bytes())
+                .unwrap();
+        }
+        let mut context = touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context {
+            pc: CODE,
+            ..Default::default()
+        };
+        context.regs[8] = 0x10;
+        context.regs[10] = 0x10;
+        let mut interpreter = A64Interpreter::new();
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(context.regs[8], 0x100);
+        context.pc = CODE + 4;
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(context.regs[9], 0);
+    }
+
+    #[test]
     fn csinc_w_form_decodes_the_minecraft_blocker() {
         let mut memory = Mem64::new();
         memory

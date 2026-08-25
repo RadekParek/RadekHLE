@@ -485,7 +485,7 @@ pub fn can_dispatch(symbol: &str) -> bool {
         | "cxa_atexit" | "atexit" | "pthread_mutex_lock"
         | "pthread_mutex_unlock" | "pthread_mutex_init" | "pthread_mutex_destroy"
         | "pthread_once" | "pthread_key_create" | "pthread_getspecific" | "pthread_setspecific"
-        | "pthread_self" | "sched_yield" | "abort" | "exit" | "_exit"
+        | "pthread_setname_np" | "pthread_self" | "sched_yield" | "abort" | "exit" | "_exit"
         | "_Znwm" | "_Znam" | "_ZdlPv" | "_ZdaPv"
         | "__Znwm" | "__Znam" | "__ZdlPv" | "__ZdaPv"
         | "Znwm" | "Znam" | "ZdlPv" | "ZdaPv" | "ZnwmRKSt9nothrow_t"
@@ -2604,7 +2604,13 @@ pub fn dispatch(
             Ok(true)
         }
         "ZNSt3__112__next_primeEm" => {
-            return_value(context, next_prime(context.regs[0]));
+            let input = context.regs[0];
+            let result = if input == u64::MAX {
+                2
+            } else {
+                next_prime(input)
+            };
+            return_value(context, result);
             Ok(true)
         }
         "ZNKSt3__120__vector_base_commonILb1EE20__throw_length_errorEv"
@@ -2636,6 +2642,22 @@ pub fn dispatch(
             Ok(true)
         }
         "deflateEnd" | "deflateReset" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "pthread_setname_np" => {
+            let name = if context.regs[0] == 0 {
+                String::new()
+            } else {
+                arm64_cstring(mem, context.regs[0])?
+                    .to_string_lossy()
+                    .chars()
+                    .take(63)
+                    .collect()
+            };
+            log_once_fmt!(
+                "ARM64 pthread_setname_np: name={name:?} [subsequent calls suppressed]"
+            );
             return_value(context, 0);
             Ok(true)
         }
