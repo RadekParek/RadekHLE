@@ -49,6 +49,7 @@ struct CADisplayLinkHostObject {
     /// and the value must be `>= 1`.
     /// <https://developer.apple.com/documentation/quartzcore/cadisplaylink/1648526-frameinterval>
     frame_interval: NSInteger,
+    added_to_run_loop: bool,
 }
 impl HostObject for CADisplayLinkHostObject {}
 
@@ -83,6 +84,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     host_object.target = target;
     host_object.selector = Some(sel);
     host_object.ns_timer = ns_timer;
+    host_object.added_to_run_loop = false;
     log_dbg!("[CADisplayLink displayLinkWithTarget:{:?} selector:{}] => {:?}", target, sel.as_str(&env.mem), display_link);
     autorelease(env, display_link)
 }
@@ -182,6 +184,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     if ns_timer != nil {
         () = msg![env; run_loop addTimer:ns_timer forMode:mode];
     }
+    env.objc.borrow_mut::<CADisplayLinkHostObject>(this).added_to_run_loop = true;
 }
 
 // Removes the display link from a run loop in a specific mode.
@@ -200,6 +203,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     if ns_timer != nil && run_loop != nil {
         () = msg![env; ns_timer invalidate];
     }
+    env.objc.borrow_mut::<CADisplayLinkHostObject>(this).added_to_run_loop = false;
 }
 
 // Removes the display link from all run loops, releasing the target.
@@ -227,12 +231,11 @@ pub const CLASSES: ClassExports = objc_classes! {
         selector,
         ns_timer,
         paused,
+        added_to_run_loop,
         ..
     } = env.objc.borrow::<CADisplayLinkHostObject>(this);
     assert_eq!(ns_timer, timer);
-    if paused {
-        // This could be improved, as we're still running the timer,
-        // but just not passing the actual call.
+    if !added_to_run_loop || paused {
         return;
     }
     // Signature is `- (void) selector:(CADisplayLink *)sender;`
