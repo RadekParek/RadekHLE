@@ -463,7 +463,7 @@ pub fn can_dispatch(symbol: &str) -> bool {
         | "memmove" | "memcpy_chk" | "memmove_chk" | "memset" | "bzero"
         | "memset_chk" | "strlen" | "strnlen" | "strcmp" | "strncmp" | "memcmp"
         | "strcpy" | "strncpy" | "strcat" | "strncat" | "strdup" | "strndup"
-        | "objc_release" | "objc_storeStrong" | "objc_retain"
+        | "objc_alloc" | "objc_allocWithZone" | "objc_release" | "objc_storeStrong" | "objc_retain"
         | "objc_retainAutoreleasedReturnValue" | "objc_retainAutoreleaseReturnValue"
         | "objc_autorelease" | "objc_autoreleaseReturnValue"
         | "objc_unsafeClaimAutoreleasedReturnValue" | "objc_retainAutorelease"
@@ -2256,6 +2256,13 @@ pub fn dispatch(
         "rand" => {
             state.arm64_rng_state = arm64_prng(state.arm64_rng_state);
             return_value(context, u64::from(state.arm64_rng_state & 0x7fff_ffff));
+            Ok(true)
+        }
+        "objc_alloc" | "objc_allocWithZone" => {
+            let class_name = receiver_class_name(mem, context.regs[0], A64_KIND_CLASS)
+                .ok_or("ARM64 objc_alloc received an invalid class")?;
+            let object = objc_instance_for_class(mem, state, &class_name)?;
+            return_value(context, object);
             Ok(true)
         }
         "objc_release" => {
