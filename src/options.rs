@@ -40,6 +40,31 @@ pub enum Arm64Backend {
     Interpreter,
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Arm64Fallback {
+    Jit,
+    Interpreter,
+}
+
+impl Arm64Fallback {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "jit" => Ok(Self::Jit),
+            "interpreter" => Ok(Self::Interpreter),
+            _ => Err(format!(
+                "Unknown ARM64 fallback {value:?}; expected jit or interpreter"
+            )),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Jit => "jit",
+            Self::Interpreter => "interpreter",
+        }
+    }
+}
+
 impl Arm64Backend {
     pub fn parse(value: &str) -> Result<Self, String> {
         match value {
@@ -145,6 +170,7 @@ pub struct Options {
     pub force_32_bit: bool,
     pub force_64_bit: bool,
     pub arm64_backend: Arm64Backend,
+    pub arm64_fallback: Arm64Fallback,
     pub metal_translator: bool,
     pub gdb_listen_addrs: Option<Vec<SocketAddr>>,
     pub preferred_languages: Option<Vec<String>>,
@@ -235,6 +261,7 @@ impl Default for Options {
             force_32_bit: false,
             force_64_bit: false,
             arm64_backend: Arm64Backend::Auto,
+            arm64_fallback: Arm64Fallback::Interpreter,
             metal_translator: true,
             gdb_listen_addrs: None,
             preferred_languages: None,
@@ -490,6 +517,8 @@ impl Options {
             self.force_64_bit = false;
         } else if let Some(value) = arg.strip_prefix("--arm64-backend=") {
             self.arm64_backend = Arm64Backend::parse(value)?;
+        } else if let Some(value) = arg.strip_prefix("--arm64-fallback=") {
+            self.arm64_fallback = Arm64Fallback::parse(value)?;
         } else if arg == "--metal-translator" {
             self.metal_translator = true;
         } else if arg == "--disable-metal-translator" {

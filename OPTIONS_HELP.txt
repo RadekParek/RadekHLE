@@ -276,9 +276,14 @@ Debugging options:
         callbacks, rather than using the fast direct access path (page tables).
 
     --arm64-backend=auto|jit|interpreter
-        Select the ARM64 execution backend. `auto` uses the reliable interpreter
-        on Android and Dynarmic JIT elsewhere. `jit` forces Dynarmic; `interpreter`
-        prioritizes compatibility over speed and is useful for isolating JIT issues.
+        Select the ARM64 execution backend. `auto` and `jit` use Dynarmic JIT;
+        `interpreter` selects the software interpreter directly.
+
+    --arm64-fallback=jit|interpreter
+        Select what happens after a Dynarmic execution error. `interpreter`
+        disables JIT and resumes at the faulting instruction with the ARM64
+        interpreter; `jit` preserves the error for diagnostics. This applies
+        when the selected backend is `auto` or `jit`.
 
     --gdb=...
         Starts touchHLE in debugging mode, listening for GDB remote serial

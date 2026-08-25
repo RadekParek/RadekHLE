@@ -959,7 +959,10 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     context.regs[2] = envp_ptr;
     context.regs[3] = apple_ptr;
     context.regs[30] = return_stub;
-    let mut cpu = A64Cpu::with_backend(options.arm64_backend);
+    let mut cpu = A64Cpu::with_backend_and_fallback(
+        options.arm64_backend,
+        options.arm64_fallback,
+    );
     cpu.set_trace(false);
     echo!("ARM64 execution transition: context loaded; entering Dynarmic with pc={:#x} sp={:#x} lr={:#x}", context.pc, context.sp, context.regs[30]);
     cpu.load_context(&context);

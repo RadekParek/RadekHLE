@@ -266,6 +266,7 @@ struct AppPickerDelegateHostObject {
     graphics_api_toggle: bool,
     graphics_api: Option<crate::options::GraphicsApi>,
     arm64_backend: Option<crate::options::Arm64Backend>,
+    arm64_fallback: Option<crate::options::Arm64Fallback>,
     metal_translator: Option<bool>,
 }
 impl HostObject for AppPickerDelegateHostObject {}
@@ -437,6 +438,14 @@ const CLASSES: ClassExports = objc_classes! {
         crate::options::Arm64Backend::Interpreter
     });
 }
+- (())arm64Fallback:(id)switch {
+    let switch_state: bool = msg![env; switch isOn];
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).arm64_fallback = Some(if switch_state {
+        crate::options::Arm64Fallback::Jit
+    } else {
+        crate::options::Arm64Fallback::Interpreter
+    });
+}
 - (())metalTranslator:(id)switch {
     let switch_state: bool = msg![env; switch isOn];
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).metal_translator = Some(switch_state);
@@ -450,7 +459,6 @@ const CLASSES: ClassExports = objc_classes! {
         0 => crate::options::GraphicsApi::Default,
         1 => crate::options::GraphicsApi::Translator,
         2 => crate::options::GraphicsApi::TranslatorGLES30,
-        3 => crate::options::GraphicsApi::Metal,
         _ => crate::options::GraphicsApi::Default,
     };
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).graphics_api = Some(api);
@@ -780,7 +788,8 @@ fn app_picker_inner(
     let mut quick_options_device_model_scroll: isize = 0;
     let mut quick_options_ios_version: Option<(i32, i32, i32)> = None;
     let mut quick_options_graphics_api = crate::options::GraphicsApi::Default;
-    let mut quick_options_arm64_backend = crate::options::Arm64Backend::Interpreter;
+    let mut quick_options_arm64_backend = crate::options::Arm64Backend::Jit;
+    let mut quick_options_arm64_fallback = crate::options::Arm64Fallback::Interpreter;
     let mut quick_options_metal_translator = true;
 
     fn update_quick_option_buttons(env: &mut Environment, buttons: &[id], selected_idx: usize) {
@@ -1009,6 +1018,8 @@ fn app_picker_inner(
             () = msg![env; (quick_options_stuff.graphics_api_menu) setHidden:true];
         } else if let Some(backend) = std::mem::take(&mut host_obj.arm64_backend) {
             quick_options_arm64_backend = backend;
+        } else if let Some(fallback) = std::mem::take(&mut host_obj.arm64_fallback) {
+            quick_options_arm64_fallback = fallback;
         } else if std::mem::take(&mut host_obj.scale_hack_default) {
             quick_options_scale_hack = None;
             update_scale_hack_buttons(
@@ -1247,7 +1258,6 @@ fn app_picker_inner(
             crate::options::GraphicsApi::GLES11 => "gles1.1",
             crate::options::GraphicsApi::GLES20 => "gles2.0",
             crate::options::GraphicsApi::GLES30 => "gles3.0",
-            crate::options::GraphicsApi::Metal => "metal",
             crate::options::GraphicsApi::Default => unreachable!(),
         };
         option_args.push(format!("--graphics-api={value}"));
@@ -1256,6 +1266,12 @@ fn app_picker_inner(
         "--arm64-backend={}",
         quick_options_arm64_backend.label()
     ));
+    if quick_options_arm64_backend == crate::options::Arm64Backend::Jit {
+        option_args.push(format!(
+            "--arm64-fallback={}",
+            quick_options_arm64_fallback.label()
+        ));
+    }
     option_args.push(
         if quick_options_metal_translator {
             "--metal-translator"
@@ -2191,7 +2207,9 @@ fn setup_quick_options(
         RowKind::Label("Graphics API"),
         RowKind::GraphicsApiDropdown,
         RowKind::Label("Dynarmic JIT"),
-        RowKind::Switch("arm64Backend:", false),
+        RowKind::Switch("arm64Backend:", true),
+        RowKind::Label("ARM64 Fallback"),
+        RowKind::Switch("arm64Fallback:", false),
         RowKind::Label("Metal translator (ARM64)"),
         RowKind::Switch("metalTranslator:", true),
         RowKind::Label("Game folder"),

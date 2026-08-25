@@ -409,6 +409,7 @@ enum A64Backend {
     Jit {
         wrapper: *mut touchHLE_DynarmicWrapper,
         interpreter: A64Interpreter,
+        fallback: crate::options::Arm64Fallback,
         disabled: bool,
     },
     Interpreter(A64Interpreter),
@@ -430,24 +431,40 @@ impl Drop for A64Cpu {
 
 impl A64Cpu {
     pub fn new() -> Self {
-        Self::with_backend(crate::options::Arm64Backend::Auto)
+        Self::with_backend_and_fallback(
+            crate::options::Arm64Backend::Auto,
+            crate::options::Arm64Fallback::Interpreter,
+        )
     }
 
     pub fn with_backend(backend: crate::options::Arm64Backend) -> Self {
+        Self::with_backend_and_fallback(backend, crate::options::Arm64Fallback::Interpreter)
+    }
+
+    pub fn with_backend_and_fallback(
+        backend: crate::options::Arm64Backend,
+        fallback: crate::options::Arm64Fallback,
+    ) -> Self {
         let backend = match backend {
             crate::options::Arm64Backend::Interpreter => {
                 echo!("ARM64 backend selected: interpreter (explicit diagnostic mode)");
                 A64Backend::Interpreter(A64Interpreter::new())
             }
             crate::options::Arm64Backend::Auto => {
-                echo!("ARM64 backend selected: interpreter (compatibility default; use --arm64-backend=jit to opt in)");
-                A64Backend::Interpreter(A64Interpreter::new())
+                echo!("ARM64 backend selected: Dynarmic JIT (automatic mode)");
+                A64Backend::Jit {
+                    wrapper: unsafe { touchHLE_DynarmicA64Wrapper_new() },
+                    interpreter: A64Interpreter::new(),
+                    fallback,
+                    disabled: false,
+                }
             }
             crate::options::Arm64Backend::Jit => {
                 echo!("ARM64 backend selected: Dynarmic JIT (single-instruction compatibility stepping with interpreter fallback)");
                 A64Backend::Jit {
                     wrapper: unsafe { touchHLE_DynarmicA64Wrapper_new() },
                     interpreter: A64Interpreter::new(),
+                    fallback,
                     disabled: false,
                 }
             }
@@ -493,6 +510,7 @@ impl A64Cpu {
             A64Backend::Jit {
                 wrapper,
                 interpreter,
+                fallback,
                 disabled,
             } => {
                 if *disabled {
@@ -505,11 +523,19 @@ impl A64Cpu {
                         ticks.as_deref_mut(),
                     )
                 };
-                if result == -3 || result == -6 {
+                if result < -1 {
                     unsafe { touchHLE_DynarmicA64Wrapper_save_context(*wrapper, context) };
-                    *disabled = true;
-                    echo!("ARM64 Dynarmic compatibility fallback: disabling JIT after result {result} at pc={:#x}; continuing with interpreter", context.pc);
-                    return interpreter.run_or_step(mem, context, ticks);
+                    context.pc = context.pc.wrapping_add(4);
+                    match fallback {
+                        crate::options::Arm64Fallback::Interpreter => {
+                            *disabled = true;
+                            echo!("ARM64 Dynarmic fallback: disabling JIT after result {result} at pc={:#x}; continuing with interpreter", context.pc);
+                            return interpreter.run_or_step(mem, context, ticks);
+                        }
+                        crate::options::Arm64Fallback::Jit => {
+                            echo!("ARM64 Dynarmic fallback selected as JIT after result {result} at pc={:#x}; preserving the JIT error");
+                        }
+                    }
                 }
                 result
             }
