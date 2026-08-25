@@ -533,7 +533,7 @@ impl A64Cpu {
                             return interpreter.run_or_step(mem, context, ticks);
                         }
                         crate::options::Arm64Fallback::Jit => {
-                            echo!("ARM64 Dynarmic fallback selected as JIT after result {result} at pc={:#x}; preserving the JIT error");
+                            echo!("ARM64 Dynarmic fallback selected as JIT after result {result} at pc={:#x}; preserving the JIT error", context.pc);
                         }
                     }
                 }
