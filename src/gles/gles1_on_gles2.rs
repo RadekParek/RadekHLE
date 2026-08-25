@@ -182,6 +182,7 @@ struct TranslatorState {
     program_creation_failed: bool,
     logic_op_enabled: bool,
     logic_op: GLenum,
+    gles3: bool,
 }
 
 impl TranslatorState {
@@ -261,6 +262,7 @@ impl TranslatorState {
             program_creation_failed: false,
             logic_op_enabled: false,
             logic_op: es1::COPY,
+            gles3: false,
         }
     }
 
@@ -281,15 +283,21 @@ impl TranslatorState {
 pub struct GLES1OnGLES2Context {
     gl_ctx: GLContext,
     is_loaded: bool,
+    gles3: bool,
     state: TranslatorState,
 }
 
 impl GLES1OnGLES2Context {
     pub fn new_with_gl_version(window: &mut Window, version: GLVersion) -> Result<Self, String> {
+        let gles3 = matches!(version, GLVersion::GLES30);
         Ok(Self {
             gl_ctx: window.create_gl_context(version)?,
             is_loaded: false,
-            state: TranslatorState::new(),
+            gles3,
+            state: TranslatorState {
+                gles3,
+                ..TranslatorState::new()
+            },
         })
     }
 }
@@ -453,9 +461,33 @@ fn frustum(
     ]
 }
 
-fn compile_shader(kind: GLenum, source: &str) -> Result<GLuint, String> {
+fn translate_fixed_function_shader(source: &str, kind: GLenum, gles3: bool) -> String {
+    if !gles3 {
+        return source.to_owned();
+    }
+
+    let mut translated = source.replacen("#version 100", "#version 300 es", 1);
+    if kind == gl::VERTEX_SHADER {
+        translated = translated.replace("attribute ", "in ");
+        translated = translated.replace("varying ", "out ");
+    } else {
+        translated = translated.replace("varying ", "in ");
+        translated = translated.replace("texture2D(", "texture(");
+        translated = translated.replace("texture2DProj(", "textureProj(");
+        translated = translated.replace("gl_FragColor", "frag_color");
+        translated = translated.replacen(
+            "precision mediump float;",
+            "precision mediump float;\nout vec4 frag_color;",
+            1,
+        );
+    }
+    translated
+}
+
+fn compile_shader(kind: GLenum, source: &str, gles3: bool) -> Result<GLuint, String> {
     unsafe {
         let shader = gl::CreateShader(kind);
+        let source = translate_fixed_function_shader(source, kind, gles3);
         let source = CString::new(source).unwrap();
         let pointer = source.as_ptr();
         gl::ShaderSource(shader, 1, &pointer, std::ptr::null());
@@ -483,7 +515,7 @@ fn compile_shader(kind: GLenum, source: &str) -> Result<GLuint, String> {
     }
 }
 
-fn create_program() -> Result<GLuint, String> {
+fn create_program(gles3: bool) -> Result<GLuint, String> {
     let vertex = compile_shader(
         gl::VERTEX_SHADER,
         r#"#version 100
@@ -604,6 +636,7 @@ void main() {
     v_clip_distances1 = vec2(dot(u_clip_planes[4], eye_position), dot(u_clip_planes[5], eye_position));
 }
 "#,
+        gles3,
     )?;
     let fragment = compile_shader(
         gl::FRAGMENT_SHADER,
@@ -892,6 +925,7 @@ void main() {
     gl_FragColor = color;
 }
 "#,
+        gles3,
     )?;
     unsafe {
         let program = gl::CreateProgram();
@@ -2354,7 +2388,7 @@ impl GLES for GLES1OnGLES2<'_> {
         let program = match self.state.program {
             Some(program) => program,
             None => {
-                let Ok(program) = create_program() else {
+                let Ok(program) = create_program(self.state.gles3) else {
                     return;
                 };
                 self.state.program = Some(program);
@@ -3955,7 +3989,7 @@ impl GLES1OnGLES2<'_> {
         if let Some(program) = self.state.program {
             return Some(program);
         }
-        match create_program() {
+        match create_program(self.state.gles3) {
             Ok(program) => {
                 self.state.program = Some(program);
                 Some(program)
