@@ -106,9 +106,7 @@ impl A64Interpreter {
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
-        if instruction & 0xffe0_fc00 == 0x9e60_0000
-            || instruction & 0xffe0_fc00 == 0x1e60_0000
-        {
+        if instruction & 0xffe0_fc00 == 0x9e60_0000 || instruction & 0xffe0_fc00 == 0x1e60_0000 {
             self.execute_scalar_integer_to_float(context, instruction)?;
             context.pc = pc.wrapping_add(4);
             return Ok(None);
@@ -203,6 +201,11 @@ impl A64Interpreter {
         }
         if instruction & 0x1f00_0000 == 0x1100_0000 {
             self.execute_add_sub_immediate(context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
+        if instruction & 0x1fa0_fc00 == 0x1e20_2000 {
+            self.execute_scalar_compare(context, instruction)?;
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
@@ -449,6 +452,41 @@ impl A64Interpreter {
             result[lane] = value as u64;
         }
         context.vectors[destination] = result;
+        Ok(())
+    }
+
+    fn execute_scalar_compare(
+        &self,
+        context: &mut touchHLE_DynarmicA64Context,
+        instruction: u32,
+    ) -> Result<(), InterpreterError> {
+        let double = instruction & 0x0040_0000 != 0;
+        let signaling_compare = instruction & 0x10 != 0;
+        let compare_zero = instruction & 0x8 != 0;
+        let rn = ((instruction >> 5) & 31) as usize;
+        let rm = ((instruction >> 16) & 31) as usize;
+        let flush_to_zero = context.fpcr & (1 << 24) != 0;
+        let (left, left_nan, left_signaling_nan) =
+            scalar_float_value(context.vectors[rn][0], double, flush_to_zero);
+        let (right, right_nan, right_signaling_nan) = if compare_zero {
+            (0.0, false, false)
+        } else {
+            scalar_float_value(context.vectors[rm][0], double, flush_to_zero)
+        };
+        let unordered = left_nan || right_nan;
+        if unordered && (signaling_compare || left_signaling_nan || right_signaling_nan) {
+            context.fpsr |= 1;
+        }
+        let flags = if unordered {
+            NZCV_C | NZCV_V
+        } else if left < right {
+            NZCV_N
+        } else if left > right {
+            NZCV_C
+        } else {
+            NZCV_Z | NZCV_C
+        };
+        context.pstate = (context.pstate & !(NZCV_N | NZCV_Z | NZCV_C | NZCV_V)) | flags;
         Ok(())
     }
 
@@ -1207,6 +1245,33 @@ enum InterpreterError {
     Breakpoint,
 }
 
+fn scalar_float_value(bits: u64, double: bool, flush_to_zero: bool) -> (f64, bool, bool) {
+    if double {
+        let exponent = bits & 0x7ff0_0000_0000_0000;
+        let fraction = bits & 0x000f_ffff_ffff_ffff;
+        let nan = exponent == 0x7ff0_0000_0000_0000 && fraction != 0;
+        let signaling_nan = nan && bits & 0x0008_0000_0000_0000 == 0;
+        let bits = if flush_to_zero && exponent == 0 && fraction != 0 {
+            bits & 0x8000_0000_0000_0000
+        } else {
+            bits
+        };
+        (f64::from_bits(bits), nan, signaling_nan)
+    } else {
+        let bits = bits as u32;
+        let exponent = bits & 0x7f80_0000;
+        let fraction = bits & 0x007f_ffff;
+        let nan = exponent == 0x7f80_0000 && fraction != 0;
+        let signaling_nan = nan && bits & 0x0040_0000 == 0;
+        let bits = if flush_to_zero && exponent == 0 && fraction != 0 {
+            bits & 0x8000_0000
+        } else {
+            bits
+        };
+        (f32::from_bits(bits) as f64, nan, signaling_nan)
+    }
+}
+
 fn read_memory_value(memory: &Mem64, address: u64, size: u64) -> Result<u128, InterpreterError> {
     match size {
         1 => memory.read_u8(address).map(u128::from),
@@ -1403,6 +1468,177 @@ fn is_control_flow(instruction: u32, pc: u64, next_pc: u64) -> bool {
 }
 
 #[cfg(test)]
+mod scalar_compare_tests {
+    use super::{A64Interpreter, NZCV_C, NZCV_N, NZCV_V, NZCV_Z};
+    use crate::mem64::{Mem64, Permissions};
+    use touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context;
+
+    const CODE: u64 = 0x4_0000_0000;
+    const INITIAL_FLAGS: u32 = 0x0800_0000 | NZCV_N | NZCV_C;
+
+    fn instruction(double: bool, signaling: bool, zero: bool, rn: usize, rm: usize) -> u32 {
+        0x1e20_2000
+            | if double { 0x0040_0000 } else { 0 }
+            | if signaling { 0x10 } else { 0 }
+            | if zero { 0x8 } else { 0 }
+            | ((rm as u32) << 16)
+            | ((rn as u32) << 5)
+    }
+
+    fn run(
+        instruction: u32,
+        left: u64,
+        right: u64,
+        pstate: u32,
+        fpcr: u32,
+        fpsr: u32,
+    ) -> touchHLE_DynarmicA64Context {
+        let mut memory = Mem64::new();
+        memory
+            .map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute())
+            .unwrap();
+        memory.load_bytes(CODE, &instruction.to_le_bytes()).unwrap();
+        let mut context = touchHLE_DynarmicA64Context {
+            pc: CODE,
+            pstate,
+            fpcr,
+            fpsr,
+            ..Default::default()
+        };
+        context.vectors[17][0] = left;
+        context.vectors[23][0] = right;
+        context.vectors[17][1] = 0x1111_2222_3333_4444;
+        context.regs[6] = 0x6666_7777_8888_9999;
+        A64Interpreter::new().run_or_step(&mut memory, &mut context, None);
+        context
+    }
+
+    #[test]
+    fn fcmp_single_sets_flags_for_less_equal_and_greater() {
+        let less = run(
+            instruction(false, false, false, 17, 23),
+            1.0f32.to_bits() as u64,
+            2.0f32.to_bits() as u64,
+            INITIAL_FLAGS,
+            0,
+            0,
+        );
+        let equal = run(
+            instruction(false, false, false, 17, 23),
+            1.0f32.to_bits() as u64,
+            1.0f32.to_bits() as u64,
+            INITIAL_FLAGS,
+            0,
+            0,
+        );
+        let greater = run(
+            instruction(false, false, false, 17, 23),
+            2.0f32.to_bits() as u64,
+            1.0f32.to_bits() as u64,
+            INITIAL_FLAGS,
+            0,
+            0,
+        );
+        assert_eq!(less.pstate & (NZCV_N | NZCV_Z | NZCV_C | NZCV_V), NZCV_N);
+        assert_eq!(
+            equal.pstate & (NZCV_N | NZCV_Z | NZCV_C | NZCV_V),
+            NZCV_Z | NZCV_C
+        );
+        assert_eq!(greater.pstate & (NZCV_N | NZCV_Z | NZCV_C | NZCV_V), NZCV_C);
+    }
+
+    #[test]
+    fn fcmp_treats_positive_and_negative_zero_as_equal() {
+        let context = run(
+            instruction(false, false, false, 17, 23),
+            0.0f32.to_bits() as u64,
+            (-0.0f32).to_bits() as u64,
+            INITIAL_FLAGS,
+            0,
+            0,
+        );
+        assert_eq!(
+            context.pstate & (NZCV_N | NZCV_Z | NZCV_C | NZCV_V),
+            NZCV_Z | NZCV_C
+        );
+    }
+
+    #[test]
+    fn fcmp_handles_single_and_double_infinities() {
+        let single = run(
+            instruction(false, false, false, 17, 23),
+            f32::INFINITY.to_bits() as u64,
+            f32::NEG_INFINITY.to_bits() as u64,
+            INITIAL_FLAGS,
+            0,
+            0,
+        );
+        let double = run(
+            instruction(true, false, false, 17, 23),
+            f64::NEG_INFINITY.to_bits(),
+            f64::INFINITY.to_bits(),
+            INITIAL_FLAGS,
+            0,
+            0,
+        );
+        assert_eq!(single.pstate & (NZCV_N | NZCV_Z | NZCV_C | NZCV_V), NZCV_C);
+        assert_eq!(double.pstate & (NZCV_N | NZCV_Z | NZCV_C | NZCV_V), NZCV_N);
+    }
+
+    #[test]
+    fn fcmp_nan_is_unordered_and_fcmpe_sets_invalid_operation() {
+        let quiet_nan = run(
+            instruction(false, false, false, 17, 23),
+            0x7fc0_0001,
+            1.0f32.to_bits() as u64,
+            INITIAL_FLAGS,
+            0,
+            0,
+        );
+        let quiet_signaling = run(
+            instruction(false, true, false, 17, 23),
+            0x7fc0_0001,
+            1.0f32.to_bits() as u64,
+            INITIAL_FLAGS,
+            0,
+            0,
+        );
+        let signaling_nan = run(
+            instruction(false, false, false, 17, 23),
+            0x7f80_0001,
+            1.0f32.to_bits() as u64,
+            INITIAL_FLAGS,
+            0,
+            0,
+        );
+        assert_eq!(
+            quiet_nan.pstate & (NZCV_N | NZCV_Z | NZCV_C | NZCV_V),
+            NZCV_C | NZCV_V
+        );
+        assert_eq!(quiet_nan.fpsr, 0);
+        assert_eq!(quiet_signaling.fpsr & 1, 1);
+        assert_eq!(signaling_nan.fpsr & 1, 1);
+    }
+
+    #[test]
+    fn scalar_compare_preserves_unrelated_registers_and_supports_zero_form() {
+        let context = run(
+            instruction(true, false, true, 17, 23),
+            f64::NEG_INFINITY.to_bits(),
+            0,
+            INITIAL_FLAGS,
+            0,
+            0x20,
+        );
+        assert_eq!(context.pstate & (NZCV_N | NZCV_Z | NZCV_C | NZCV_V), NZCV_N);
+        assert_eq!(context.regs[6], 0x6666_7777_8888_9999);
+        assert_eq!(context.vectors[17][1], 0x1111_2222_3333_4444);
+        assert_eq!(context.fpsr, 0x20);
+        assert_eq!(context.pc, CODE + 4);
+    }
+}
+
+#[cfg(test)]
 mod scalar_integer_to_float_tests {
     use super::A64Interpreter;
     use crate::mem64::{Mem64, Permissions};
@@ -1434,7 +1670,10 @@ mod scalar_integer_to_float_tests {
 
     #[test]
     fn ucvtf_s_converts_unsigned_w_register() {
-        assert_eq!(run(0x1e230100, u32::MAX as u64)[0], (u32::MAX as f32).to_bits() as u64);
+        assert_eq!(
+            run(0x1e230100, u32::MAX as u64)[0],
+            (u32::MAX as f32).to_bits() as u64
+        );
     }
 }
 

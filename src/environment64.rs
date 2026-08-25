@@ -114,7 +114,29 @@ fn decode_instruction(instruction: u32, pc: u64) -> String {
         format!("bl {:#x}", pc.wrapping_add_signed(immediate))
     } else if instruction & 0xff00_0010 == 0x5400_0000 {
         let immediate = ((((instruction >> 5) & 0x7f_ffff) as i32) << 13 >> 11) as i64;
-        format!("b.cond cond={:#x} {:#x}", instruction & 0xf, pc.wrapping_add_signed(immediate))
+        format!(
+            "b.cond cond={:#x} {:#x}",
+            instruction & 0xf,
+            pc.wrapping_add_signed(immediate)
+        )
+    } else if instruction & 0x1fa0_fc00 == 0x1e20_2000 {
+        let double = instruction & 0x0040_0000 != 0;
+        let signaling = instruction & 0x10 != 0;
+        let zero = instruction & 0x8 != 0;
+        let mnemonic = if signaling { "fcmpe" } else { "fcmp" };
+        let kind = if double { "d" } else { "s" };
+        let right = if zero {
+            "#0.0".to_string()
+        } else {
+            format!("{}{}", kind, (instruction >> 16) & 31)
+        };
+        format!(
+            "{} {}{}, {}",
+            mnemonic,
+            kind,
+            (instruction >> 5) & 31,
+            right
+        )
     } else if instruction & 0x7e00_0000 == 0x3400_0000 {
         let immediate = ((((instruction >> 5) & 0x7f_ffff) as i32) << 13 >> 11) as i64;
         format!("cbz/cbnz {:#x}", pc.wrapping_add_signed(immediate))
