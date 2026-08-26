@@ -136,6 +136,11 @@ pub struct RuntimeState {
     pub arm64_gl_present_requested: bool,
     pub arm64_gl: Option<Arm64GuestGlState>,
     pub arm64_application_bootstrap_dispatched: bool,
+    pub next_pthread_id: u64,
+    pub next_pthread_key: u64,
+    pub pthread_handles: HashMap<u64, u64>,
+    pub pthread_once_controls: HashSet<u64>,
+    pub pthread_key_values: HashMap<u64, u64>,
     pub render_diagnostics: A64RenderDiagnostics,
 }
 
@@ -262,6 +267,11 @@ impl RuntimeState {
             arm64_gl_present_requested: false,
             arm64_gl: None,
             arm64_application_bootstrap_dispatched: false,
+            next_pthread_id: 0x2000_0000,
+            next_pthread_key: 1,
+            pthread_handles: HashMap::new(),
+            pthread_once_controls: HashSet::new(),
+            pthread_key_values: HashMap::new(),
             render_diagnostics: A64RenderDiagnostics::default(),
         }
     }
@@ -491,7 +501,7 @@ pub fn can_dispatch(symbol: &str) -> bool {
         | "pthread_once" | "pthread_key_create" | "pthread_getspecific" | "pthread_setspecific"
         | "pthread_condattr_init" | "pthread_condattr_destroy" | "pthread_mutexattr_init" | "pthread_mutexattr_destroy"
         | "pthread_cond_init" | "pthread_cond_destroy" | "pthread_cond_wait" | "pthread_cond_signal" | "pthread_cond_broadcast"
-        | "pthread_setname_np" | "pthread_self" | "gettimeofday" | "sched_yield" | "abort" | "exit" | "_exit"
+        | "pthread_create" | "pthread_join" | "pthread_setname_np" | "pthread_self" | "gettimeofday" | "sched_yield" | "abort" | "exit" | "_exit"
         | "_Znwm" | "_Znam" | "_ZdlPv" | "_ZdaPv"
         | "__Znwm" | "__Znam" | "__ZdlPv" | "__ZdaPv"
         | "Znwm" | "Znam" | "ZdlPv" | "ZdaPv" | "ZnwmRKSt9nothrow_t"
@@ -2778,15 +2788,64 @@ pub fn dispatch(
             return_value(context, 0);
             Ok(true)
         }
+        "pthread_create" => {
+            let output = context.regs[0];
+            let start_routine = context.regs[2];
+            let thread_arg = context.regs[3];
+            let thread_id = state.next_pthread_id;
+            state.next_pthread_id = state.next_pthread_id.saturating_add(1);
+            if output == 0 {
+                return_value(context, 22);
+                return Ok(true);
+            }
+            mem.write_u64(output, thread_id).map_err(str::to_owned)?;
+            state.pthread_handles.insert(thread_id, start_routine);
+            log_once_fmt!(
+                "ARM64 pthread_create: emulated worker handles enabled; repeated calls suppressed"
+            );
+            log_dbg!(
+                "ARM64 pthread_create: thread_id={thread_id:#x} start={start_routine:#x} arg={thread_arg:#x}"
+            );
+            return_value(context, 0);
+            Ok(true)
+        }
+        "pthread_join" => {
+            let thread_id = context.regs[0];
+            if context.regs[1] != 0 {
+                mem.write_u64(context.regs[1], 0).map_err(str::to_owned)?;
+            }
+            let result = if state.pthread_handles.remove(&thread_id).is_some() || thread_id != 0 {
+                0
+            } else {
+                3
+            };
+            return_value(context, result);
+            Ok(true)
+        }
         "cxa_atexit" | "atexit" | "pthread_mutex_lock" | "pthread_mutex_unlock" | "pthread_mutex_init" | "pthread_mutex_destroy" | "pthread_once" | "pthread_key_create" | "pthread_setspecific" | "sched_yield" => {
-            if symbol == "pthread_once" && context.regs[0] != 0 && mem.read_u32(context.regs[0]).map_err(str::to_owned)? == 0 {
-                mem.write_u32(context.regs[0], 1).map_err(str::to_owned)?;
+            if symbol == "pthread_once" && context.regs[0] != 0 {
+                let control = context.regs[0];
+                if !state.pthread_once_controls.contains(&control) {
+                    state.pthread_once_controls.insert(control);
+                    mem.write_u32(control, 1).map_err(str::to_owned)?;
+                }
+            }
+            if symbol == "pthread_key_create" {
+                let output = context.regs[0];
+                let key = state.next_pthread_key;
+                state.next_pthread_key = state.next_pthread_key.saturating_add(1);
+                if output != 0 {
+                    mem.write_u64(output, key).map_err(str::to_owned)?;
+                }
+            }
+            if symbol == "pthread_setspecific" {
+                state.pthread_key_values.insert(context.regs[0], context.regs[1]);
             }
             return_value(context, 0);
             Ok(true)
         }
         "pthread_getspecific" => {
-            return_value(context, 0);
+            return_value(context, state.pthread_key_values.get(&context.regs[0]).copied().unwrap_or(0));
             Ok(true)
         }
         "gettimeofday" => {

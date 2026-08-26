@@ -289,6 +289,15 @@ impl Mem64 {
         Ok(())
     }
 
+    pub fn copy_bytes_overlap_safe(
+        &mut self,
+        destination: Guest64Addr,
+        source: Guest64Addr,
+        size: Guest64USize,
+    ) -> Result<(), &'static str> {
+        self.copy_bytes(destination, source, size)
+    }
+
     pub fn copy_bytes(
         &mut self,
         destination: Guest64Addr,
