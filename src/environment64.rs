@@ -285,19 +285,12 @@ fn call_stack_dump(memory: &Mem64, context: &touchHLE_DynarmicA64Context) -> Str
 }
 fn verify_abi(context: &touchHLE_DynarmicA64Context, module: &str) {
     if context.sp == 0 {
-        echo!(
-            "ARM64 ABI violation in {module}: SP became NULL (pc={:#x} lr={:#x} fp={:#x} x0={:#x} x1={:#x} x2={:#x} x3={:#x})",
-            context.pc,
-            context.regs[30],
-            context.regs[29],
-            context.regs[0],
-            context.regs[1],
-            context.regs[2],
-            context.regs[3],
+        log_once_fmt!(
+            "ARM64 ABI violation in {module}: SP became NULL (repeated violations suppressed)"
         );
     } else if context.sp & 15 != 0 {
-        echo!(
-            "ARM64 ABI violation in {module}: SP is not 16-byte aligned: {:#x}",
+        log_once_fmt!(
+            "ARM64 ABI violation in {module}: SP is not 16-byte aligned: {:#x} (repeated violations suppressed)",
             context.sp
         );
     }
@@ -887,16 +880,8 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     let mut stub_by_symbol: HashMap<String, (u32, u64)> = HashMap::new();
     let mut unresolved = Vec::new();
     let mut materialized_imports = 0usize;
-    for (binding_index, binding) in executable.bindings.iter().enumerate() {
+    for binding in &executable.bindings {
         if let Some(value) = materialize_import(&mut memory, &binding.symbol)? {
-            if binding_index < 32 {
-                log_dbg!(
-                    "ARM64 materialized import #{}: {} -> {:#x}",
-                    binding_index,
-                    binding.symbol,
-                    value
-                );
-            }
             memory
                 .load_u64(
                     binding.address,
@@ -1213,7 +1198,6 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 let continuation_pc = host_call_continuation(&context);
                 let call_site = host_call_site(&context);
                 let host_call = host_call_identity(&context);
-                let callback_arguments = callback_event_context(&context);
                 if guest_progress_since_host_call {
                     last_host_call = None;
                     repeated_host_call = 0;
@@ -1249,25 +1233,30 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 if matches!(
                     symbol,
                     "__Znam" | "_Znam" | "Znam" | "__Znwm" | "_Znwm" | "Znwm"
-                ) {
-                    log_once_fmt!(
-                        "ARM64 allocation call: symbol={} size={:#x} pc={:#x} lr={:#x} [repeated allocation calls suppressed]",
-                        symbol, context.regs[0], context.pc, context.regs[30],
+                ) && (host_dispatches == 1 || host_dispatches % 1000 == 0)
+                {
+                    log_dbg!(
+                        "ARM64 allocation call #{}: symbol={} size={:#x} pc={:#x}",
+                        host_dispatches,
+                        symbol,
+                        context.regs[0],
+                        context.pc,
                     );
                 }
-                if host_dispatches <= 16 || host_dispatches.is_power_of_two() {
+                if host_dispatches <= 16 || host_dispatches % 1000 == 0 {
                     log_dbg!(
-                        "ARM64 host binding #{}: {} host_stub_pc={:#x} guest_run_entry_pc={:#x} guest_call_site={:#x} continuation_pc={:#x} {}",
+                        "ARM64 host binding #{}: {} host_stub_pc={:#x} guest_call_site={:#x} continuation_pc={:#x} {}",
                         host_dispatches,
                         symbol,
                         context.pc,
-                        instruction_pc,
                         call_site,
                         continuation_pc,
                         callback_event_context(&context),
                     );
                 }
-                verify_abi(&context, symbol);
+                if context.sp == 0 || context.sp & 15 != 0 {
+                    verify_abi(&context, symbol);
+                }
                 let sp_before_dispatch = context.sp;
                 runtime_state.last_symbol = Some(symbol.to_owned());
                 let handled = match dispatch(
@@ -1299,46 +1288,6 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                         symbol,
                         sp_before_dispatch,
                         context.sp,
-                    );
-                }
-                verify_abi(&context, symbol);
-                if matches!(
-                    symbol,
-                    "malloc"
-                        | "calloc"
-                        | "valloc"
-                        | "posix_memalign"
-                        | "free"
-                        | "malloc_zone_free"
-                        | "_ZdlPv"
-                        | "_ZdaPv"
-                        | "__ZdlPv"
-                        | "__ZdaPv"
-                        | "_Znwm"
-                        | "_Znam"
-                        | "__Znwm"
-                        | "__Znam"
-                        | "Znwm"
-                        | "Znam"
-                        | "ZnwmRKSt9nothrow_t"
-                        | "__ZnwmRKSt9nothrow_t"
-                        | "memcpy"
-                        | "memmove"
-                        | "memcpy_chk"
-                        | "memmove_chk"
-                        | "memset"
-                        | "memset_chk"
-                ) && (host_dispatches <= 16 || host_dispatches.is_power_of_two())
-                {
-                    log_dbg!(
-                        "ARM64 host callback return: symbol={} host_stub_pc={:#x} guest_run_entry_pc={:#x} guest_call_site={:#x} continuation_pc={:#x} result_x0={:#x} {}",
-                        symbol,
-                        context.pc,
-                        instruction_pc,
-                        call_site,
-                        continuation_pc,
-                        context.regs[0],
-                        callback_arguments,
                     );
                 }
                 if runtime_state.take_present_request() {
@@ -1410,15 +1359,6 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                         "ARM64 runtime made too many host calls within one guest callback; last binding was {}",
                         symbol
                     ));
-                }
-                if host_dispatches.is_power_of_two() {
-                    log_dbg!(
-                        "ARM64 runtime counters: dispatches={}, objc_messages={}, metal_commands={}, backend={}",
-                        runtime_state.host_dispatches,
-                        runtime_state.objc_messages,
-                        runtime_state.metal_commands,
-                        runtime_state.graphics_backend.label()
-                    );
                 }
                 if guest_transfer.is_none() {
                     context.pc = context.regs[30];
