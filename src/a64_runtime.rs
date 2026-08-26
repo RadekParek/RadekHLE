@@ -2442,14 +2442,23 @@ pub fn dispatch(
             return_value(context, address);
             Ok(true)
         }
-        "memcpy" | "memmove" | "memcpy_chk" | "memmove_chk" => {
+        "memcpy" | "memcpy_chk" => {
             let size = context.regs[2];
-            mem.copy_bytes(context.regs[0], context.regs[1], size).map_err(str::to_owned)?;
+            mem.copy_bytes(context.regs[0], context.regs[1], size)
+                .map_err(str::to_owned)?;
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "memmove" | "memmove_chk" => {
+            let size = context.regs[2];
+            mem.copy_bytes_overlap_safe(context.regs[0], context.regs[1], size)
+                .map_err(str::to_owned)?;
             return_value(context, context.regs[0]);
             Ok(true)
         }
         "bcopy" => {
-            mem.copy_bytes(context.regs[1], context.regs[0], context.regs[2]).map_err(str::to_owned)?;
+            mem.copy_bytes_overlap_safe(context.regs[1], context.regs[0], context.regs[2])
+                .map_err(str::to_owned)?;
             return_value(context, context.regs[1]);
             Ok(true)
         }

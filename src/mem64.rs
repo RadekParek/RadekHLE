@@ -6,6 +6,7 @@ pub type Guest64USize = u64;
 pub type Guest64Addr = u64;
 
 const MAX_GUEST_ALLOCATION: Guest64USize = 512 * 1024 * 1024;
+const MAX_COPY_CHUNK: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Permissions(u8);
@@ -273,7 +274,8 @@ impl Mem64 {
             }
             let offset = usize::try_from(address - region_base)
                 .map_err(|_| "64-bit memory offset overflows host usize")?;
-            let count = (mapping.bytes.len() - offset).min((end - address) as usize);
+            let available = mapping.bytes.len().saturating_sub(offset);
+            let count = available.min((end - address) as usize);
             if count == 0 {
                 return Err("64-bit memory fill is out of bounds");
             }
@@ -294,11 +296,31 @@ impl Mem64 {
         size: Guest64USize,
     ) -> Result<(), &'static str> {
         let size = usize::try_from(size).map_err(|_| "64-bit copy is too large for this host")?;
-        if size == 0 {
+        if size == 0 || destination == source {
             return Ok(());
         }
-        let bytes = self.read_bytes_with_access(source, size, AccessType::Read)?;
-        self.write_bytes_with_access(destination, &bytes, AccessType::Write)
+        self.validate_range(source, size, AccessType::Read)?;
+        self.validate_range(destination, size, AccessType::Write)?;
+        let backward = destination > source && destination - source < size as u64;
+        let mut remaining = size;
+        let mut offset = 0usize;
+        while remaining != 0 {
+            let chunk = remaining.min(MAX_COPY_CHUNK);
+            let chunk_offset = if backward { remaining - chunk } else { offset };
+            let source_address = source
+                .checked_add(chunk_offset as u64)
+                .ok_or("64-bit copy source address overflows")?;
+            let destination_address = destination
+                .checked_add(chunk_offset as u64)
+                .ok_or("64-bit copy destination address overflows")?;
+            let bytes = self.read_bytes_with_access(source_address, chunk, AccessType::Read)?;
+            self.write_bytes_with_access(destination_address, &bytes, AccessType::Write)?;
+            remaining -= chunk;
+            if !backward {
+                offset += chunk;
+            }
+        }
+        Ok(())
     }
 
     pub fn cstr_len(
@@ -469,6 +491,43 @@ impl Mem64 {
             .checked_add(size)
             .ok_or("allocation cursor overflows")?;
         Ok(base)
+    }
+
+    fn validate_range(
+        &self,
+        base: Guest64Addr,
+        size: usize,
+        access: AccessType,
+    ) -> Result<(), &'static str> {
+        let mut address = base;
+        let mut remaining = size as u64;
+        while remaining != 0 {
+            let (&region_base, mapping) = self
+                .regions
+                .range(..=address)
+                .next_back()
+                .ok_or("64-bit memory access is unmapped")?;
+            if !mapping.permissions.contains(access.permission()) {
+                return Err(match access {
+                    AccessType::Read => "64-bit memory read protection fault",
+                    AccessType::Write => "64-bit memory write protection fault",
+                    AccessType::Execute => "64-bit memory execute protection fault",
+                });
+            }
+            let offset = address
+                .checked_sub(region_base)
+                .ok_or("64-bit memory address underflows")?;
+            let available = (mapping.bytes.len() as u64).saturating_sub(offset);
+            let count = available.min(remaining);
+            if count == 0 {
+                return Err("64-bit memory access is out of bounds");
+            }
+            remaining -= count;
+            address = address
+                .checked_add(count)
+                .ok_or("64-bit memory address overflows")?;
+        }
+        Ok(())
     }
 
     fn mapping(&self, addr: Guest64Addr, size: usize) -> Result<(&Mapping, usize), &'static str> {
@@ -718,5 +777,31 @@ mod tests {
         );
         mem.fill_bytes(0x1_0000_000e, 0xaa, 4).unwrap();
         assert_eq!(mem.read_bytes(0x1_0000_000e, 4).unwrap(), [0xaa; 4]);
+    }
+
+    #[test]
+    fn copy_bytes_does_not_partially_write_on_invalid_destination() {
+        let mut mem = Mem64::new();
+        let source = 0x1_0000_0000;
+        let destination = source + 0x100;
+        mem.map_zeroed(source, 0x100).unwrap();
+        mem.map_zeroed(destination, 0x20).unwrap();
+        mem.write_bytes(source, &[0x5a; 0x100]).unwrap();
+        assert!(mem.copy_bytes(destination, source, 0x100).is_err());
+        assert_eq!(mem.read_bytes(destination, 0x20).unwrap(), vec![0; 0x20]);
+    }
+
+    #[test]
+    fn copy_bytes_handles_large_overlapping_ranges() {
+        let mut mem = Mem64::new();
+        let base = 0x1_0000_0000;
+        let size = 128 * 1024;
+        mem.map_zeroed(base, size as u64).unwrap();
+        let source: Vec<u8> = (0..size).map(|index| (index as u8).wrapping_mul(37)).collect();
+        mem.write_bytes(base, &source).unwrap();
+        mem.copy_bytes_overlap_safe(base + 1, base, (size - 1) as u64)
+            .unwrap();
+        let result = mem.read_bytes(base + 1, (size - 1) as u64).unwrap();
+        assert_eq!(result, source[..size - 1]);
     }
 }
