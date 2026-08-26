@@ -263,7 +263,6 @@ impl RuntimeState {
             arm64_gl: None,
             arm64_application_bootstrap_dispatched: false,
             render_diagnostics: A64RenderDiagnostics::default(),
-            missing_selectors: HashSet::new(),
         }
     }
 
@@ -1101,7 +1100,7 @@ fn objc_send(
 ) -> Result<(), String> {
     let receiver = context.regs[0];
     let selector_bytes = c_string(mem, context.regs[1]).unwrap_or_default();
-    let selector = String::from_utf8_lossy(&selector_bytes);
+    let selector = String::from_utf8_lossy(&selector_bytes).into_owned();
     state.objc_messages = state.objc_messages.saturating_add(1);
     state.last_selector = Some(selector.clone());
     state.render_diagnostics.last_dispatch_receiver = receiver;
@@ -1810,7 +1809,7 @@ fn objc_send(
             object
         }
         _ => {
-            if state.missing_selectors.insert(selector.to_string()) {
+            if state.render_diagnostics.missing_selectors.insert(selector.to_string()) {
                 log_dbg!(
                     "ARM64 missing Objective-C selector: {} on {} (receiver={:#x})",
                     selector,
@@ -3896,15 +3895,14 @@ fn arm64_gl_call(
             let program = context.regs[0] as u32;
             let buffer = arm64_mut_ptr(mem, context.regs[2], 1024)?;
             let length = context.regs[3] as i32;
-            let mut result = 0;
             arm64_host_gl(window, |host| unsafe {
-                result = if symbol == "glGetProgramInfoLog" {
-                    host.GetProgramInfoLog(program, length, std::ptr::null_mut(), buffer.cast())
+                if symbol == "glGetProgramInfoLog" {
+                    host.GetProgramInfoLog(program, length, std::ptr::null_mut(), buffer.cast());
                 } else {
-                    host.GetShaderInfoLog(program, length, std::ptr::null_mut(), buffer.cast())
-                };
+                    host.GetShaderInfoLog(program, length, std::ptr::null_mut(), buffer.cast());
+                }
             });
-            return_value(context, result as u64);
+            return_value(context, 0);
             return Ok(true);
         }
         "glDiscardFramebufferEXT" => {}
