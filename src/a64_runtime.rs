@@ -1095,9 +1095,8 @@ fn objc_send(
     state: &mut RuntimeState,
 ) -> Result<(), String> {
     let receiver = context.regs[0];
-    let selector = c_string(mem, context.regs[1])
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .unwrap_or_default();
+    let selector_bytes = c_string(mem, context.regs[1]).unwrap_or_default();
+    let selector = String::from_utf8_lossy(&selector_bytes);
     state.objc_messages = state.objc_messages.saturating_add(1);
     state.last_selector = Some(selector.clone());
     state.render_diagnostics.last_dispatch_receiver = receiver;
@@ -1746,6 +1745,14 @@ fn objc_send(
             };
             set_objc_field(mem, receiver, offset, value);
             0
+        }
+        "description" => {
+            let desc = objc_string(mem, &format!("{} <{}>", receiver_class_name(mem, receiver, kind).unwrap_or_else(|| "Object".to_owned()), receiver))?;
+            desc
+        }
+        "hash" => {
+            let hash = arm64_prng(state.arm64_rng_state);
+            u64::from(hash)
         }
         "alloc" | "new" if kind == A64_KIND_CLASS => {
             let class_name_text = objc_text(mem, class_name)
