@@ -39,6 +39,9 @@ const A64_KIND_VIEW: u64 = 28;
 const A64_KIND_EAGL_VIEW: u64 = 29;
 const A64_KIND_CONTEXT: u64 = 30;
 const A64_KIND_ARRAY: u64 = 31;
+const A64_KIND_DICTIONARY: u64 = 32;
+const A64_KIND_DATA: u64 = 33;
+const A64_KIND_SET: u64 = 34;
 const A64_UIVIEWCONTROLLER_VIEW_IVAR: u64 = 0x148;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +161,7 @@ pub struct A64RenderDiagnostics {
     pub last_dispatch_lr: u64,
     pub last_dispatch_sp: u64,
     pub last_dispatch_callback_target: u64,
+    pub missing_selectors: HashSet<String>,
 }
 
 #[derive(Debug, Default)]
@@ -259,6 +263,7 @@ impl RuntimeState {
             arm64_gl: None,
             arm64_application_bootstrap_dispatched: false,
             render_diagnostics: A64RenderDiagnostics::default(),
+            missing_selectors: HashSet::new(),
         }
     }
 
@@ -1426,7 +1431,15 @@ fn objc_send(
         "release" => 0,
         "class" => receiver_class,
         "respondsToSelector:" | "isKindOfClass:" | "hasUnifiedMemory" => 1,
-        "count" if kind == A64_KIND_ARRAY => objc_field(mem, receiver, 56),
+        "count" if kind == A64_KIND_ARRAY || kind == A64_KIND_DICTIONARY || kind == A64_KIND_SET => objc_field(mem, receiver, 56),
+        "objectForKey:" if kind == A64_KIND_DICTIONARY => {
+            let key = context.regs[2];
+            log_dbg!("ARM64 NSDictionary objectForKey: receiver={:#x} key={:#x}", receiver, key);
+            0
+        }
+        "allKeys" if kind == A64_KIND_DICTIONARY => {
+            objc_object(mem, A64_KIND_ARRAY)?
+        }
         "firstObject" if kind == A64_KIND_ARRAY => {
             let result = if objc_field(mem, receiver, 56) > 0 {
                 let elements = objc_field(mem, receiver, 64);
@@ -1643,8 +1656,9 @@ fn objc_send(
         }
         "name" => objc_string(mem, "RadekHLE Metal device")?,
         "UTF8String" => objc_field(mem, receiver, 56),
-        "length" if kind == A64_KIND_STRING => objc_field(mem, receiver, 64),
-        "length" if kind == A64_KIND_BUFFER => objc_field(mem, receiver, 64),
+        "length" if kind == A64_KIND_STRING || kind == A64_KIND_BUFFER || kind == A64_KIND_DATA => objc_field(mem, receiver, 64),
+        "bytes" if kind == A64_KIND_DATA => objc_field(mem, receiver, 56),
+        "containsObject:" if kind == A64_KIND_SET => 1,
         "boolValue" if kind == A64_KIND_STRING => u64::from(!objc_text_eq(mem, receiver, b"0")),
         "boolValue" if kind == A64_KIND_NUMBER => u64::from(objc_field(mem, receiver, 56) != 0),
         "intValue" | "integerValue" | "longLongValue" if kind == A64_KIND_NUMBER => {
@@ -1795,7 +1809,17 @@ fn objc_send(
             }
             object
         }
-        _ => 0,
+        _ => {
+            if state.missing_selectors.insert(selector.to_string()) {
+                log_dbg!(
+                    "ARM64 missing Objective-C selector: {} on {} (receiver={:#x})",
+                    selector,
+                    receiver_class_name(mem, receiver, kind).as_deref().unwrap_or("<unknown>"),
+                    receiver
+                );
+            }
+            0
+        },
     };
     if state.guest_transfer_pc.is_none() {
         return_value(context, result);
