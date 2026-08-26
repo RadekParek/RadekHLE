@@ -1427,6 +1427,27 @@ fn objc_send(
         "class" => receiver_class,
         "respondsToSelector:" | "isKindOfClass:" | "hasUnifiedMemory" => 1,
         "count" if kind == A64_KIND_ARRAY => objc_field(mem, receiver, 56),
+        "firstObject" if kind == A64_KIND_ARRAY => {
+            let result = if objc_field(mem, receiver, 56) > 0 {
+                let elements = objc_field(mem, receiver, 64);
+                mem.read_u64(elements).map_err(str::to_owned)?
+            } else {
+                0
+            };
+            return_value(context, result);
+            return Ok(());
+        }
+        "lastObject" if kind == A64_KIND_ARRAY => {
+            let count = objc_field(mem, receiver, 56);
+            let result = if count > 0 {
+                let elements = objc_field(mem, receiver, 64);
+                mem.read_u64(elements + (count - 1) * 8).map_err(str::to_owned)?
+            } else {
+                0
+            };
+            return_value(context, result);
+            return Ok(());
+        }
         "objectAtIndexedSubscript:" | "objectAtIndex:" if kind == A64_KIND_ARRAY => {
             let index = context.regs[2];
             let count = objc_field(mem, receiver, 56);
@@ -1639,6 +1660,16 @@ fn objc_send(
         }
         "isEqualToString:" | "isEqual:" if kind == A64_KIND_STRING => {
             u64::from(objc_text(mem, receiver) == objc_text(mem, context.regs[2]))
+        }
+        "rangeOfString:options:" if kind == A64_KIND_STRING => {
+            let haystack = objc_text(mem, receiver).unwrap_or_default();
+            let needle = objc_text(mem, context.regs[2]).unwrap_or_default();
+            if let Some(pos) = haystack.windows(needle.len()).position(|w| w == needle) {
+                A64Abi::set_return_pair(context, pos as u64, needle.len() as u64);
+            } else {
+                A64Abi::set_return_pair(context, !0, 0);
+            }
+            return Ok(());
         }
         "cStringUsingEncoding:" if kind == A64_KIND_STRING => objc_field(mem, receiver, 56),
         "getInstance"
@@ -3836,9 +3867,22 @@ fn arm64_gl_call(
         "glReleaseShaderCompiler"
         | "glGetActiveAttrib"
         | "glGetActiveUniform"
-        | "glGetProgramInfoLog"
-        | "glGetShaderInfoLog"
         | "glGetShaderPrecisionFormat" => {}
+        "glGetProgramInfoLog" | "glGetShaderInfoLog" => {
+            let program = context.regs[0] as u32;
+            let buffer = arm64_mut_ptr(mem, context.regs[2], 1024)?;
+            let length = context.regs[3] as i32;
+            let mut result = 0;
+            arm64_host_gl(window, |host| unsafe {
+                result = if symbol == "glGetProgramInfoLog" {
+                    host.GetProgramInfoLog(program, length, std::ptr::null_mut(), buffer.cast())
+                } else {
+                    host.GetShaderInfoLog(program, length, std::ptr::null_mut(), buffer.cast())
+                };
+            });
+            return_value(context, result as u64);
+            return Ok(true);
+        }
         "glDiscardFramebufferEXT" => {}
         "glDeleteShader" => arm64_host_gl(window, |host| unsafe {
             host.DeleteShader(context.regs[0] as _)
