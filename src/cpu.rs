@@ -525,11 +525,10 @@ impl A64Cpu {
                 };
                 if result < -1 {
                     unsafe { touchHLE_DynarmicA64Wrapper_save_context(*wrapper, context) };
-                    context.pc = context.pc.wrapping_add(4);
                     match fallback {
                         crate::options::Arm64Fallback::Interpreter => {
                             *disabled = true;
-                            echo!("ARM64 Dynarmic fallback: disabling JIT after result {result} at pc={:#x}; continuing with interpreter", context.pc);
+                            echo!("ARM64 Dynarmic fallback: disabling JIT after result {result} at faulting pc={:#x}; retrying with interpreter", context.pc);
                             return interpreter.run_or_step(mem, context, ticks);
                         }
                         crate::options::Arm64Fallback::Jit => {

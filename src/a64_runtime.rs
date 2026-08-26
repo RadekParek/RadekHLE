@@ -483,9 +483,11 @@ pub fn can_dispatch(symbol: &str) -> bool {
         | "strcasecmp" | "strncasecmp" | "bcopy" | "bcmp"
         | "memset_pattern4" | "memset_pattern8" | "memset_pattern16"
         | "cxa_atexit" | "atexit" | "pthread_mutex_lock"
-        | "pthread_mutex_unlock" | "pthread_mutex_init" | "pthread_mutex_destroy"
+        | "pthread_mutex_unlock" | "pthread_mutex_init" | "pthread_mutex_destroy" | "pthread_mutex_trylock"
         | "pthread_once" | "pthread_key_create" | "pthread_getspecific" | "pthread_setspecific"
-        | "pthread_setname_np" | "pthread_self" | "sched_yield" | "abort" | "exit" | "_exit"
+        | "pthread_condattr_init" | "pthread_condattr_destroy" | "pthread_mutexattr_init" | "pthread_mutexattr_destroy"
+        | "pthread_cond_init" | "pthread_cond_destroy" | "pthread_cond_wait" | "pthread_cond_signal" | "pthread_cond_broadcast"
+        | "pthread_setname_np" | "pthread_self" | "gettimeofday" | "sched_yield" | "abort" | "exit" | "_exit"
         | "_Znwm" | "_Znam" | "_ZdlPv" | "_ZdaPv"
         | "__Znwm" | "__Znam" | "__ZdlPv" | "__ZdaPv"
         | "Znwm" | "Znam" | "ZdlPv" | "ZdaPv" | "ZnwmRKSt9nothrow_t"
@@ -608,6 +610,27 @@ fn cxx_string_bytes(mem: &Mem64, object: u64) -> Option<Vec<u8>> {
     }
 }
 
+fn normalize_arm64_allocation_size(requested: u64) -> Option<u64> {
+    const MAX_ALLOCATION: u64 = 512 * 1024 * 1024;
+    if requested <= MAX_ALLOCATION {
+        return Some(requested.max(1));
+    }
+    let signed = requested as i64;
+    if signed < 0 {
+        let corrected = signed.unsigned_abs();
+        if corrected <= MAX_ALLOCATION {
+            log_once_fmt!(
+                "ARM64 allocator: corrected signed negative size {requested:#x} to {corrected:#x} [repeated corrections suppressed]"
+            );
+            return Some(corrected.max(1));
+        }
+    }
+    log_once_fmt!(
+        "ARM64 allocator: rejected invalid size {requested:#x} [repeated invalid sizes suppressed]"
+    );
+    None
+}
+
 fn cxx_find(text: &[u8], needle: &[u8], position: u64, reverse: bool) -> u64 {
     let start = usize::try_from(position)
         .unwrap_or(usize::MAX)
@@ -633,6 +656,8 @@ fn cxx_find(text: &[u8], needle: &[u8], position: u64, reverse: bool) -> u64 {
 }
 
 fn next_prime(value: u64) -> u64 {
+    const MAX_REASONABLE: u64 = 1 << 30;
+
     fn is_prime(value: u64) -> bool {
         if value < 2 {
             return false;
@@ -653,12 +678,18 @@ fn next_prime(value: u64) -> u64 {
         true
     }
 
-    let mut candidate = value.max(2);
+    if value <= 2 {
+        return 2;
+    }
+    if value > MAX_REASONABLE {
+        log_once_fmt!(
+            "ARM64 libc++ __next_prime received an invalid oversized value {value:#x}; returning 2 [repeated invalid values suppressed]"
+        );
+        return 2;
+    }
+    let mut candidate = if value & 1 == 0 { value + 1 } else { value };
     while !is_prime(candidate) {
-        candidate = candidate.saturating_add(1);
-        if candidate == 0 {
-            return 2;
-        }
+        candidate = candidate.saturating_add(2);
     }
     candidate
 }
@@ -1094,17 +1125,15 @@ fn objc_send(
         echo!("ARM64 Objective-C bootstrap call used a nil receiver; returning zero and continuing startup");
     }
 
-    log_dbg!(
-        "ARM64 Objective-C message #{}: receiver={:#x} kind={} selector={} x2={:#x} x3={:#x} x4={:#x} x5={:#x}",
-        state.objc_messages,
-        receiver,
-        kind,
-        selector,
-        context.regs[2],
-        context.regs[3],
-        context.regs[4],
-        context.regs[5]
-    );
+    if state.objc_messages <= 10 || state.objc_messages % 100 == 0 {
+        log_dbg!(
+            "ARM64 Objective-C message #{}: receiver={:#x} kind={} selector={}",
+            state.objc_messages,
+            receiver,
+            kind,
+            selector,
+        );
+    }
     if matches!(
         selector.as_str(),
         "displayLinkWithTarget:selector:"
@@ -2159,16 +2188,26 @@ pub fn dispatch(
     }
     match symbol {
         "malloc" | "calloc" | "valloc" | "posix_memalign" => {
-            let size = if symbol == "calloc" {
+            let requested_size = if symbol == "calloc" {
                 A64Abi::arg(context, 0)
                     .checked_mul(A64Abi::arg(context, 1))
-                    .ok_or("ARM64 calloc size overflows")?
+                    .unwrap_or(u64::MAX)
             } else if symbol == "posix_memalign" {
                 A64Abi::arg(context, 2)
             } else {
                 A64Abi::arg(context, 0)
             };
-            let address = mem.alloc_zeroed(size).map_err(str::to_owned)?;
+            let Some(size) = normalize_arm64_allocation_size(requested_size) else {
+                return_value(context, 0);
+                return Ok(true);
+            };
+            let address = match mem.alloc_zeroed(size) {
+                Ok(address) => address,
+                Err(_) => {
+                    return_value(context, 0);
+                    return Ok(true);
+                }
+            };
             if symbol == "posix_memalign" {
                 mem.write_u64(context.regs[0], address).map_err(str::to_owned)?;
                 return_value(context, 0);
@@ -2193,14 +2232,9 @@ pub fn dispatch(
         "_Znwm" | "_Znam" | "__Znwm" | "__Znam"
         | "Znwm" | "Znam" | "ZnwmRKSt9nothrow_t" | "__ZnwmRKSt9nothrow_t" => {
             let requested_size = A64Abi::arg(context, 0);
-            let size = if requested_size > 0x2000_0000 && (requested_size as i64) < 0 {
-                let corrected = requested_size.wrapping_neg();
-                log_once_fmt!(
-                    "ARM64 allocator: corrected signed negative size {requested_size:#x} to {corrected:#x} for {symbol} [repeated corrections suppressed]"
-                );
-                corrected
-            } else {
-                requested_size
+            let Some(size) = normalize_arm64_allocation_size(requested_size) else {
+                return_value(context, 0);
+                return Ok(true);
             };
             match mem.alloc_zeroed(size) {
                 Ok(address) => {
@@ -2326,6 +2360,24 @@ pub fn dispatch(
             let old = context.regs[0];
             let size = context.regs[1].max(1);
             let address = mem.realloc(old, size).map_err(str::to_owned)?;
+            let requested_size = context.regs[1];
+            let Some(size) = normalize_arm64_allocation_size(requested_size) else {
+                return_value(context, 0);
+                return Ok(true);
+            };
+            let address = match mem.alloc_zeroed(size) {
+                Ok(address) => address,
+                Err(_) => {
+                    return_value(context, 0);
+                    return Ok(true);
+                }
+            };
+            if old != 0 {
+                if let Some(old_size) = mem.allocation_size(old) {
+                    mem.copy_bytes(address, old, old_size.min(size)).map_err(str::to_owned)?;
+                    mem.free(old);
+                }
+            }
             return_value(context, address);
             Ok(true)
         }
@@ -2687,6 +2739,10 @@ pub fn dispatch(
             if output != 0 {
                 mem.fill_bytes(output, 0, if symbol == "pthread_condattr_init" { 4 } else { 12 }).map_err(str::to_owned)?;
             }
+            return_value(context, 0);
+            Ok(true)
+        }
+        "pthread_condattr_destroy" | "pthread_mutexattr_destroy" | "pthread_cond_destroy" | "pthread_cond_wait" | "pthread_cond_signal" | "pthread_cond_broadcast" | "pthread_mutex_trylock" => {
             return_value(context, 0);
             Ok(true)
         }

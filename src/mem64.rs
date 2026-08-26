@@ -167,34 +167,39 @@ impl Mem64 {
     }
 
     pub fn load_u64(&mut self, address: Guest64Addr, value: u64) -> Result<(), &'static str> {
-        let (&region_base, _) = self
-            .regions
-            .range(..=address)
-            .next_back()
-            .ok_or("64-bit memory access is unmapped")?;
-        let (mapping, offset) = self.mapping(address, std::mem::size_of::<u64>())?;
-        let _ = mapping;
-        let mapping = self
-            .regions
-            .get_mut(&region_base)
-            .ok_or("64-bit memory access is unmapped")?;
-        mapping.bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
-        Ok(())
+        self.load_bytes(address, &value.to_le_bytes())
     }
 
     pub fn load_bytes(&mut self, base: Guest64Addr, bytes: &[u8]) -> Result<(), &'static str> {
-        let (&region_base, _) = self
-            .regions
-            .range(..=base)
-            .next_back()
-            .ok_or("64-bit memory access is unmapped")?;
-        let (mapping, offset) = self.mapping(base, bytes.len())?;
-        let _ = mapping;
-        let mapping = self
-            .regions
-            .get_mut(&region_base)
-            .ok_or("64-bit memory access is unmapped")?;
-        mapping.bytes[offset..offset + bytes.len()].copy_from_slice(bytes);
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let mut address = base;
+        let mut source_offset = 0;
+        while source_offset < bytes.len() {
+            let (&region_base, mapping) = self
+                .regions
+                .range(..=address)
+                .next_back()
+                .ok_or("64-bit memory is unmapped")?;
+            let offset = usize::try_from(address - region_base)
+                .map_err(|_| "64-bit memory offset overflows host usize")?;
+            let available = mapping.bytes.len().saturating_sub(offset);
+            let count = available.min(bytes.len() - source_offset);
+            if count == 0 {
+                return Err("64-bit memory load is out of bounds");
+            }
+            let mapping = self
+                .regions
+                .get_mut(&region_base)
+                .ok_or("64-bit memory is unmapped")?;
+            mapping.bytes[offset..offset + count]
+                .copy_from_slice(&bytes[source_offset..source_offset + count]);
+            source_offset += count;
+            address = address
+                .checked_add(count as u64)
+                .ok_or("64-bit memory address overflows")?;
+        }
         Ok(())
     }
 
@@ -204,8 +209,42 @@ impl Mem64 {
         bytes: &[u8],
         access: AccessType,
     ) -> Result<(), &'static str> {
-        self.slice_mut_with_access(base, bytes.len(), access)?
-            .copy_from_slice(bytes);
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let mut address = base;
+        let mut source_offset = 0;
+        while source_offset < bytes.len() {
+            let (&region_base, mapping) = self
+                .regions
+                .range(..=address)
+                .next_back()
+                .ok_or("64-bit memory is unmapped")?;
+            if !mapping.permissions.contains(access.permission()) {
+                return Err(match access {
+                    AccessType::Read => "64-bit memory read protection fault",
+                    AccessType::Write => "64-bit memory write protection fault",
+                    AccessType::Execute => "64-bit memory execute protection fault",
+                });
+            }
+            let offset = usize::try_from(address - region_base)
+                .map_err(|_| "64-bit memory offset overflows host usize")?;
+            let available = mapping.bytes.len().saturating_sub(offset);
+            let count = available.min(bytes.len() - source_offset);
+            if count == 0 {
+                return Err("64-bit memory write is out of bounds");
+            }
+            let mapping = self
+                .regions
+                .get_mut(&region_base)
+                .ok_or("64-bit memory is unmapped")?;
+            mapping.bytes[offset..offset + count]
+                .copy_from_slice(&bytes[source_offset..source_offset + count]);
+            source_offset += count;
+            address = address
+                .checked_add(count as u64)
+                .ok_or("64-bit memory address overflows")?;
+        }
         Ok(())
     }
 
@@ -216,8 +255,35 @@ impl Mem64 {
         size: Guest64USize,
     ) -> Result<(), &'static str> {
         let size = usize::try_from(size).map_err(|_| "64-bit fill is too large for this host")?;
-        let target = self.slice_mut_with_access(base, size, AccessType::Write)?;
-        target.fill(value);
+        if size == 0 {
+            return Ok(());
+        }
+        let mut address = base;
+        let end = base
+            .checked_add(size as u64)
+            .ok_or("64-bit fill address overflows")?;
+        while address < end {
+            let (&region_base, mapping) = self
+                .regions
+                .range(..=address)
+                .next_back()
+                .ok_or("64-bit memory is unmapped")?;
+            if !mapping.permissions.contains(AccessType::Write.permission()) {
+                return Err("64-bit memory write protection fault");
+            }
+            let offset = usize::try_from(address - region_base)
+                .map_err(|_| "64-bit memory offset overflows host usize")?;
+            let count = (mapping.bytes.len() - offset).min((end - address) as usize);
+            if count == 0 {
+                return Err("64-bit memory fill is out of bounds");
+            }
+            let mapping = self
+                .regions
+                .get_mut(&region_base)
+                .ok_or("64-bit memory is unmapped")?;
+            mapping.bytes[offset..offset + count].fill(value);
+            address += count as u64;
+        }
         Ok(())
     }
 
@@ -228,12 +294,11 @@ impl Mem64 {
         size: Guest64USize,
     ) -> Result<(), &'static str> {
         let size = usize::try_from(size).map_err(|_| "64-bit copy is too large for this host")?;
-        let bytes = self
-            .slice_with_access(source, size, AccessType::Read)?
-            .to_vec();
-        self.slice_mut_with_access(destination, size, AccessType::Write)?
-            .copy_from_slice(&bytes);
-        Ok(())
+        if size == 0 {
+            return Ok(());
+        }
+        let bytes = self.read_bytes_with_access(source, size, AccessType::Read)?;
+        self.write_bytes_with_access(destination, &bytes, AccessType::Write)
     }
 
     pub fn cstr_len(
@@ -267,9 +332,46 @@ impl Mem64 {
         size: Guest64USize,
     ) -> Result<Vec<u8>, &'static str> {
         let size = usize::try_from(size).map_err(|_| "64-bit read is too large for this host")?;
-        Ok(self
-            .slice_with_access(base, size, AccessType::Read)?
-            .to_vec())
+        self.read_bytes_with_access(base, size, AccessType::Read)
+    }
+
+    fn read_bytes_with_access(
+        &self,
+        base: Guest64Addr,
+        size: usize,
+        access: AccessType,
+    ) -> Result<Vec<u8>, &'static str> {
+        if size == 0 {
+            return Ok(Vec::new());
+        }
+        let mut bytes = Vec::with_capacity(size);
+        let mut address = base;
+        while bytes.len() < size {
+            let (&region_base, mapping) = self
+                .regions
+                .range(..=address)
+                .next_back()
+                .ok_or("64-bit memory is unmapped")?;
+            if !mapping.permissions.contains(access.permission()) {
+                return Err(match access {
+                    AccessType::Read => "64-bit memory read protection fault",
+                    AccessType::Write => "64-bit memory write protection fault",
+                    AccessType::Execute => "64-bit memory execute protection fault",
+                });
+            }
+            let offset = usize::try_from(address - region_base)
+                .map_err(|_| "64-bit memory offset overflows host usize")?;
+            let available = mapping.bytes.len().saturating_sub(offset);
+            let count = available.min(size - bytes.len());
+            if count == 0 {
+                return Err("64-bit memory read is out of bounds");
+            }
+            bytes.extend_from_slice(&mapping.bytes[offset..offset + count]);
+            address = address
+                .checked_add(count as u64)
+                .ok_or("64-bit memory address overflows")?;
+        }
+        Ok(bytes)
     }
     pub fn host_ptr(
         &self,
@@ -460,10 +562,10 @@ impl Mem64 {
         access: AccessType,
     ) -> Result<T, &'static str> {
         let size = std::mem::size_of::<T>();
-        let source = self.slice_with_access(addr, size, access)?;
+        let bytes = self.read_bytes_with_access(addr, size, access)?;
         let mut value = std::mem::MaybeUninit::<T>::uninit();
         unsafe {
-            std::ptr::copy_nonoverlapping(source.as_ptr(), value.as_mut_ptr().cast(), size);
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), value.as_mut_ptr().cast(), size);
             Ok(value.assume_init())
         }
     }
@@ -475,13 +577,9 @@ impl Mem64 {
         access: AccessType,
     ) -> Result<(), &'static str> {
         let size = std::mem::size_of::<T>();
-        let target = self.slice_mut_with_access(addr, size, access)?;
-        unsafe {
-            std::ptr::copy_nonoverlapping((&value as *const T).cast(), target.as_mut_ptr(), size)
-        }
-        Ok(())
+        let bytes = unsafe { std::slice::from_raw_parts((&value as *const T).cast::<u8>(), size) };
+        self.write_bytes_with_access(addr, bytes, access)
     }
-
     pub fn read<T: SafeRead + Copy>(&self, addr: Guest64Addr) -> Result<T, &'static str> {
         self.read_with_access(addr, AccessType::Read)
     }
@@ -605,5 +703,20 @@ mod tests {
         assert!(mem.free(address));
         assert!(mem.read_u8(address).is_err());
         assert!(!mem.free(address));
+    }
+
+    #[test]
+    fn bulk_operations_cross_adjacent_mappings() {
+        let mut mem = Mem64::new();
+        mem.map_zeroed(0x1_0000_0000, 0x10).unwrap();
+        mem.map_zeroed(0x1_0000_0010, 0x10).unwrap();
+        mem.write_bytes(0x1_0000_000c, &[1, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap();
+        assert_eq!(
+            mem.read_bytes(0x1_0000_000c, 8).unwrap(),
+            [1, 2, 3, 4, 5, 6, 7, 8]
+        );
+        mem.fill_bytes(0x1_0000_000e, 0xaa, 4).unwrap();
+        assert_eq!(mem.read_bytes(0x1_0000_000e, 4).unwrap(), [0xaa; 4]);
     }
 }
