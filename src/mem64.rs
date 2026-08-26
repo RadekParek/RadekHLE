@@ -298,6 +298,29 @@ impl Mem64 {
         self.allocations.get(&address).copied()
     }
 
+    pub fn realloc(
+        &mut self,
+        address: Guest64Addr,
+        size: Guest64USize,
+    ) -> Result<Guest64Addr, &'static str> {
+        if address == 0 {
+            return self.alloc_zeroed(size);
+        }
+        let old_size = self
+            .allocation_size(address)
+            .ok_or("64-bit realloc pointer is not a live allocation")?;
+        let size = size.max(1);
+        if size <= old_size {
+            return Ok(address);
+        }
+        let replacement = self.alloc_zeroed(size)?;
+        self.copy_bytes(replacement, address, old_size)?;
+        if !self.free(address) {
+            return Err("64-bit realloc lost its source allocation");
+        }
+        Ok(replacement)
+    }
+
     pub fn alloc_zeroed(&mut self, size: Guest64USize) -> Result<Guest64Addr, &'static str> {
         self.alloc_zeroed_with_permissions(size, Permissions::read_write())
     }
@@ -552,6 +575,27 @@ mod tests {
         assert!(mem.read_code_u32(0x1_0000_0000).is_ok());
         assert!(mem.write_u32(0x1_0000_0000, 1).is_err());
         assert!(mem.read_u32(0x1_0000_0000).is_ok());
+    }
+
+    #[test]
+    fn realloc_grows_and_releases_the_old_allocation() {
+        let mut mem = Mem64::new();
+        let address = mem.alloc_zeroed(32).unwrap();
+        mem.write_u64(address, 0x1234_5678_9abc_def0).unwrap();
+        let replacement = mem.realloc(address, 64).unwrap();
+        assert_ne!(replacement, address);
+        assert_eq!(mem.read_u64(replacement).unwrap(), 0x1234_5678_9abc_def0);
+        assert_eq!(mem.allocation_size(replacement), Some(64));
+        assert_eq!(mem.allocation_size(address), None);
+        assert!(mem.read_u64(address).is_err());
+    }
+
+    #[test]
+    fn realloc_keeps_the_allocation_when_shrinking() {
+        let mut mem = Mem64::new();
+        let address = mem.alloc_zeroed(32).unwrap();
+        assert_eq!(mem.realloc(address, 1).unwrap(), address);
+        assert_eq!(mem.allocation_size(address), Some(32));
     }
 
     #[test]

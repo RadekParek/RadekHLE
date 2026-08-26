@@ -2324,13 +2324,8 @@ pub fn dispatch(
         }
         "realloc" | "malloc_zone_realloc" => {
             let old = context.regs[0];
-            let size = context.regs[1];
-            let address = mem.alloc_zeroed(size).map_err(str::to_owned)?;
-            if old != 0 {
-                if let Some(old_size) = mem.allocation_size(old) {
-                    mem.copy_bytes(address, old, old_size.min(size)).map_err(str::to_owned)?;
-                }
-            }
+            let size = context.regs[1].max(1);
+            let address = mem.realloc(old, size).map_err(str::to_owned)?;
             return_value(context, address);
             Ok(true)
         }
