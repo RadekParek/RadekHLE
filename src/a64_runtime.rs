@@ -2358,6 +2358,8 @@ pub fn dispatch(
         }
         "realloc" | "malloc_zone_realloc" => {
             let old = context.regs[0];
+            let size = context.regs[1].max(1);
+            let address = mem.realloc(old, size).map_err(str::to_owned)?;
             let requested_size = context.regs[1];
             let Some(size) = normalize_arm64_allocation_size(requested_size) else {
                 return_value(context, 0);
