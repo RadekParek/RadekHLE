@@ -806,7 +806,9 @@ mod tests {
         let base = 0x1_0000_0000;
         let size = 128 * 1024;
         mem.map_zeroed(base, size as u64).unwrap();
-        let source: Vec<u8> = (0..size).map(|index| (index as u8).wrapping_mul(37)).collect();
+        let source: Vec<u8> = (0..size)
+            .map(|index| (index as u8).wrapping_mul(37))
+            .collect();
         mem.write_bytes(base, &source).unwrap();
         mem.copy_bytes_overlap_safe(base + 1, base, (size - 1) as u64)
             .unwrap();

@@ -43,6 +43,7 @@ const A64_KIND_DICTIONARY: u64 = 32;
 const A64_KIND_DATA: u64 = 33;
 const A64_KIND_SET: u64 = 34;
 const A64_UIVIEWCONTROLLER_VIEW_IVAR: u64 = 0x148;
+const MAX_ARM64_PTHREAD_WORKERS: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum A64GraphicsBackend {
@@ -139,6 +140,7 @@ pub struct RuntimeState {
     pub next_pthread_id: u64,
     pub next_pthread_key: u64,
     pub pthread_handles: HashMap<u64, u64>,
+    pub pthread_finished: HashSet<u64>,
     pub pthread_once_controls: HashSet<u64>,
     pub pthread_key_values: HashMap<u64, u64>,
     pub render_diagnostics: A64RenderDiagnostics,
@@ -270,6 +272,7 @@ impl RuntimeState {
             next_pthread_id: 0x2000_0000,
             next_pthread_key: 1,
             pthread_handles: HashMap::new(),
+            pthread_finished: HashSet::new(),
             pthread_once_controls: HashSet::new(),
             pthread_key_values: HashMap::new(),
             render_diagnostics: A64RenderDiagnostics::default(),
@@ -498,10 +501,10 @@ pub fn can_dispatch(symbol: &str) -> bool {
         | "memset_pattern4" | "memset_pattern8" | "memset_pattern16"
         | "cxa_atexit" | "atexit" | "pthread_mutex_lock"
         | "pthread_mutex_unlock" | "pthread_mutex_init" | "pthread_mutex_destroy" | "pthread_mutex_trylock"
-        | "pthread_once" | "pthread_key_create" | "pthread_getspecific" | "pthread_setspecific"
-        | "pthread_condattr_init" | "pthread_condattr_destroy" | "pthread_mutexattr_init" | "pthread_mutexattr_destroy"
+        | "pthread_once" | "pthread_key_create" | "pthread_key_delete" | "pthread_getspecific" | "pthread_setspecific"
+        | "pthread_condattr_init" | "pthread_condattr_destroy" | "pthread_condattr_setpshared" | "pthread_condattr_getpshared" | "pthread_condattr_setclock" | "pthread_condattr_getclock" | "pthread_mutexattr_init" | "pthread_mutexattr_destroy" | "pthread_mutexattr_setpshared" | "pthread_mutexattr_settype" | "pthread_mutexattr_gettype" | "pthread_mutexattr_setprotocol" | "pthread_mutexattr_getprotocol" | "pthread_mutexattr_setprioceiling" | "pthread_mutexattr_getprioceiling"
         | "pthread_cond_init" | "pthread_cond_destroy" | "pthread_cond_wait" | "pthread_cond_signal" | "pthread_cond_broadcast"
-        | "pthread_create" | "pthread_join" | "pthread_setname_np" | "pthread_self" | "gettimeofday" | "sched_yield" | "abort" | "exit" | "_exit"
+        | "pthread_create" | "pthread_join" | "pthread_detach" | "pthread_equal" | "pthread_setname_np" | "pthread_self" | "pthread_exit" | "gettimeofday" | "sched_yield" | "abort" | "exit" | "_exit" | "ZNSt3__16thread20hardware_concurrencyEv"
         | "_Znwm" | "_Znam" | "_ZdlPv" | "_ZdaPv"
         | "__Znwm" | "__Znam" | "__ZdlPv" | "__ZdaPv"
         | "Znwm" | "Znam" | "ZdlPv" | "ZdaPv" | "ZnwmRKSt9nothrow_t"
@@ -527,7 +530,7 @@ pub fn can_dispatch(symbol: &str) -> bool {
         | "ZNKSt3__121__basic_string_commonILb1EE20__throw_length_errorEv"
         | "ZNKSt3__16locale9has_facetERNS0_2idE" | "ZNKSt3__16locale9use_facetERNS0_2idE"
         | "ZNKSt3__18ios_base6getlocEv" | "ZNKSt3__111this_thread9sleep_forERKNS_6chrono8durationIxNS_5ratioILl1ELl1000000000EEEEE"
-        | "ZNSt3__112__next_primeEm" | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5eraseEmm"
+        |         "ZNSt3__112__next_primeEm" | "ZNSt3__16thread20hardware_concurrencyEv" | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5eraseEmm"
         | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcmm"
         | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEmc"
         | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKc"
@@ -1440,15 +1443,21 @@ fn objc_send(
         "release" => 0,
         "class" => receiver_class,
         "respondsToSelector:" | "isKindOfClass:" | "hasUnifiedMemory" => 1,
-        "count" if kind == A64_KIND_ARRAY || kind == A64_KIND_DICTIONARY || kind == A64_KIND_SET => objc_field(mem, receiver, 56),
+        "count"
+            if kind == A64_KIND_ARRAY || kind == A64_KIND_DICTIONARY || kind == A64_KIND_SET =>
+        {
+            objc_field(mem, receiver, 56)
+        }
         "objectForKey:" if kind == A64_KIND_DICTIONARY => {
             let key = context.regs[2];
-            log_dbg!("ARM64 NSDictionary objectForKey: receiver={:#x} key={:#x}", receiver, key);
+            log_dbg!(
+                "ARM64 NSDictionary objectForKey: receiver={:#x} key={:#x}",
+                receiver,
+                key
+            );
             0
         }
-        "allKeys" if kind == A64_KIND_DICTIONARY => {
-            objc_object(mem, A64_KIND_ARRAY)?
-        }
+        "allKeys" if kind == A64_KIND_DICTIONARY => objc_object(mem, A64_KIND_ARRAY)?,
         "firstObject" if kind == A64_KIND_ARRAY => {
             let result = if objc_field(mem, receiver, 56) > 0 {
                 let elements = objc_field(mem, receiver, 64);
@@ -1463,7 +1472,8 @@ fn objc_send(
             let count = objc_field(mem, receiver, 56);
             let result = if count > 0 {
                 let elements = objc_field(mem, receiver, 64);
-                mem.read_u64(elements + (count - 1) * 8).map_err(str::to_owned)?
+                mem.read_u64(elements + (count - 1) * 8)
+                    .map_err(str::to_owned)?
             } else {
                 0
             };
@@ -1665,7 +1675,9 @@ fn objc_send(
         }
         "name" => objc_string(mem, "RadekHLE Metal device")?,
         "UTF8String" => objc_field(mem, receiver, 56),
-        "length" if kind == A64_KIND_STRING || kind == A64_KIND_BUFFER || kind == A64_KIND_DATA => objc_field(mem, receiver, 64),
+        "length" if kind == A64_KIND_STRING || kind == A64_KIND_BUFFER || kind == A64_KIND_DATA => {
+            objc_field(mem, receiver, 64)
+        }
         "bytes" if kind == A64_KIND_DATA => objc_field(mem, receiver, 56),
         "containsObject:" if kind == A64_KIND_SET => 1,
         "boolValue" if kind == A64_KIND_STRING => u64::from(!objc_text_eq(mem, receiver, b"0")),
@@ -1801,7 +1813,14 @@ fn objc_send(
             0
         }
         "description" => {
-            let desc = objc_string(mem, &format!("{} <{}>", receiver_class_name(mem, receiver, kind).unwrap_or_else(|| "Object".to_owned()), receiver))?;
+            let desc = objc_string(
+                mem,
+                &format!(
+                    "{} <{}>",
+                    receiver_class_name(mem, receiver, kind).unwrap_or_else(|| "Object".to_owned()),
+                    receiver
+                ),
+            )?;
             desc
         }
         "hash" => {
@@ -1819,16 +1838,22 @@ fn objc_send(
             object
         }
         _ => {
-            if state.render_diagnostics.missing_selectors.insert(selector.to_string()) {
+            if state
+                .render_diagnostics
+                .missing_selectors
+                .insert(selector.to_string())
+            {
                 log_dbg!(
                     "ARM64 missing Objective-C selector: {} on {} (receiver={:#x})",
                     selector,
-                    receiver_class_name(mem, receiver, kind).as_deref().unwrap_or("<unknown>"),
+                    receiver_class_name(mem, receiver, kind)
+                        .as_deref()
+                        .unwrap_or("<unknown>"),
                     receiver
                 );
             }
             0
-        },
+        }
     };
     if state.guest_transfer_pc.is_none() {
         return_value(context, result);
@@ -2429,26 +2454,16 @@ pub fn dispatch(
         }
         "realloc" | "malloc_zone_realloc" => {
             let old = context.regs[0];
-            let size = context.regs[1].max(1);
-            let address = mem.realloc(old, size).map_err(str::to_owned)?;
             let requested_size = context.regs[1];
             let Some(size) = normalize_arm64_allocation_size(requested_size) else {
                 return_value(context, 0);
                 return Ok(true);
             };
-            let address = match mem.alloc_zeroed(size) {
-                Ok(address) => address,
-                Err(_) => {
-                    return_value(context, 0);
-                    return Ok(true);
-                }
+            let address = if old == 0 {
+                mem.alloc_zeroed(size).map_err(str::to_owned)?
+            } else {
+                mem.realloc(old, size).map_err(str::to_owned)?
             };
-            if old != 0 {
-                if let Some(old_size) = mem.allocation_size(old) {
-                    mem.copy_bytes(address, old, old_size.min(size)).map_err(str::to_owned)?;
-                    mem.free(old);
-                }
-            }
             return_value(context, address);
             Ok(true)
         }
@@ -2730,13 +2745,13 @@ pub fn dispatch(
             return_value(context, context.regs[0]);
             Ok(true)
         }
+        "ZNSt3__16thread20hardware_concurrencyEv" => {
+            return_value(context, 4);
+            Ok(true)
+        }
         "ZNSt3__112__next_primeEm" => {
             let input = context.regs[0];
-            let result = if input == u64::MAX {
-                2
-            } else {
-                next_prime(input)
-            };
+            let result = next_prime(input);
             return_value(context, result);
             Ok(true)
         }
@@ -2791,20 +2806,23 @@ pub fn dispatch(
         "pthread_create" => {
             let output = context.regs[0];
             let start_routine = context.regs[2];
-            let thread_arg = context.regs[3];
-            let thread_id = state.next_pthread_id;
-            state.next_pthread_id = state.next_pthread_id.saturating_add(1);
             if output == 0 {
                 return_value(context, 22);
                 return Ok(true);
             }
+            if state.pthread_handles.len() >= MAX_ARM64_PTHREAD_WORKERS {
+                log_once_fmt!(
+                    "ARM64 pthread_create: worker limit ({MAX_ARM64_PTHREAD_WORKERS}) reached; returning EAGAIN for later requests"
+                );
+                return_value(context, 35);
+                return Ok(true);
+            }
+            let thread_id = state.next_pthread_id;
+            state.next_pthread_id = state.next_pthread_id.saturating_add(1);
             mem.write_u64(output, thread_id).map_err(str::to_owned)?;
             state.pthread_handles.insert(thread_id, start_routine);
             log_once_fmt!(
-                "ARM64 pthread_create: emulated worker handles enabled; repeated calls suppressed"
-            );
-            log_dbg!(
-                "ARM64 pthread_create: thread_id={thread_id:#x} start={start_routine:#x} arg={thread_arg:#x}"
+                "ARM64 pthread_create: bounded emulated worker pool enabled; repeated calls suppressed"
             );
             return_value(context, 0);
             Ok(true)
@@ -2814,7 +2832,9 @@ pub fn dispatch(
             if context.regs[1] != 0 {
                 mem.write_u64(context.regs[1], 0).map_err(str::to_owned)?;
             }
-            let result = if state.pthread_handles.remove(&thread_id).is_some() || thread_id != 0 {
+            let result = if state.pthread_handles.remove(&thread_id).is_some()
+                || state.pthread_finished.remove(&thread_id)
+            {
                 0
             } else {
                 3
@@ -2848,6 +2868,25 @@ pub fn dispatch(
             return_value(context, state.pthread_key_values.get(&context.regs[0]).copied().unwrap_or(0));
             Ok(true)
         }
+        "pthread_key_delete" => {
+            state.pthread_key_values.remove(&context.regs[0]);
+            return_value(context, 0);
+            Ok(true)
+        }
+        "pthread_detach" => {
+            state.pthread_handles.remove(&context.regs[0]);
+            state.pthread_finished.remove(&context.regs[0]);
+            return_value(context, 0);
+            Ok(true)
+        }
+        "pthread_equal" => {
+            return_value(context, u64::from(context.regs[0] == context.regs[1]));
+            Ok(true)
+        }
+        "pthread_exit" => {
+            return_value(context, 0);
+            Ok(true)
+        }
         "gettimeofday" => {
             if context.regs[0] != 0 {
                 let now = std::time::SystemTime::now()
@@ -2871,10 +2910,18 @@ pub fn dispatch(
             return_value(context, 0);
             Ok(true)
         }
-        "pthread_condattr_destroy" | "pthread_mutexattr_destroy" | "pthread_cond_destroy" | "pthread_cond_wait" | "pthread_cond_signal" | "pthread_cond_broadcast" | "pthread_mutex_trylock" => {
+        "pthread_condattr_destroy" | "pthread_mutexattr_destroy" | "pthread_cond_destroy"
+        | "pthread_cond_wait" | "pthread_cond_signal" | "pthread_cond_broadcast"
+        | "pthread_mutex_trylock" | "pthread_mutexattr_setpshared"
+        | "pthread_mutexattr_settype" | "pthread_mutexattr_gettype"
+        | "pthread_mutexattr_setprotocol" | "pthread_mutexattr_getprotocol"
+        | "pthread_mutexattr_setprioceiling" | "pthread_mutexattr_getprioceiling"
+        | "pthread_condattr_setpshared" | "pthread_condattr_getpshared"
+        | "pthread_condattr_setclock" | "pthread_condattr_getclock" => {
             return_value(context, 0);
             Ok(true)
         }
+
         "pthread_cond_init" => {
             let output = context.regs[0];
             if output != 0 {
@@ -2888,6 +2935,10 @@ pub fn dispatch(
             if output != 0 {
                 mem.fill_bytes(output, 0, 12).map_err(str::to_owned)?;
             }
+            return_value(context, 0);
+            Ok(true)
+        }
+        "pthread_setname_np" => {
             return_value(context, 0);
             Ok(true)
         }

@@ -62,15 +62,6 @@ fn host_call_site(context: &touchHLE_DynarmicA64Context) -> u64 {
     context.regs[30].saturating_sub(4)
 }
 
-fn callback_event_context(context: &touchHLE_DynarmicA64Context) -> String {
-    format!(
-        "pc={:#x} lr={:#x} sp={:#x} fp={:#x} x0={:#x} x1={:#x} x2={:#x} x3={:#x} x4={:#x} x5={:#x} x6={:#x} x7={:#x}",
-        context.pc, context.regs[30], context.sp, context.regs[29], context.regs[0],
-        context.regs[1], context.regs[2], context.regs[3], context.regs[4], context.regs[5],
-        context.regs[6], context.regs[7],
-    )
-}
-
 fn decode_instruction(instruction: u32, pc: u64) -> String {
     if instruction & 0x3b00_0000 == 0x3900_0000 {
         let width = 1_u64 << ((instruction >> 30) & 3);
@@ -1243,15 +1234,14 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                         context.pc,
                     );
                 }
-                if host_dispatches <= 16 || host_dispatches % 1000 == 0 {
+                if host_dispatches <= 16 || host_dispatches.is_power_of_two() {
                     log_dbg!(
-                        "ARM64 host binding #{}: {} host_stub_pc={:#x} guest_call_site={:#x} continuation_pc={:#x} {}",
+                        "ARM64 host binding #{}: {} host_stub_pc={:#x} guest_call_site={:#x} continuation_pc={:#x}",
                         host_dispatches,
                         symbol,
                         context.pc,
                         call_site,
                         continuation_pc,
-                        callback_event_context(&context),
                     );
                 }
                 if context.sp == 0 || context.sp & 15 != 0 {

@@ -7,7 +7,7 @@
 
 use crate::abi::GuestFunction;
 use crate::dyld::{export_c_func, FunctionExports};
-use crate::libc::errno::{EDEADLK, EINVAL, ESRCH};
+use crate::libc::errno::{EAGAIN, EDEADLK, EINVAL, ESRCH};
 use crate::mem::{
     self, ConstPtr, ConstVoidPtr, GuestUSize, MutPtr, MutVoidPtr, Ptr, SafeRead, PAGE_SIZE,
 };
@@ -58,6 +58,7 @@ const DEFAULT_ATTR: pthread_attr_t = pthread_attr_t {
     sched_param: sched_param { sched_priority: 0 },
     _unused: [0; 5],
 };
+const MAX_EMULATED_WORKER_THREADS: usize = 16;
 
 /// Apple's implementation is a 4-byte magic number followed by a massive
 /// (>4KiB) opaque region. We will store the actual data on the host instead.
@@ -323,6 +324,13 @@ pub fn pthread_create(
     } else {
         DEFAULT_ATTR
     };
+    let created_workers = env.threads.len().saturating_sub(1);
+    if created_workers >= MAX_EMULATED_WORKER_THREADS {
+        log_once!(
+            "pthread_create: emulated worker limit reached; returning EAGAIN for later requests"
+        );
+        return EAGAIN;
+    }
     let thread_id = env.new_thread(start_routine, user_data, attr.stacksize);
 
     let opaque = env.mem.alloc_and_write(OpaqueThread {

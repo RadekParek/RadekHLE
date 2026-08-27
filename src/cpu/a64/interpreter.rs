@@ -363,6 +363,11 @@ impl A64Interpreter {
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
+        if instruction & 0x3f00_0000 == 0x2d00_0000 {
+            self.execute_simd_pair(memory, context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
         if instruction & 0x3b00_0000 == 0x3900_0000 {
             self.execute_load_store_unsigned(memory, context, instruction)?;
             context.pc = pc.wrapping_add(4);
@@ -1111,7 +1116,81 @@ impl A64Interpreter {
         }
         Ok(())
     }
-
+    fn execute_simd_pair(
+        &self,
+        memory: &mut Mem64,
+        context: &mut touchHLE_DynarmicA64Context,
+        instruction: u32,
+    ) -> Result<(), InterpreterError> {
+        let load = instruction & 0x0040_0000 != 0;
+        let (size, is_quad) = if instruction & 0x8000_0000 != 0 {
+            (16_u64, true)
+        } else if instruction & 0x4000_0000 != 0 {
+            (8, false)
+        } else {
+            (4, false)
+        };
+        let base_reg = ((instruction >> 5) & 31) as usize;
+        let base = read_sp_or_reg(context, base_reg, true);
+        let offset = sign_extend(((instruction >> 15) & 0x7f) as u64, 7) << size.trailing_zeros();
+        let mode = (instruction >> 23) & 3;
+        let address = match mode {
+            1 => base,
+            2 | 3 => base.wrapping_add_signed(offset),
+            _ => return Err(InterpreterError::Undefined),
+        };
+        let first = (instruction & 31) as usize;
+        let second = ((instruction >> 10) & 31) as usize;
+        let second_address = address.checked_add(size).ok_or(InterpreterError::Memory(
+            "SIMD pair address overflows",
+            address,
+        ))?;
+        if load {
+            let first_value = if is_quad {
+                memory.read_u128(address)
+            } else if size == 8 {
+                memory.read_u64(address).map(|value| [value, 0])
+            } else {
+                memory.read_u32(address).map(|value| [u64::from(value), 0])
+            }
+            .map_err(|error| InterpreterError::Memory(error, address))?;
+            let second_value = if is_quad {
+                memory.read_u128(second_address)
+            } else if size == 8 {
+                memory.read_u64(second_address).map(|value| [value, 0])
+            } else {
+                memory
+                    .read_u32(second_address)
+                    .map(|value| [u64::from(value), 0])
+            }
+            .map_err(|error| InterpreterError::Memory(error, second_address))?;
+            context.vectors[first] = first_value;
+            context.vectors[second] = second_value;
+        } else {
+            let first_write = if is_quad {
+                memory.write_u128(address, context.vectors[first])
+            } else if size == 8 {
+                memory.write_u64(address, context.vectors[first][0])
+            } else {
+                memory.write_u32(address, context.vectors[first][0] as u32)
+            };
+            first_write.map_err(|error| InterpreterError::Memory(error, address))?;
+            let second_write = if is_quad {
+                memory.write_u128(second_address, context.vectors[second])
+            } else if size == 8 {
+                memory.write_u64(second_address, context.vectors[second][0])
+            } else {
+                memory.write_u32(second_address, context.vectors[second][0] as u32)
+            };
+            second_write.map_err(|error| InterpreterError::Memory(error, second_address))?;
+        }
+        if mode == 1 {
+            write_sp_or_reg(context, base_reg, base.wrapping_add_signed(offset), true);
+        } else if mode == 3 {
+            write_sp_or_reg(context, base_reg, address, true);
+        }
+        Ok(())
+    }
     fn execute_load_store_unsigned(
         &self,
         memory: &mut Mem64,
@@ -1935,6 +2014,40 @@ mod tests {
 
     const CODE: u64 = 0x1_0000_0000;
     const STACK: u64 = 0x7fff_ffff_0000;
+
+    #[test]
+    fn scalar_simd_pair_store_and_load_preserve_lanes() {
+        let mut memory = Mem64::new();
+        memory
+            .map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute())
+            .unwrap();
+        const SP: u64 = 0x7fff_fffe_ff00;
+        memory
+            .map_zeroed_with_permissions(SP, 0x1000, Permissions::read_write())
+            .unwrap();
+        let instructions = [0x2dbe_23e9_u32, 0x2cc2_23e9_u32];
+        for (index, instruction) in instructions.iter().enumerate() {
+            memory
+                .load_bytes(CODE + index as u64 * 4, &instruction.to_le_bytes())
+                .unwrap();
+        }
+        let mut context = touchHLE_DynarmicA64Context {
+            pc: CODE,
+            sp: SP,
+            ..Default::default()
+        };
+        context.vectors[9] = [0x1111_2222_3333_4444, 0x5555_6666_7777_8888];
+        context.vectors[8] = [0x9999_aaaa_bbbb_cccc, 0xdddd_eeee_ffff_0000];
+        let mut interpreter = A64Interpreter::new();
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(context.sp, SP - 16);
+        context.vectors[9] = [0; 2];
+        context.vectors[8] = [0; 2];
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(context.vectors[9][0], 0x3333_4444);
+        assert_eq!(context.vectors[8][0], 0xeeee_ffff);
+        assert_eq!(context.sp, SP);
+    }
 
     #[test]
     fn exact_startup_stp_updates_sp_and_stores_pair() {
