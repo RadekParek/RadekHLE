@@ -124,6 +124,16 @@ impl A64Interpreter {
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
+        if instruction & 0x1f20_fc00 == 0x1e20_1000 {
+            self.execute_scalar_fmov_immediate(context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
+        if matches!(instruction & 0x1f3f_fc00, 0x1e22_c000 | 0x1e22_4000) {
+            self.execute_scalar_float_convert(context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
         if matches!(
             instruction & 0xffff_fc00,
             0x9e66_0000 | 0x9e67_0000 | 0x1e26_0000 | 0x1e27_0000
@@ -432,6 +442,51 @@ impl A64Interpreter {
             }
         } else {
             context.pstate = (context.pstate & !(NZCV_N | NZCV_Z | NZCV_C | NZCV_V)) | (nzcv << 28);
+        }
+        Ok(())
+    }
+
+    fn execute_scalar_fmov_immediate(
+        &self,
+        context: &mut touchHLE_DynarmicA64Context,
+        instruction: u32,
+    ) -> Result<(), InterpreterError> {
+        let double = instruction & 0x0040_0000 != 0;
+        let immediate = ((instruction >> 13) & 0xff) as u8;
+        let sign = if immediate & 0x80 != 0 { 1u64 } else { 0 };
+        let exponent_field = ((immediate >> 4) & 0x7) as i32;
+        let exponent = if exponent_field & 0x4 != 0 {
+            0x80 - (8 - exponent_field)
+        } else {
+            0x80 + exponent_field
+        } as u64;
+        let fraction = (immediate & 0xf) as u64;
+        let destination = (instruction & 31) as usize;
+        if double {
+            context.vectors[destination][0] =
+                (sign << 63) | ((exponent + 896) << 52) | (fraction << 48);
+        } else {
+            context.vectors[destination][0] =
+                ((sign << 31) | (exponent << 23) | (fraction << 19)) as u32 as u64;
+            context.vectors[destination][1] = 0;
+        }
+        Ok(())
+    }
+
+    fn execute_scalar_float_convert(
+        &self,
+        context: &mut touchHLE_DynarmicA64Context,
+        instruction: u32,
+    ) -> Result<(), InterpreterError> {
+        let destination = (instruction & 31) as usize;
+        let source = ((instruction >> 5) & 31) as usize;
+        if instruction & 0x0040_0000 != 0 {
+            let value = f64::from_bits(context.vectors[source][0]) as f32;
+            context.vectors[destination][0] = value.to_bits() as u64;
+            context.vectors[destination][1] = 0;
+        } else {
+            let value = f32::from_bits(context.vectors[source][0] as u32) as f64;
+            context.vectors[destination][0] = value.to_bits();
         }
         Ok(())
     }
@@ -1746,6 +1801,35 @@ mod scalar_floating_tests {
     #[test]
     fn scalar_frintz_truncates_negative_fraction() {
         assert_eq!(run(0x1e25_c000, -3.75, 0.0), (-3.0f32).to_bits() as u64);
+    }
+
+    #[test]
+    fn scalar_fmov_immediate_decodes_single_and_double_values() {
+        assert_eq!(run(0x1e2e_1000, 0.0, 0.0), 1.0f32.to_bits() as u64);
+        assert_eq!(run(0x1e6e_1000, 0.0, 0.0), 1.0f64.to_bits());
+        assert_eq!(run(0x1e3e_1000, 0.0, 0.0), (-1.0f32).to_bits() as u64);
+    }
+
+    #[test]
+    fn scalar_fcvt_double_from_single_is_decoded() {
+        let mut memory = Mem64::new();
+        memory
+            .map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute())
+            .unwrap();
+        memory
+            .load_bytes(CODE, &0x1e22_c000u32.to_le_bytes())
+            .unwrap();
+        let mut context = touchHLE_DynarmicA64Context {
+            pc: CODE,
+            ..Default::default()
+        };
+        context.vectors[0][0] = (1.5f32).to_bits() as u64;
+        assert_eq!(
+            A64Interpreter::new().run_or_step(&mut memory, &mut context, None),
+            -1
+        );
+        assert_eq!(context.vectors[0][0], 1.5f64.to_bits());
+        assert_eq!(context.pc, CODE + 4);
     }
 }
 
