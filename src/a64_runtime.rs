@@ -143,6 +143,7 @@ pub struct RuntimeState {
     pub pthread_finished: HashSet<u64>,
     pub pthread_once_controls: HashSet<u64>,
     pub pthread_key_values: HashMap<u64, u64>,
+    pub signal_handlers: HashMap<i32, u64>,
     pub render_diagnostics: A64RenderDiagnostics,
 }
 
@@ -275,6 +276,7 @@ impl RuntimeState {
             pthread_finished: HashSet::new(),
             pthread_once_controls: HashSet::new(),
             pthread_key_values: HashMap::new(),
+            signal_handlers: HashMap::new(),
             render_diagnostics: A64RenderDiagnostics::default(),
         }
     }
@@ -421,6 +423,78 @@ fn name(symbol: &str) -> &str {
     let symbol = symbol.trim_start_matches('_');
     symbol.strip_prefix('_').unwrap_or(symbol)
 }
+const LIGHT_HOST_CALLS: &[&str] = &[
+    "fabs",
+    "fabsf",
+    "sin",
+    "sinf",
+    "cos",
+    "cosf",
+    "tan",
+    "tanf",
+    "asin",
+    "asinf",
+    "acos",
+    "acosf",
+    "atan",
+    "atanf",
+    "atan2",
+    "atan2f",
+    "sinh",
+    "sinhf",
+    "cosh",
+    "coshf",
+    "tanh",
+    "tanhf",
+    "asinh",
+    "asinhf",
+    "acosh",
+    "acoshf",
+    "atanh",
+    "atanhf",
+    "log",
+    "logf",
+    "log1p",
+    "log1pf",
+    "log2",
+    "log2f",
+    "log10",
+    "log10f",
+    "exp",
+    "expf",
+    "expm1",
+    "expm1f",
+    "exp2",
+    "exp2f",
+    "pow",
+    "powf",
+    "sqrt",
+    "sqrtf",
+    "ceil",
+    "ceilf",
+    "floor",
+    "floorf",
+    "round",
+    "roundf",
+    "trunc",
+    "truncf",
+    "rint",
+    "rintf",
+    "nearbyint",
+    "nearbyintf",
+    "fmod",
+    "fmodf",
+    "fmax",
+    "fmaxf",
+    "fmin",
+    "fminf",
+    "hypot",
+    "hypotf",
+];
+
+pub fn is_light_host_call(symbol: &str) -> bool {
+    LIGHT_HOST_CALLS.contains(&name(symbol))
+}
 
 fn materialize_host_constant(mem: &mut Mem64, symbol: &str) -> Result<Option<u64>, String> {
     let normalized = name(symbol);
@@ -473,8 +547,12 @@ fn materialize_custom_constant(mem: &mut Mem64, symbol: &str) -> Option<u64> {
 
 pub fn can_dispatch(symbol: &str) -> bool {
     let symbol = name(symbol);
+    if is_light_host_call(symbol) {
+        return true;
+    }
     match symbol {
         "ARM64_nib_awake_return" | "ARM64_guest_method_return" | "ARM64_application_return" | "ARM64_application_launch_return" | "ARM64_application_active_return" => true,
+        "access" | "mkdir" | "signal" => true,
         "malloc" | "calloc" | "valloc" | "posix_memalign" | "free"
         | "malloc_zone_free" | "realloc" | "malloc_zone_realloc" | "memcpy"
         | "memmove" | "memcpy_chk" | "memmove_chk" | "memset" | "bzero"
@@ -577,6 +655,93 @@ pub fn can_dispatch(symbol: &str) -> bool {
 
 fn return_value(context: &mut touchHLE_DynarmicA64Context, value: u64) {
     A64Abi::set_return(context, value);
+}
+fn arm64_double_arg(context: &touchHLE_DynarmicA64Context, index: usize) -> f64 {
+    f64::from_bits(context.vectors[index][0])
+}
+
+fn arm64_float_arg(context: &touchHLE_DynarmicA64Context, index: usize) -> f32 {
+    f32::from_bits(context.vectors[index][0] as u32)
+}
+
+fn dispatch_arm64_math(context: &mut touchHLE_DynarmicA64Context, symbol: &str) -> bool {
+    debug_assert!(is_light_host_call(symbol));
+    let result = match symbol {
+        "fabs" => Some(arm64_double_arg(context, 0).abs()),
+        "sin" => Some(arm64_double_arg(context, 0).sin()),
+        "cos" => Some(arm64_double_arg(context, 0).cos()),
+        "tan" => Some(arm64_double_arg(context, 0).tan()),
+        "asin" => Some(arm64_double_arg(context, 0).asin()),
+        "acos" => Some(arm64_double_arg(context, 0).acos()),
+        "atan" => Some(arm64_double_arg(context, 0).atan()),
+        "atan2" => Some(arm64_double_arg(context, 0).atan2(arm64_double_arg(context, 1))),
+        "sinh" => Some(arm64_double_arg(context, 0).sinh()),
+        "cosh" => Some(arm64_double_arg(context, 0).cosh()),
+        "tanh" => Some(arm64_double_arg(context, 0).tanh()),
+        "asinh" => Some(arm64_double_arg(context, 0).asinh()),
+        "acosh" => Some(arm64_double_arg(context, 0).acosh()),
+        "atanh" => Some(arm64_double_arg(context, 0).atanh()),
+        "log" => Some(arm64_double_arg(context, 0).ln()),
+        "log1p" => Some(arm64_double_arg(context, 0).ln_1p()),
+        "log2" => Some(arm64_double_arg(context, 0).log2()),
+        "log10" => Some(arm64_double_arg(context, 0).log10()),
+        "exp" => Some(arm64_double_arg(context, 0).exp()),
+        "expm1" => Some(arm64_double_arg(context, 0).exp_m1()),
+        "exp2" => Some(arm64_double_arg(context, 0).exp2()),
+        "pow" => Some(arm64_double_arg(context, 0).powf(arm64_double_arg(context, 1))),
+        "sqrt" => Some(arm64_double_arg(context, 0).sqrt()),
+        "ceil" => Some(arm64_double_arg(context, 0).ceil()),
+        "floor" => Some(arm64_double_arg(context, 0).floor()),
+        "round" => Some(arm64_double_arg(context, 0).round()),
+        "trunc" => Some(arm64_double_arg(context, 0).trunc()),
+        "rint" | "nearbyint" => Some(arm64_double_arg(context, 0).round_ties_even()),
+        "fmod" => Some(arm64_double_arg(context, 0) % arm64_double_arg(context, 1)),
+        "fmax" => Some(arm64_double_arg(context, 0).max(arm64_double_arg(context, 1))),
+        "fmin" => Some(arm64_double_arg(context, 0).min(arm64_double_arg(context, 1))),
+        "hypot" => Some(arm64_double_arg(context, 0).hypot(arm64_double_arg(context, 1))),
+        "sinf" => Some(arm64_float_arg(context, 0).sin() as f64),
+        "cosf" => Some(arm64_float_arg(context, 0).cos() as f64),
+        "tanf" => Some(arm64_float_arg(context, 0).tan() as f64),
+        "asinf" => Some(arm64_float_arg(context, 0).asin() as f64),
+        "acosf" => Some(arm64_float_arg(context, 0).acos() as f64),
+        "atanf" => Some(arm64_float_arg(context, 0).atan() as f64),
+        "atan2f" => Some(arm64_float_arg(context, 0).atan2(arm64_float_arg(context, 1)) as f64),
+        "sinhf" => Some(arm64_float_arg(context, 0).sinh() as f64),
+        "coshf" => Some(arm64_float_arg(context, 0).cosh() as f64),
+        "tanhf" => Some(arm64_float_arg(context, 0).tanh() as f64),
+        "asinhf" => Some(arm64_float_arg(context, 0).asinh() as f64),
+        "acoshf" => Some(arm64_float_arg(context, 0).acosh() as f64),
+        "atanhf" => Some(arm64_float_arg(context, 0).atanh() as f64),
+        "logf" => Some(arm64_float_arg(context, 0).ln() as f64),
+        "log1pf" => Some(arm64_float_arg(context, 0).ln_1p() as f64),
+        "log2f" => Some(arm64_float_arg(context, 0).log2() as f64),
+        "log10f" => Some(arm64_float_arg(context, 0).log10() as f64),
+        "expf" => Some(arm64_float_arg(context, 0).exp() as f64),
+        "expm1f" => Some(arm64_float_arg(context, 0).exp_m1() as f64),
+        "exp2f" => Some(arm64_float_arg(context, 0).exp2() as f64),
+        "powf" => Some(arm64_float_arg(context, 0).powf(arm64_float_arg(context, 1)) as f64),
+        "sqrtf" => Some(arm64_float_arg(context, 0).sqrt() as f64),
+        "ceilf" => Some(arm64_float_arg(context, 0).ceil() as f64),
+        "floorf" => Some(arm64_float_arg(context, 0).floor() as f64),
+        "roundf" => Some(arm64_float_arg(context, 0).round() as f64),
+        "truncf" => Some(arm64_float_arg(context, 0).trunc() as f64),
+        "rintf" | "nearbyintf" => Some(arm64_float_arg(context, 0).round_ties_even() as f64),
+        "fmodf" => Some((arm64_float_arg(context, 0) % arm64_float_arg(context, 1)) as f64),
+        "fmaxf" => Some(arm64_float_arg(context, 0).max(arm64_float_arg(context, 1)) as f64),
+        "fminf" => Some(arm64_float_arg(context, 0).min(arm64_float_arg(context, 1)) as f64),
+        "hypotf" => Some(arm64_float_arg(context, 0).hypot(arm64_float_arg(context, 1)) as f64),
+        _ => None,
+    };
+    let Some(result) = result else {
+        return false;
+    };
+    if symbol.ends_with('f') {
+        context.vectors[0][0] = (result as f32).to_bits() as u64;
+        context.vectors[0][1] = 0;
+    } else {
+        context.vectors[0][0] = result.to_bits();
+    }
+    true
 }
 
 fn c_string(mem: &Mem64, address: u64) -> Option<Vec<u8>> {
@@ -2176,6 +2341,9 @@ pub fn dispatch(
     state.host_dispatches = state.host_dispatches.saturating_add(1);
     let symbol = name(symbol);
     state.last_symbol = Some(symbol.to_owned());
+    if is_light_host_call(symbol) {
+        return Ok(dispatch_arm64_math(context, symbol));
+    }
     if symbol == "ARM64_guest_method_return" {
         let return_pc = state
             .guest_method_return_pcs
@@ -2352,6 +2520,21 @@ pub fn dispatch(
                     Ok(true)
                 }
             }
+        }
+        "access" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "mkdir" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "signal" => {
+            let signum = context.regs[0] as i32;
+            let handler = context.regs[1];
+            let previous = state.signal_handlers.insert(signum, handler).unwrap_or(0);
+            return_value(context, previous);
+            Ok(true)
         }
         "NSSearchPathForDirectoriesInDomains" => {
             let path = arm64_search_path(state, context.regs[0], context.regs[1]);
@@ -3213,10 +3396,6 @@ pub fn dispatch(
     }
 }
 
-fn arm64_float_arg(context: &touchHLE_DynarmicA64Context, index: usize) -> f32 {
-    f32::from_bits(context.vectors[index][0] as u32)
-}
-
 fn arm64_const_ptr(
     mem: &Mem64,
     address: u64,
@@ -4046,4 +4225,91 @@ fn arm64_gl_call(
     }
     return_value(context, 0);
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state() -> RuntimeState {
+        RuntimeState::new(
+            (8, 0, 0),
+            A64GraphicsBackend::OpenGLESCompatibility,
+            DeviceFamily::iPhone5s,
+            DeviceOrientation::Portrait,
+        )
+    }
+
+    #[test]
+    fn light_math_dispatches_double_and_single_precision_values() {
+        let mut memory = Mem64::new();
+        let mut runtime_state = state();
+        let mut context = touchHLE_DynarmicA64Context::default();
+        context.vectors[0][0] = (0.5_f64).to_bits();
+        assert!(dispatch(&mut memory, &mut context, "_sin", &mut runtime_state, None).unwrap());
+        assert!((f64::from_bits(context.vectors[0][0]) - 0.5_f64.sin()).abs() < f64::EPSILON);
+        context.vectors[0][0] = (0.5_f32).to_bits() as u64;
+        assert!(dispatch(
+            &mut memory,
+            &mut context,
+            "_sqrtf",
+            &mut runtime_state,
+            None
+        )
+        .unwrap());
+        assert_eq!(f32::from_bits(context.vectors[0][0] as u32), 0.5_f32.sqrt());
+    }
+
+    #[test]
+    fn light_math_symbols_are_classified_without_callback_counting() {
+        assert!(is_light_host_call("_sin"));
+        assert!(is_light_host_call("__sqrt"));
+        assert!(!is_light_host_call("_malloc"));
+    }
+
+    #[test]
+    fn filesystem_and_signal_stubs_return_success() {
+        let mut memory = Mem64::new();
+        let mut runtime_state = state();
+        let mut context = touchHLE_DynarmicA64Context::default();
+        assert!(dispatch(
+            &mut memory,
+            &mut context,
+            "_access",
+            &mut runtime_state,
+            None
+        )
+        .unwrap());
+        assert_eq!(context.regs[0], 0);
+        assert!(dispatch(
+            &mut memory,
+            &mut context,
+            "_mkdir",
+            &mut runtime_state,
+            None
+        )
+        .unwrap());
+        assert_eq!(context.regs[0], 0);
+        context.regs[0] = 2;
+        context.regs[1] = 0x1234;
+        assert!(dispatch(
+            &mut memory,
+            &mut context,
+            "_signal",
+            &mut runtime_state,
+            None
+        )
+        .unwrap());
+        assert_eq!(context.regs[0], 0);
+        context.regs[0] = 2;
+        assert!(dispatch(
+            &mut memory,
+            &mut context,
+            "_signal",
+            &mut runtime_state,
+            None
+        )
+        .unwrap());
+        assert_eq!(context.regs[0], 0x1234);
+    }
 }

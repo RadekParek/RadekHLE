@@ -1181,11 +1181,13 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             }
             value if value >= SVC_HOST_BASE as i32 => {
                 host_dispatches += 1;
-                host_dispatches_since_callback += 1;
                 let symbol = host_stubs
                     .get(&value)
                     .map(|(name, _)| name.as_str())
                     .unwrap_or("<unknown>");
+                if !crate::a64_runtime::is_light_host_call(symbol) {
+                    host_dispatches_since_callback += 1;
+                }
                 let continuation_pc = host_call_continuation(&context);
                 let call_site = host_call_site(&context);
                 let host_call = host_call_identity(&context);
