@@ -933,6 +933,53 @@ fn objc_array(mem: &mut Mem64, objects: &[u64]) -> Result<u64, String> {
     Ok(object)
 }
 
+fn handle_missing_objc_selector(
+    receiver: u64,
+    class_name: &str,
+    selector: &str,
+    class_method: bool,
+    state: &mut RuntimeState,
+) -> u64 {
+    let key = format!("{class_name}::{selector}");
+    if state.render_diagnostics.missing_selectors.insert(key) {
+        log!(
+            "ARM64 Objective-C stub: {} {} -> {}",
+            class_name,
+            selector,
+            if class_method || receiver == 0 {
+                "nil"
+            } else {
+                "self"
+            }
+        );
+    }
+    if class_method || receiver == 0 {
+        0
+    } else {
+        receiver
+    }
+}
+
+fn objc_string_with_format(mem: &mut Mem64, format: u64) -> Result<u64, String> {
+    let value = objc_text(mem, format)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default();
+    objc_string(mem, &value)
+}
+
+fn objc_substring(
+    mem: &mut Mem64,
+    receiver: u64,
+    start: u64,
+    end: Option<u64>,
+) -> Result<u64, String> {
+    let bytes = objc_text(mem, receiver).unwrap_or_default();
+    let start = (start as usize).min(bytes.len());
+    let end = end.map_or(bytes.len(), |end| (end as usize).min(bytes.len()));
+    let end = end.max(start);
+    objc_string(mem, &String::from_utf8_lossy(&bytes[start..end]))
+}
+
 fn objc_kind(mem: &Mem64, address: u64) -> Option<u64> {
     if address == 0 || mem.allocation_size(address).is_none() {
         return None;
@@ -1731,7 +1778,11 @@ fn objc_send(
         "initWithUTF8String:" if kind == A64_KIND_STRING => {
             initialize_arm64_string(mem, receiver, context.regs[2])?
         }
-        "compare:options:" if kind == A64_KIND_STRING => 0,
+        "compare:options:" if kind == A64_KIND_STRING => {
+            let left = objc_text(mem, receiver).unwrap_or_default();
+            let right = objc_text(mem, context.regs[2]).unwrap_or_default();
+            u64::from((left.cmp(&right) as i8) as i64 as u64)
+        }
         "bundleWithPath:"
             if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSBundle") =>
         {
@@ -2032,6 +2083,63 @@ fn objc_send(
             let hash = arm64_prng(state.arm64_rng_state);
             u64::from(hash)
         }
+        "stringWithFormat:"
+            if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSString") =>
+        {
+            objc_string_with_format(mem, context.regs[2])?
+        }
+        "substringToIndex:" if kind == A64_KIND_STRING => {
+            objc_substring(mem, receiver, 0, Some(context.regs[2]))?
+        }
+        "substringFromIndex:" if kind == A64_KIND_STRING => {
+            objc_substring(mem, receiver, context.regs[2], None)?
+        }
+        "capitalizedString" if kind == A64_KIND_STRING => {
+            let mut bytes = objc_text(mem, receiver).unwrap_or_default();
+            if let Some(first) = bytes.first_mut() {
+                first.make_ascii_uppercase();
+            }
+            objc_string(mem, &String::from_utf8_lossy(&bytes))?
+        }
+        "numberWithBool:"
+            if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSNumber") =>
+        {
+            objc_number(mem, context.regs[2] as i64)?
+        }
+        "numberWithInt:" | "numberWithInteger:"
+            if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSNumber") =>
+        {
+            objc_number(mem, context.regs[2] as i64)?
+        }
+        "numberWithFloat:" | "numberWithDouble:"
+            if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSNumber") =>
+        {
+            objc_number(mem, context.regs[2] as i64)?
+        }
+        "arrayWithObject:"
+            if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSArray") =>
+        {
+            objc_array(mem, &[context.regs[2]])?
+        }
+        "arrayWithObjects:count:"
+            if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSArray") =>
+        {
+            let count = context.regs[3].min(4096);
+            let mut objects = Vec::with_capacity(count as usize);
+            for index in 0..count {
+                objects.push(mem.read_u64(context.regs[2] + index * 8).unwrap_or(0));
+            }
+            objc_array(mem, &objects)?
+        }
+        "dictionaryWithObject:forKey:"
+            if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSDictionary") =>
+        {
+            let dictionary = objc_object(mem, A64_KIND_DICTIONARY)?;
+            set_objc_field(mem, dictionary, 56, 1);
+            set_objc_field(mem, dictionary, 64, context.regs[2]);
+            set_objc_field(mem, dictionary, 72, context.regs[3]);
+            dictionary
+        }
         "alloc" | "new" if kind == A64_KIND_CLASS => {
             let class_name_text = objc_text(mem, class_name)
                 .and_then(|bytes| String::from_utf8(bytes).ok())
@@ -2042,23 +2150,15 @@ fn objc_send(
             }
             object
         }
-        _ => {
-            if state
-                .render_diagnostics
-                .missing_selectors
-                .insert(selector.to_string())
-            {
-                log_dbg!(
-                    "ARM64 missing Objective-C selector: {} on {} (receiver={:#x})",
-                    selector,
-                    receiver_class_name(mem, receiver, kind)
-                        .as_deref()
-                        .unwrap_or("<unknown>"),
-                    receiver
-                );
-            }
-            0
-        }
+        _ => handle_missing_objc_selector(
+            receiver,
+            receiver_class_name(mem, receiver, kind)
+                .as_deref()
+                .unwrap_or("<unknown>"),
+            &selector,
+            class_method,
+            state,
+        ),
     };
     if state.guest_transfer_pc.is_none() {
         return_value(context, result);
