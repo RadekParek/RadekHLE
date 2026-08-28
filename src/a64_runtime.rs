@@ -938,7 +938,7 @@ fn objc_kind(mem: &Mem64, address: u64) -> Option<u64> {
         return None;
     }
     let first_word = mem.read_u64(address).ok()?;
-    if (1..=A64_KIND_ARRAY).contains(&first_word) {
+    if (1..=A64_KIND_SET).contains(&first_word) {
         return Some(first_word);
     }
     let class = if first_word != 0 && mem.allocation_size(first_word).is_some() {
@@ -1155,6 +1155,23 @@ fn objc_string(mem: &mut Mem64, value: &str) -> Result<u64, String> {
     Ok(object)
 }
 
+fn initialize_arm64_string(
+    mem: &mut Mem64,
+    receiver: u64,
+    utf8_string: u64,
+) -> Result<u64, String> {
+    let bytes = c_string(mem, utf8_string).unwrap_or_default();
+    let pointer = mem
+        .alloc_zeroed(bytes.len() as u64 + 1)
+        .map_err(str::to_owned)?;
+    mem.write_bytes(pointer, &bytes).map_err(str::to_owned)?;
+    mem.write_u8(pointer + bytes.len() as u64, 0)
+        .map_err(str::to_owned)?;
+    set_objc_field(mem, receiver, 56, pointer);
+    set_objc_field(mem, receiver, 64, bytes.len() as u64);
+    Ok(receiver)
+}
+
 fn objc_bundle(mem: &mut Mem64, state: &RuntimeState) -> Result<u64, String> {
     let object = objc_object(mem, A64_KIND_BUNDLE)?;
     let path = objc_string(mem, &state.bundle_path)?;
@@ -1258,6 +1275,8 @@ fn objc_class_kind(mem: &Mem64, class_name: u64) -> u64 {
         Some(b"MTLDepthStencilState") => A64_KIND_DEPTH_STENCIL,
         Some(b"UIDevice") => A64_KIND_UI_DEVICE,
         Some(b"UIScreen") => A64_KIND_UI_SCREEN,
+        Some(b"NSString") | Some(b"NSMutableString") => A64_KIND_STRING,
+        Some(b"NSData") | Some(b"NSMutableData") => A64_KIND_DATA,
         Some(b"UIApplication") => A64_KIND_APPLICATION,
         Some(b"CADisplayLink") => A64_KIND_DISPLAY_LINK,
         Some(b"NSRunLoop") | Some(b"CFRunLoop") => A64_KIND_RUN_LOOP,
@@ -1692,6 +1711,27 @@ fn objc_send(
         "stringByAppendingString:" if kind == A64_KIND_STRING => {
             objc_string_append(mem, receiver, context.regs[2])?
         }
+        "dataWithContentsOfFile:"
+            if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSData") =>
+        {
+            objc_object(mem, A64_KIND_DATA)?
+        }
+        "stringWithUTF8String:"
+            if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSString") =>
+        {
+            let pointer = context.regs[2];
+            if pointer == 0 {
+                0
+            } else {
+                let bytes = c_string(mem, pointer).unwrap_or_default();
+                let value = String::from_utf8_lossy(&bytes).into_owned();
+                objc_string(mem, &value)?
+            }
+        }
+        "initWithUTF8String:" if kind == A64_KIND_STRING => {
+            initialize_arm64_string(mem, receiver, context.regs[2])?
+        }
+        "compare:options:" if kind == A64_KIND_STRING => 0,
         "bundleWithPath:"
             if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSBundle") =>
         {
@@ -4311,5 +4351,51 @@ mod tests {
         )
         .unwrap());
         assert_eq!(context.regs[0], 0x1234);
+    }
+
+    #[test]
+    fn arm64_foundation_file_loading_selectors_are_handled() {
+        let mut memory = Mem64::new();
+        let mut runtime_state = state();
+        let mut context = touchHLE_DynarmicA64Context::default();
+
+        let ns_string_class =
+            objc_class_for_name(&mut memory, &mut runtime_state, "NSString").unwrap();
+        let ns_data_class =
+            objc_class_for_name(&mut memory, &mut runtime_state, "NSData").unwrap();
+        let input = memory.alloc_zeroed(6).unwrap();
+        memory.write_bytes(input, b"asset").unwrap();
+
+        context.regs[0] = ns_string_class;
+        context.regs[1] = selector_pointer(&mut memory, "stringWithUTF8String:").unwrap();
+        context.regs[2] = input;
+        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        let string = context.regs[0];
+        assert_eq!(objc_text(&memory, string).as_deref(), Some(b"asset"));
+
+        let receiver =
+            objc_instance_for_class(&mut memory, &mut runtime_state, "NSString").unwrap();
+        context.regs[0] = receiver;
+        context.regs[1] = selector_pointer(&mut memory, "initWithUTF8String:").unwrap();
+        context.regs[2] = input;
+        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        assert_eq!(context.regs[0], receiver);
+        assert_eq!(objc_text(&memory, receiver).as_deref(), Some(b"asset"));
+
+        let other = objc_string(&mut memory, "other").unwrap();
+        context.regs[0] = string;
+        context.regs[1] = selector_pointer(&mut memory, "compare:options:").unwrap();
+        context.regs[2] = other;
+        context.regs[3] = 0;
+        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        assert_eq!(context.regs[0], 0);
+
+        context.regs[0] = ns_data_class;
+        context.regs[1] = selector_pointer(&mut memory, "dataWithContentsOfFile:").unwrap();
+        context.regs[2] = string;
+        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        let data = context.regs[0];
+        assert_eq!(objc_kind(&memory, data), Some(A64_KIND_DATA));
+        assert_eq!(objc_field(&memory, data, 64), 0);
     }
 }
