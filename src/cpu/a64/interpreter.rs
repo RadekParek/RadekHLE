@@ -366,6 +366,11 @@ impl A64Interpreter {
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
+        if instruction & 0x3b00_0000 == 0x3900_0000 {
+            self.execute_load_store_unsigned(memory, context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
         if instruction & 0x0f80_0000 == 0x0f00_0000 {
             self.execute_adv_simd_shift_long(context, instruction)?;
             context.pc = pc.wrapping_add(4);
@@ -383,11 +388,6 @@ impl A64Interpreter {
         }
         if instruction & 0x3f00_0000 == 0x2c00_0000 {
             self.execute_simd_pair(memory, context, instruction)?;
-            context.pc = pc.wrapping_add(4);
-            return Ok(None);
-        }
-        if instruction & 0x3b00_0000 == 0x3900_0000 {
-            self.execute_load_store_unsigned(memory, context, instruction)?;
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
