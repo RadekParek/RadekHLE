@@ -33,6 +33,7 @@ impl A64Interpreter {
                 let instruction = match memory.read_code_u32(pc) {
                     Ok(instruction) => instruction,
                     Err(error) => {
+                        crate::cpu::record_a64_memory_fault(pc);
                         log_once_fmt!("ARM64 EXCEPTION PC={pc:#x} SP={:#x} instruction=<unreadable> address={pc:#x} reason=execute fault: {error} [subsequent identical faults suppressed]", context.sp);
                         result = -2;
                         break;
@@ -57,6 +58,7 @@ impl A64Interpreter {
         let instruction = match memory.read_code_u32(pc) {
             Ok(instruction) => instruction,
             Err(error) => {
+                crate::cpu::record_a64_memory_fault(pc);
                 log_once_fmt!("ARM64 EXCEPTION PC={pc:#x} SP={:#x} instruction=<unreadable> address={pc:#x} reason=execute fault: {error} [subsequent identical faults suppressed]", context.sp);
                 return -2;
             }
@@ -74,6 +76,7 @@ impl A64Interpreter {
             Ok(Some(svc)) => svc as i32,
             Ok(None) => -1,
             Err(InterpreterError::Memory(error, address)) => {
+                crate::cpu::record_a64_memory_fault(address);
                 log_once_fmt!("ARM64 EXCEPTION PC={pc:#x} SP={:#x} instruction={instruction:#010x} address={address:#x} reason=memory fault: {error} [subsequent identical faults suppressed]", context.sp);
                 -2
             }
@@ -374,6 +377,11 @@ impl A64Interpreter {
             return Ok(None);
         }
         if instruction & 0x3f00_0000 == 0x2d00_0000 {
+            self.execute_simd_pair(memory, context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
+        if instruction & 0x3f00_0000 == 0x2c00_0000 {
             self.execute_simd_pair(memory, context, instruction)?;
             context.pc = pc.wrapping_add(4);
             return Ok(None);
@@ -1343,13 +1351,19 @@ impl A64Interpreter {
         let base = read_sp_or_reg(context, ((instruction >> 5) & 31) as usize, true);
         let offset = sign_extend(((instruction >> 12) & 0x1ff) as u64, 9);
         let mode = (instruction >> 10) & 3;
-        let address = base.wrapping_add_signed(offset);
+        let address = if mode == 1 {
+            base
+        } else {
+            base.wrapping_add_signed(offset)
+        };
         self.load_store(memory, context, instruction, address, size, load)?;
-        if mode == 1 {
-            write_sp_or_reg(context, ((instruction >> 5) & 31) as usize, address, true);
-        }
-        if mode == 3 {
-            write_sp_or_reg(context, ((instruction >> 5) & 31) as usize, address, true);
+        if mode == 1 || mode == 3 {
+            write_sp_or_reg(
+                context,
+                ((instruction >> 5) & 31) as usize,
+                base.wrapping_add_signed(offset),
+                true,
+            );
         }
         Ok(())
     }
@@ -2107,7 +2121,7 @@ mod tests {
             .unwrap();
         const SP: u64 = 0x7fff_fffe_ff00;
         memory
-            .map_zeroed_with_permissions(SP, 0x1000, Permissions::read_write())
+            .map_zeroed_with_permissions(SP - 0x1000, 0x2000, Permissions::read_write())
             .unwrap();
         let instructions = [0x2dbe_23e9_u32, 0x2cc2_23e9_u32];
         for (index, instruction) in instructions.iter().enumerate() {
@@ -2129,7 +2143,7 @@ mod tests {
         context.vectors[8] = [0; 2];
         assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
         assert_eq!(context.vectors[9][0], 0x3333_4444);
-        assert_eq!(context.vectors[8][0], 0xeeee_ffff);
+        assert_eq!(context.vectors[8][0], 0xbbbb_cccc);
         assert_eq!(context.sp, SP);
     }
 
@@ -2184,6 +2198,31 @@ mod tests {
         assert_eq!(context.regs[29], 0x2929_2929_2929_2929);
         assert_eq!(context.regs[30], 0x3030_3030_3030_3030);
         assert_eq!(context.sp, SP);
+    }
+
+    #[test]
+    fn post_indexed_ldr_reads_before_updating_base() {
+        let mut memory = Mem64::new();
+        memory
+            .map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute())
+            .unwrap();
+        const DATA: u64 = 0x1_0000_2000;
+        memory
+            .map_zeroed_with_permissions(DATA, 0x2000, Permissions::read_write())
+            .unwrap();
+        memory
+            .load_bytes(CODE, &0xf8408460u32.to_le_bytes())
+            .unwrap();
+        memory
+            .write_u64(DATA + 0xff8, 0x1234_5678_9abc_def0)
+            .unwrap();
+        let mut context = touchHLE_DynarmicA64Context::default();
+        context.pc = CODE;
+        context.regs[3] = DATA + 0xff8;
+        let mut interpreter = A64Interpreter::new();
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(context.regs[0], 0x1234_5678_9abc_def0);
+        assert_eq!(context.regs[3], DATA + 0x1000);
     }
 
     #[test]

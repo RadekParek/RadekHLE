@@ -18,12 +18,36 @@ mod a64;
 use self::a64::A64Interpreter;
 
 use std::ffi::CStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // Import functions from C++
 use touchHLE_dynarmic_wrapper::*;
 
 type VAddr = u32;
 pub type CpuContext = touchHLE_DynarmicContext;
+
+const NO_A64_MEMORY_FAULT: u64 = u64::MAX;
+static LAST_A64_MEMORY_FAULT: AtomicU64 = AtomicU64::new(NO_A64_MEMORY_FAULT);
+
+pub(crate) fn reset_a64_memory_fault() {
+    LAST_A64_MEMORY_FAULT.store(NO_A64_MEMORY_FAULT, Ordering::Relaxed);
+}
+
+pub(crate) fn record_a64_memory_fault(address: u64) {
+    LAST_A64_MEMORY_FAULT.store(address, Ordering::Relaxed);
+}
+
+pub(crate) fn last_a64_memory_fault() -> Option<u64> {
+    match LAST_A64_MEMORY_FAULT.load(Ordering::Relaxed) {
+        NO_A64_MEMORY_FAULT => None,
+        address => Some(address),
+    }
+}
+
+#[no_mangle]
+extern "C" fn touchHLE_cpu_a64_record_memory_fault(address: u64) {
+    record_a64_memory_fault(address);
+}
 
 #[no_mangle]
 extern "C" fn touchHLE_cpu_a64_log(message: *const std::ffi::c_char) {

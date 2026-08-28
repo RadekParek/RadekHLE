@@ -438,6 +438,43 @@ fn failure_diagnostics(
         next_instruction.unwrap_or(0),
         context.pc.saturating_sub(0x1_0000_0000),
     );
+    if reason == "memory abort" {
+        let fault_address = crate::cpu::last_a64_memory_fault().unwrap_or(context.pc);
+        if let Some((base, size)) = memory.allocation_containing(fault_address) {
+            echo!(
+                "ARM64 fault diagnostic: address={:#x} is INSIDE allocation base={:#x} size={} offset=+{}",
+                fault_address,
+                base,
+                size,
+                fault_address - base,
+            );
+            echo!("ARM64 fault diagnostic: address is outside the allocated range but inside its 4 KiB mapping; the effective access exceeded the recorded allocation size");
+        } else {
+            echo!(
+                "ARM64 fault diagnostic: address={:#x} is OUTSIDE any known allocation",
+                fault_address,
+            );
+            echo!("ARM64 fault diagnostic: likely bad pointer arithmetic or an unmanaged pointer");
+        }
+        if let Some((base, size)) = memory.allocation_containing(context.regs[19]) {
+            echo!(
+                "ARM64 fault diagnostic: base register x19={:#x} is INSIDE allocation base={:#x} size={} offset=+{}",
+                context.regs[19],
+                base,
+                size,
+                context.regs[19] - base,
+            );
+        } else {
+            echo!(
+                "ARM64 fault diagnostic: base register x19={:#x} is OUTSIDE any known allocation",
+                context.regs[19],
+            );
+        }
+        echo!(
+            "ARM64 fault diagnostic: recent writes to watched range: {}",
+            memory.recent_writes_dump()
+        );
+    }
     echo!("ARM64 failure mappings: {}", mapping_dump(memory));
     echo!(
         "ARM64 failure dispatch: receiver={:#x} selector={} callback_target={:#x} dispatch_pc={:#x} dispatch_lr={:#x} dispatch_sp={:#x} current_pc={:#x} current_lr={:#x} current_sp={:#x}",
@@ -987,6 +1024,8 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     echo!("ARM64 execution transition: normal mode uses Dynarmic Run with {}-tick slices; instruction tracing limit={}", EXECUTION_SLICE_TICKS, trace_limit);
     verify_abi(&context, "entry");
     verify_guest_mappings(&memory, context.pc, context.sp);
+    memory.clear_write_history();
+    crate::cpu::reset_a64_memory_fault();
     loop {
         let trace_this_instruction = trace_count < trace_limit;
         let instruction_pc = context.pc;
@@ -996,6 +1035,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             0
         };
         let ticks_before = ticks;
+        memory.set_current_pc(instruction_pc);
         let result = cpu.run_or_step(&mut memory, &mut context, ticks.as_mut());
         cpu.save_context(&mut context);
         if result >= SVC_HOST_BASE as i32 && instruction_pc != context.pc {

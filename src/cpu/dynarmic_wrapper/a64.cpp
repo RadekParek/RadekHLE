@@ -39,6 +39,7 @@ bool touchHLE_cpu_write_u32_64(touchHLE_Mem*, VAddr, std::uint32_t);
 bool touchHLE_cpu_write_u64_64(touchHLE_Mem*, VAddr, std::uint64_t);
 bool touchHLE_cpu_write_u128_64(touchHLE_Mem*, VAddr, std::array<std::uint64_t, 2>);
 void touchHLE_cpu_a64_log(const char* message);
+void touchHLE_cpu_a64_record_memory_fault(std::uint64_t address);
 struct touchHLE_DynarmicA64Context {
   std::array<std::uint64_t, 31> regs;
   std::array<std::array<std::uint64_t, 2>, 32> vectors;
@@ -113,6 +114,7 @@ private:
     T value = f(mem, addr, &error);
     if (error) {
       ++memory_faults;
+      touchHLE_cpu_a64_record_memory_fault(addr);
       trace("invalid %s: address=%#llx pc=%#llx sp=%#llx lr=%#llx", kind,
             static_cast<unsigned long long>(addr),
             static_cast<unsigned long long>(cpu ? cpu->GetPC() : 0),
@@ -127,6 +129,7 @@ private:
   void write(VAddr addr, T value, F f, const char* kind) {
     if (f(mem, addr, value)) {
       ++memory_faults;
+      touchHLE_cpu_a64_record_memory_fault(addr);
       trace("invalid %s: address=%#llx pc=%#llx sp=%#llx lr=%#llx", kind,
             static_cast<unsigned long long>(addr),
             static_cast<unsigned long long>(cpu ? cpu->GetPC() : 0),
@@ -156,6 +159,7 @@ private:
     }
     if (error) {
       ++memory_faults;
+      touchHLE_cpu_a64_record_memory_fault(a);
       trace("invalid execute: address=%#llx current_pc=%#llx code_fetches=%llu",
             static_cast<unsigned long long>(a),
             static_cast<unsigned long long>(cpu ? cpu->GetPC() : 0),

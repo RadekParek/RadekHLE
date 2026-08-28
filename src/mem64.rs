@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use crate::mem::{SafeRead, SafeWrite};
 
@@ -78,10 +78,20 @@ struct Mapping {
     permissions: Permissions,
 }
 
+#[derive(Debug)]
+struct MemoryWrite {
+    address: Guest64Addr,
+    size: usize,
+    pc: Option<Guest64Addr>,
+    sample: Vec<u8>,
+}
+
 #[derive(Debug, Default)]
 pub struct Mem64 {
     regions: BTreeMap<Guest64Addr, Mapping>,
     allocations: BTreeMap<Guest64Addr, Guest64USize>,
+    write_history: VecDeque<MemoryWrite>,
+    current_pc: Option<Guest64Addr>,
     next_allocation: Guest64Addr,
 }
 
@@ -235,12 +245,15 @@ impl Mem64 {
             if count == 0 {
                 return Err("64-bit memory write is out of bounds");
             }
+            let sample_len = count.min(16);
+            let sample = bytes[source_offset..source_offset + sample_len].to_vec();
             let mapping = self
                 .regions
                 .get_mut(&region_base)
                 .ok_or("64-bit memory is unmapped")?;
             mapping.bytes[offset..offset + count]
                 .copy_from_slice(&bytes[source_offset..source_offset + count]);
+            self.record_write(address, count, sample);
             source_offset += count;
             address = address
                 .checked_add(count as u64)
@@ -284,6 +297,7 @@ impl Mem64 {
                 .get_mut(&region_base)
                 .ok_or("64-bit memory is unmapped")?;
             mapping.bytes[offset..offset + count].fill(value);
+            self.record_write(address, count, vec![value; count.min(16)]);
             address += count as u64;
         }
         Ok(())
@@ -429,6 +443,70 @@ impl Mem64 {
 
     pub fn allocation_size(&self, address: Guest64Addr) -> Option<Guest64USize> {
         self.allocations.get(&address).copied()
+    }
+
+    pub fn allocation_containing(
+        &self,
+        address: Guest64Addr,
+    ) -> Option<(Guest64Addr, Guest64USize)> {
+        let (&base, &size) = self.allocations.range(..=address).next_back()?;
+        let end = base.checked_add(size)?;
+        (address < end).then_some((base, size))
+    }
+
+    pub fn set_current_pc(&mut self, pc: Guest64Addr) {
+        self.current_pc = Some(pc);
+    }
+
+    pub fn clear_write_history(&mut self) {
+        self.write_history.clear();
+    }
+
+    fn record_write(&mut self, address: Guest64Addr, size: usize, sample: Vec<u8>) {
+        const WATCH_START: Guest64Addr = 0x1008_7b000;
+        const WATCH_END: Guest64Addr = 0x1008_7e000;
+        let Some(end) = address.checked_add(size as u64) else {
+            return;
+        };
+        if address >= WATCH_END || end <= WATCH_START {
+            return;
+        }
+        if self.write_history.len() == 1000 {
+            self.write_history.pop_front();
+        }
+        self.write_history.push_back(MemoryWrite {
+            address,
+            size,
+            pc: self.current_pc,
+            sample,
+        });
+    }
+
+    pub fn recent_writes_dump(&self) -> String {
+        if self.write_history.is_empty() {
+            return "none".to_string();
+        }
+        self.write_history
+            .iter()
+            .map(|write| {
+                let sample = write
+                    .sample
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!(
+                    "address={:#x} size={} pc={} bytes=[{}]",
+                    write.address,
+                    write.size,
+                    write
+                        .pc
+                        .map_or("<unknown>".to_string(), |pc| format!("{pc:#x}")),
+                    sample,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" | ")
     }
 
     pub fn realloc(
@@ -771,6 +849,22 @@ mod tests {
         assert!(mem.free(address));
         assert!(mem.read_u8(address).is_err());
         assert!(!mem.free(address));
+    }
+
+    #[test]
+    fn allocations_are_zeroed_and_containment_reports_offsets() {
+        let mut mem = Mem64::new();
+        let address = mem.alloc_zeroed(0x1001).unwrap();
+        assert_eq!(mem.read_bytes(address, 0x1010).unwrap(), vec![0; 0x1010]);
+        assert_eq!(
+            mem.allocation_containing(address + 8),
+            Some((address, 0x1010))
+        );
+        assert_eq!(
+            mem.allocation_containing(address + 0x100f),
+            Some((address, 0x1010))
+        );
+        assert_eq!(mem.allocation_containing(address + 0x1010), None);
     }
 
     #[test]
