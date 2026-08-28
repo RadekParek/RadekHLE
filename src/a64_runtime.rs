@@ -42,6 +42,9 @@ const A64_KIND_ARRAY: u64 = 31;
 const A64_KIND_DICTIONARY: u64 = 32;
 const A64_KIND_DATA: u64 = 33;
 const A64_KIND_SET: u64 = 34;
+const A64_KIND_MUTABLE_ARRAY: u64 = 35;
+const A64_KIND_MUTABLE_STRING: u64 = 36;
+const A64_KIND_MUTABLE_DICTIONARY: u64 = 37;
 const A64_UIVIEWCONTROLLER_VIEW_IVAR: u64 = 0x148;
 const MAX_ARM64_PTHREAD_WORKERS: usize = 16;
 
@@ -911,6 +914,123 @@ fn objc_object(mem: &mut Mem64, kind: u64) -> Result<u64, String> {
     Ok(address)
 }
 
+fn objc_is_collection_kind(kind: u64) -> bool {
+    matches!(
+        kind,
+        A64_KIND_ARRAY | A64_KIND_MUTABLE_ARRAY | A64_KIND_DICTIONARY | A64_KIND_MUTABLE_DICTIONARY
+    )
+}
+
+fn objc_is_string_kind(kind: u64) -> bool {
+    matches!(kind, A64_KIND_STRING | A64_KIND_MUTABLE_STRING)
+}
+
+fn objc_is_array_kind(kind: u64) -> bool {
+    matches!(kind, A64_KIND_ARRAY | A64_KIND_MUTABLE_ARRAY)
+}
+
+fn objc_data_from_guest(mem: &Mem64, pointer: u64, length: u64) -> Result<Vec<u8>, String> {
+    if pointer == 0 || length == 0 {
+        return Ok(Vec::new());
+    }
+    mem.read_bytes(pointer, length).map_err(str::to_owned)
+}
+
+fn objc_data(mem: &mut Mem64, bytes: &[u8]) -> Result<u64, String> {
+    let object = objc_object(mem, A64_KIND_DATA)?;
+    let pointer = mem
+        .alloc_zeroed(bytes.len().max(1) as u64)
+        .map_err(str::to_owned)?;
+    if !bytes.is_empty() {
+        mem.write_bytes(pointer, bytes).map_err(str::to_owned)?;
+    }
+    set_objc_field(mem, object, 56, pointer);
+    set_objc_field(mem, object, 64, bytes.len() as u64);
+    Ok(object)
+}
+
+fn objc_dictionary(mem: &mut Mem64, key: u64, value: u64) -> Result<u64, String> {
+    let object = objc_object(mem, A64_KIND_DICTIONARY)?;
+    let keys = mem.alloc_zeroed(8).map_err(str::to_owned)?;
+    let values = mem.alloc_zeroed(8).map_err(str::to_owned)?;
+    mem.write_u64(keys, key).map_err(str::to_owned)?;
+    mem.write_u64(values, value).map_err(str::to_owned)?;
+    set_objc_field(mem, object, 56, 1);
+    set_objc_field(mem, object, 64, keys);
+    set_objc_field(mem, object, 72, values);
+    Ok(object)
+}
+
+fn objc_dictionary_value(mem: &Mem64, dictionary: u64, key: u64) -> u64 {
+    let count = objc_field(mem, dictionary, 56);
+    let keys = objc_field(mem, dictionary, 64);
+    let values = objc_field(mem, dictionary, 72);
+    for index in 0..count.min(4096) {
+        if mem
+            .read_u64(keys.saturating_add(index.saturating_mul(8)))
+            .ok()
+            == Some(key)
+        {
+            return mem
+                .read_u64(values.saturating_add(index.saturating_mul(8)))
+                .unwrap_or(0);
+        }
+    }
+    0
+}
+
+fn objc_dictionary_set(
+    mem: &mut Mem64,
+    dictionary: u64,
+    key: u64,
+    value: u64,
+) -> Result<(), String> {
+    let count = objc_field(mem, dictionary, 56);
+    let keys = objc_field(mem, dictionary, 64);
+    let values = objc_field(mem, dictionary, 72);
+    for index in 0..count.min(4096) {
+        let key_address = keys
+            .checked_add(index.saturating_mul(8))
+            .ok_or("ARM64 dictionary key address overflows")?;
+        if mem.read_u64(key_address).ok() == Some(key) {
+            mem.write_u64(
+                values
+                    .checked_add(index.saturating_mul(8))
+                    .ok_or("ARM64 dictionary value address overflows")?,
+                value,
+            )
+            .map_err(str::to_owned)?;
+            return Ok(());
+        }
+    }
+    let new_keys = mem
+        .alloc_zeroed((count + 1).saturating_mul(8))
+        .map_err(str::to_owned)?;
+    let new_values = mem
+        .alloc_zeroed((count + 1).saturating_mul(8))
+        .map_err(str::to_owned)?;
+    if count > 0 {
+        let old_keys = mem
+            .read_bytes(keys, count.saturating_mul(8))
+            .map_err(str::to_owned)?;
+        let old_values = mem
+            .read_bytes(values, count.saturating_mul(8))
+            .map_err(str::to_owned)?;
+        mem.write_bytes(new_keys, &old_keys)
+            .map_err(str::to_owned)?;
+        mem.write_bytes(new_values, &old_values)
+            .map_err(str::to_owned)?;
+    }
+    mem.write_u64(new_keys + count * 8, key)
+        .map_err(str::to_owned)?;
+    mem.write_u64(new_values + count * 8, value)
+        .map_err(str::to_owned)?;
+    set_objc_field(mem, dictionary, 56, count + 1);
+    set_objc_field(mem, dictionary, 64, new_keys);
+    set_objc_field(mem, dictionary, 72, new_values);
+    Ok(())
+}
+
 fn objc_object_with_size(mem: &mut Mem64, kind: u64, size: u64) -> Result<u64, String> {
     let address = mem
         .alloc_zeroed(size.max(A64_OBJECT_SIZE))
@@ -920,7 +1040,11 @@ fn objc_object_with_size(mem: &mut Mem64, kind: u64, size: u64) -> Result<u64, S
 }
 
 fn objc_array(mem: &mut Mem64, objects: &[u64]) -> Result<u64, String> {
-    let object = objc_object(mem, A64_KIND_ARRAY)?;
+    objc_array_with_kind(mem, A64_KIND_ARRAY, objects)
+}
+
+fn objc_array_with_kind(mem: &mut Mem64, kind: u64, objects: &[u64]) -> Result<u64, String> {
+    let object = objc_object(mem, kind)?;
     let elements = mem
         .alloc_zeroed((objects.len() as u64).saturating_mul(8))
         .map_err(str::to_owned)?;
@@ -985,7 +1109,7 @@ fn objc_kind(mem: &Mem64, address: u64) -> Option<u64> {
         return None;
     }
     let first_word = mem.read_u64(address).ok()?;
-    if (1..=A64_KIND_SET).contains(&first_word) {
+    if (1..=A64_KIND_MUTABLE_DICTIONARY).contains(&first_word) {
         return Some(first_word);
     }
     let class = if first_word != 0 && mem.allocation_size(first_word).is_some() {
@@ -1189,7 +1313,11 @@ fn objc_string_append(mem: &mut Mem64, left: u64, right: u64) -> Result<u64, Str
 }
 
 fn objc_string(mem: &mut Mem64, value: &str) -> Result<u64, String> {
-    let object = objc_object(mem, A64_KIND_STRING)?;
+    objc_string_with_kind(mem, value, A64_KIND_STRING)
+}
+
+fn objc_string_with_kind(mem: &mut Mem64, value: &str, kind: u64) -> Result<u64, String> {
+    let object = objc_object(mem, kind)?;
     let bytes = value.as_bytes();
     let pointer = mem
         .alloc_zeroed(bytes.len() as u64 + 1)
@@ -1261,7 +1389,24 @@ fn objc_ui_screen(
 fn objc_number(mem: &mut Mem64, value: i64) -> Result<u64, String> {
     let object = objc_object(mem, A64_KIND_NUMBER)?;
     set_objc_field(mem, object, 56, value as u64);
+    set_objc_field(mem, object, 64, 0);
     Ok(object)
+}
+
+fn objc_number_float(mem: &mut Mem64, value: f64) -> Result<u64, String> {
+    let object = objc_object(mem, A64_KIND_NUMBER)?;
+    set_objc_field(mem, object, 56, value.to_bits());
+    set_objc_field(mem, object, 64, 1);
+    Ok(object)
+}
+
+fn objc_number_value(mem: &Mem64, object: u64) -> f64 {
+    let value = objc_field(mem, object, 56);
+    if objc_field(mem, object, 64) != 0 {
+        f64::from_bits(value)
+    } else {
+        value as i64 as f64
+    }
 }
 
 fn set_float_return(context: &mut touchHLE_DynarmicA64Context, value: f64) {
@@ -1322,7 +1467,8 @@ fn objc_class_kind(mem: &Mem64, class_name: u64) -> u64 {
         Some(b"MTLDepthStencilState") => A64_KIND_DEPTH_STENCIL,
         Some(b"UIDevice") => A64_KIND_UI_DEVICE,
         Some(b"UIScreen") => A64_KIND_UI_SCREEN,
-        Some(b"NSString") | Some(b"NSMutableString") => A64_KIND_STRING,
+        Some(b"NSString") => A64_KIND_STRING,
+        Some(b"NSMutableString") => A64_KIND_MUTABLE_STRING,
         Some(b"NSData") | Some(b"NSMutableData") => A64_KIND_DATA,
         Some(b"UIApplication") => A64_KIND_APPLICATION,
         Some(b"CADisplayLink") => A64_KIND_DISPLAY_LINK,
@@ -1331,6 +1477,11 @@ fn objc_class_kind(mem: &Mem64, class_name: u64) -> u64 {
         Some(b"EAGLView") => A64_KIND_EAGL_VIEW,
         Some(b"EAGLContext") => A64_KIND_CONTEXT,
         Some(b"UIView") | Some(b"UIWindow") => A64_KIND_VIEW,
+        Some(b"NSArray") => A64_KIND_ARRAY,
+        Some(b"NSMutableArray") => A64_KIND_MUTABLE_ARRAY,
+        Some(b"NSDictionary") => A64_KIND_DICTIONARY,
+        Some(b"NSMutableDictionary") => A64_KIND_MUTABLE_DICTIONARY,
+        Some(b"NSNumber") => A64_KIND_NUMBER,
         Some(b"NSBundle") => A64_KIND_BUNDLE,
         Some(b"UnityFramework") => A64_KIND_UNITY_FRAMEWORK,
         _ => A64_KIND_GENERIC,
@@ -1474,7 +1625,21 @@ fn objc_send(
             state.present_requested = true;
             0
         }
-        "init" | "self" | "retain" | "autorelease" | "copy" | "mutableCopy" => receiver,
+        "init" | "self" | "retain" | "autorelease" | "copy" => receiver,
+        "mutableCopy" if objc_is_string_kind(kind) => {
+            let bytes = objc_text(mem, receiver).unwrap_or_default();
+            let value = String::from_utf8_lossy(&bytes);
+            objc_string_with_kind(mem, &value, A64_KIND_MUTABLE_STRING)?
+        }
+        "mutableCopy" if objc_is_array_kind(kind) => {
+            let count = objc_field(mem, receiver, 56).min(4096);
+            let elements = objc_field(mem, receiver, 64);
+            let mut objects = Vec::with_capacity(count as usize);
+            for index in 0..count {
+                objects.push(mem.read_u64(elements + index * 8).unwrap_or(0));
+            }
+            objc_array_with_kind(mem, A64_KIND_MUTABLE_ARRAY, &objects)?
+        }
         "createFramebuffer" if kind == A64_KIND_EAGL_VIEW => {
             initialize_eagl_view(mem, state, receiver)?;
             0
@@ -1674,22 +1839,51 @@ fn objc_send(
         "release" => 0,
         "class" => receiver_class,
         "respondsToSelector:" | "isKindOfClass:" | "hasUnifiedMemory" => 1,
-        "count"
-            if kind == A64_KIND_ARRAY || kind == A64_KIND_DICTIONARY || kind == A64_KIND_SET =>
-        {
+        "count" if objc_is_collection_kind(kind) || kind == A64_KIND_SET => {
             objc_field(mem, receiver, 56)
         }
-        "objectForKey:" if kind == A64_KIND_DICTIONARY => {
-            let key = context.regs[2];
-            log_dbg!(
-                "ARM64 NSDictionary objectForKey: receiver={:#x} key={:#x}",
-                receiver,
-                key
-            );
+        "addObject:" if objc_is_array_kind(kind) && kind == A64_KIND_MUTABLE_ARRAY => {
+            let count = objc_field(mem, receiver, 56);
+            let elements = objc_field(mem, receiver, 64);
+            let new_elements = mem
+                .alloc_zeroed((count + 1).saturating_mul(8))
+                .map_err(str::to_owned)?;
+            if count > 0 {
+                let old = mem
+                    .read_bytes(elements, count.saturating_mul(8))
+                    .map_err(str::to_owned)?;
+                mem.write_bytes(new_elements, &old).map_err(str::to_owned)?;
+            }
+            mem.write_u64(new_elements + count * 8, context.regs[2])
+                .map_err(str::to_owned)?;
+            set_objc_field(mem, receiver, 56, count + 1);
+            set_objc_field(mem, receiver, 64, new_elements);
             0
         }
-        "allKeys" if kind == A64_KIND_DICTIONARY => objc_object(mem, A64_KIND_ARRAY)?,
-        "firstObject" if kind == A64_KIND_ARRAY => {
+        "removeAllObjects" if kind == A64_KIND_MUTABLE_ARRAY => {
+            set_objc_field(mem, receiver, 56, 0);
+            set_objc_field(mem, receiver, 64, 0);
+            0
+        }
+        "objectForKey:" if matches!(kind, A64_KIND_DICTIONARY | A64_KIND_MUTABLE_DICTIONARY) => {
+            objc_dictionary_value(mem, receiver, context.regs[2])
+        }
+        "setObject:forKey:"
+            if matches!(kind, A64_KIND_DICTIONARY | A64_KIND_MUTABLE_DICTIONARY) =>
+        {
+            objc_dictionary_set(mem, receiver, context.regs[3], context.regs[2])?;
+            0
+        }
+        "allKeys" if matches!(kind, A64_KIND_DICTIONARY | A64_KIND_MUTABLE_DICTIONARY) => {
+            let count = objc_field(mem, receiver, 56).min(4096);
+            let keys = objc_field(mem, receiver, 64);
+            let mut values = Vec::with_capacity(count as usize);
+            for index in 0..count {
+                values.push(mem.read_u64(keys + index * 8).unwrap_or(0));
+            }
+            objc_array(mem, &values)?
+        }
+        "firstObject" if objc_is_array_kind(kind) => {
             let result = if objc_field(mem, receiver, 56) > 0 {
                 let elements = objc_field(mem, receiver, 64);
                 mem.read_u64(elements).map_err(str::to_owned)?
@@ -1699,7 +1893,7 @@ fn objc_send(
             return_value(context, result);
             return Ok(());
         }
-        "lastObject" if kind == A64_KIND_ARRAY => {
+        "lastObject" if objc_is_array_kind(kind) => {
             let count = objc_field(mem, receiver, 56);
             let result = if count > 0 {
                 let elements = objc_field(mem, receiver, 64);
@@ -1711,7 +1905,7 @@ fn objc_send(
             return_value(context, result);
             return Ok(());
         }
-        "objectAtIndexedSubscript:" | "objectAtIndex:" if kind == A64_KIND_ARRAY => {
+        "objectAtIndexedSubscript:" | "objectAtIndex:" if objc_is_array_kind(kind) => {
             let index = context.regs[2];
             let count = objc_field(mem, receiver, 56);
             let result = if index < count {
@@ -1755,16 +1949,25 @@ fn objc_send(
         }
         "bundleIdentifier" if kind == A64_KIND_BUNDLE => objc_field(mem, receiver, 64),
         "bundlePath" | "resourcePath" if kind == A64_KIND_BUNDLE => objc_field(mem, receiver, 56),
-        "stringByAppendingString:" if kind == A64_KIND_STRING => {
+        "stringByAppendingString:" if objc_is_string_kind(kind) => {
             objc_string_append(mem, receiver, context.regs[2])?
         }
         "dataWithContentsOfFile:"
-            if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSData") =>
+            if kind == A64_KIND_CLASS
+                && (objc_text_eq(mem, class_name, b"NSData")
+                    || objc_text_eq(mem, class_name, b"NSMutableData")) =>
         {
-            objc_object(mem, A64_KIND_DATA)?
+            let path = objc_text(mem, context.regs[2]).unwrap_or_default();
+            let path = String::from_utf8_lossy(&path);
+            match std::fs::read(path.as_ref()) {
+                Ok(bytes) => objc_data(mem, &bytes)?,
+                Err(_) => objc_data(mem, &[])?,
+            }
         }
         "stringWithUTF8String:"
-            if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSString") =>
+            if kind == A64_KIND_CLASS
+                && (objc_text_eq(mem, class_name, b"NSString")
+                    || objc_text_eq(mem, class_name, b"NSMutableString")) =>
         {
             let pointer = context.regs[2];
             if pointer == 0 {
@@ -1775,13 +1978,17 @@ fn objc_send(
                 objc_string(mem, &value)?
             }
         }
-        "initWithUTF8String:" if kind == A64_KIND_STRING => {
+        "initWithUTF8String:" if objc_is_string_kind(kind) => {
             initialize_arm64_string(mem, receiver, context.regs[2])?
         }
-        "compare:options:" if kind == A64_KIND_STRING => {
+        "compare:options:" if objc_is_string_kind(kind) => {
             let left = objc_text(mem, receiver).unwrap_or_default();
             let right = objc_text(mem, context.regs[2]).unwrap_or_default();
-            u64::from((left.cmp(&right) as i8) as i64 as u64)
+            match left.cmp(&right) {
+                std::cmp::Ordering::Less => (-1_i64) as u64,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
+            }
         }
         "bundleWithPath:"
             if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSBundle") =>
@@ -1931,28 +2138,36 @@ fn objc_send(
         }
         "name" => objc_string(mem, "RadekHLE Metal device")?,
         "UTF8String" => objc_field(mem, receiver, 56),
-        "length" if kind == A64_KIND_STRING || kind == A64_KIND_BUFFER || kind == A64_KIND_DATA => {
+        "length"
+            if objc_is_string_kind(kind) || kind == A64_KIND_BUFFER || kind == A64_KIND_DATA =>
+        {
             objc_field(mem, receiver, 64)
         }
         "bytes" if kind == A64_KIND_DATA => objc_field(mem, receiver, 56),
+        "dataWithBytes:length:"
+            if kind == A64_KIND_CLASS
+                && (objc_text_eq(mem, class_name, b"NSData")
+                    || objc_text_eq(mem, class_name, b"NSMutableData")) =>
+        {
+            let bytes = objc_data_from_guest(mem, context.regs[2], context.regs[3])?;
+            objc_data(mem, &bytes)?
+        }
+        "data" if kind == A64_KIND_DATA => objc_data(mem, &[])?,
         "containsObject:" if kind == A64_KIND_SET => 1,
-        "boolValue" if kind == A64_KIND_STRING => u64::from(!objc_text_eq(mem, receiver, b"0")),
+        "boolValue" if objc_is_string_kind(kind) => u64::from(!objc_text_eq(mem, receiver, b"0")),
         "boolValue" if kind == A64_KIND_NUMBER => u64::from(objc_field(mem, receiver, 56) != 0),
         "intValue" | "integerValue" | "longLongValue" if kind == A64_KIND_NUMBER => {
             objc_field(mem, receiver, 56)
         }
         "unsignedIntegerValue" if kind == A64_KIND_NUMBER => objc_field(mem, receiver, 56),
         "doubleValue" | "floatValue" if kind == A64_KIND_NUMBER => {
-            set_float_return(
-                context,
-                i64::from_ne_bytes(objc_field(mem, receiver, 56).to_ne_bytes()) as f64,
-            );
+            set_float_return(context, objc_number_value(mem, receiver));
             0
         }
-        "isEqualToString:" | "isEqual:" if kind == A64_KIND_STRING => {
+        "isEqualToString:" | "isEqual:" if objc_is_string_kind(kind) => {
             u64::from(objc_text(mem, receiver) == objc_text(mem, context.regs[2]))
         }
-        "rangeOfString:options:" if kind == A64_KIND_STRING => {
+        "rangeOfString:options:" if objc_is_string_kind(kind) => {
             let haystack = objc_text(mem, receiver).unwrap_or_default();
             let needle = objc_text(mem, context.regs[2]).unwrap_or_default();
             if let Some(pos) = haystack.windows(needle.len()).position(|w| w == needle) {
@@ -1962,7 +2177,7 @@ fn objc_send(
             }
             return Ok(());
         }
-        "cStringUsingEncoding:" if kind == A64_KIND_STRING => objc_field(mem, receiver, 56),
+        "cStringUsingEncoding:" if objc_is_string_kind(kind) => objc_field(mem, receiver, 56),
         "getInstance"
             if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"UnityFramework") =>
         {
@@ -2084,22 +2299,32 @@ fn objc_send(
             u64::from(hash)
         }
         "stringWithFormat:"
-            if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSString") =>
+            if kind == A64_KIND_CLASS
+                && (objc_text_eq(mem, class_name, b"NSString")
+                    || objc_text_eq(mem, class_name, b"NSMutableString")) =>
         {
             objc_string_with_format(mem, context.regs[2])?
         }
-        "substringToIndex:" if kind == A64_KIND_STRING => {
+        "substringToIndex:" if objc_is_string_kind(kind) => {
             objc_substring(mem, receiver, 0, Some(context.regs[2]))?
         }
-        "substringFromIndex:" if kind == A64_KIND_STRING => {
+        "substringFromIndex:" if objc_is_string_kind(kind) => {
             objc_substring(mem, receiver, context.regs[2], None)?
         }
-        "capitalizedString" if kind == A64_KIND_STRING => {
+        "capitalizedString" if objc_is_string_kind(kind) => {
             let mut bytes = objc_text(mem, receiver).unwrap_or_default();
             if let Some(first) = bytes.first_mut() {
                 first.make_ascii_uppercase();
             }
-            objc_string(mem, &String::from_utf8_lossy(&bytes))?
+            objc_string_with_kind(
+                mem,
+                &String::from_utf8_lossy(&bytes),
+                if kind == A64_KIND_MUTABLE_STRING {
+                    A64_KIND_MUTABLE_STRING
+                } else {
+                    A64_KIND_STRING
+                },
+            )?
         }
         "numberWithBool:"
             if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSNumber") =>
@@ -2111,33 +2336,61 @@ fn objc_send(
         {
             objc_number(mem, context.regs[2] as i64)?
         }
-        "numberWithFloat:" | "numberWithDouble:"
+        "numberWithFloat:"
             if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSNumber") =>
         {
-            objc_number(mem, context.regs[2] as i64)?
+            objc_number_float(mem, arm64_float_arg(context, 0) as f64)?
+        }
+        "numberWithDouble:"
+            if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSNumber") =>
+        {
+            objc_number_float(mem, arm64_double_arg(context, 0))?
         }
         "arrayWithObject:"
-            if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSArray") =>
+            if kind == A64_KIND_CLASS
+                && (objc_text_eq(mem, class_name, b"NSArray")
+                    || objc_text_eq(mem, class_name, b"NSMutableArray")) =>
         {
-            objc_array(mem, &[context.regs[2]])?
+            objc_array_with_kind(
+                mem,
+                if objc_text_eq(mem, class_name, b"NSMutableArray") {
+                    A64_KIND_MUTABLE_ARRAY
+                } else {
+                    A64_KIND_ARRAY
+                },
+                &[context.regs[2]],
+            )?
         }
         "arrayWithObjects:count:"
-            if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSArray") =>
+            if kind == A64_KIND_CLASS
+                && (objc_text_eq(mem, class_name, b"NSArray")
+                    || objc_text_eq(mem, class_name, b"NSMutableArray")) =>
         {
             let count = context.regs[3].min(4096);
             let mut objects = Vec::with_capacity(count as usize);
             for index in 0..count {
                 objects.push(mem.read_u64(context.regs[2] + index * 8).unwrap_or(0));
             }
-            objc_array(mem, &objects)?
+            objc_array_with_kind(
+                mem,
+                if objc_text_eq(mem, class_name, b"NSMutableArray") {
+                    A64_KIND_MUTABLE_ARRAY
+                } else {
+                    A64_KIND_ARRAY
+                },
+                &objects,
+            )?
         }
         "dictionaryWithObject:forKey:"
-            if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSDictionary") =>
+            if kind == A64_KIND_CLASS
+                && (objc_text_eq(mem, class_name, b"NSDictionary")
+                    || objc_text_eq(mem, class_name, b"NSMutableDictionary")) =>
         {
-            let dictionary = objc_object(mem, A64_KIND_DICTIONARY)?;
-            set_objc_field(mem, dictionary, 56, 1);
-            set_objc_field(mem, dictionary, 64, context.regs[2]);
-            set_objc_field(mem, dictionary, 72, context.regs[3]);
+            let dictionary = objc_dictionary(mem, context.regs[3], context.regs[2])?;
+            if objc_text_eq(mem, class_name, b"NSMutableDictionary") {
+                mem.write_u64(dictionary, A64_KIND_MUTABLE_DICTIONARY)
+                    .map_err(str::to_owned)?;
+            }
             dictionary
         }
         "alloc" | "new" if kind == A64_KIND_CLASS => {
@@ -4454,6 +4707,76 @@ mod tests {
     }
 
     #[test]
+    fn arm64_memory_backed_foundation_objects_preserve_values() {
+        let mut memory = Mem64::new();
+        let mut runtime_state = state();
+        let mut context = touchHLE_DynarmicA64Context::default();
+        let data_class = objc_class_for_name(&mut memory, &mut runtime_state, "NSData").unwrap();
+        let source = memory.alloc_zeroed(4).unwrap();
+        memory.write_bytes(source, &[1, 2, 3, 4]).unwrap();
+        context.regs[0] = data_class;
+        context.regs[1] = selector_pointer(&mut memory, "dataWithBytes:length:").unwrap();
+        context.regs[2] = source;
+        context.regs[3] = 4;
+        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        let data = context.regs[0];
+        assert_eq!(objc_field(&memory, data, 64), 4);
+        assert_eq!(
+            memory.read_bytes(objc_field(&memory, data, 56), 4).unwrap(),
+            [1, 2, 3, 4]
+        );
+
+        let array_class = objc_class_for_name(&mut memory, &mut runtime_state, "NSArray").unwrap();
+        let first = objc_string(&mut memory, "first").unwrap();
+        let second = objc_string(&mut memory, "second").unwrap();
+        let elements = memory.alloc_zeroed(16).unwrap();
+        memory.write_u64(elements, first).unwrap();
+        memory.write_u64(elements + 8, second).unwrap();
+        context.regs[0] = array_class;
+        context.regs[1] = selector_pointer(&mut memory, "arrayWithObjects:count:").unwrap();
+        context.regs[2] = elements;
+        context.regs[3] = 2;
+        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        let array = context.regs[0];
+        context.regs[0] = array;
+        context.regs[1] = selector_pointer(&mut memory, "count").unwrap();
+        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        assert_eq!(context.regs[0], 2);
+        context.regs[0] = array;
+        context.regs[1] = selector_pointer(&mut memory, "objectAtIndex:").unwrap();
+        context.regs[2] = 1;
+        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        assert_eq!(context.regs[0], second);
+
+        let dictionary_class =
+            objc_class_for_name(&mut memory, &mut runtime_state, "NSDictionary").unwrap();
+        let key = objc_string(&mut memory, "key").unwrap();
+        context.regs[0] = dictionary_class;
+        context.regs[1] = selector_pointer(&mut memory, "dictionaryWithObject:forKey:").unwrap();
+        context.regs[2] = first;
+        context.regs[3] = key;
+        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        let dictionary = context.regs[0];
+        context.regs[0] = dictionary;
+        context.regs[1] = selector_pointer(&mut memory, "objectForKey:").unwrap();
+        context.regs[2] = key;
+        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        assert_eq!(context.regs[0], first);
+
+        let number_class =
+            objc_class_for_name(&mut memory, &mut runtime_state, "NSNumber").unwrap();
+        context.regs[0] = number_class;
+        context.regs[1] = selector_pointer(&mut memory, "numberWithInt:").unwrap();
+        context.regs[2] = 42;
+        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        let number = context.regs[0];
+        context.regs[0] = number;
+        context.regs[1] = selector_pointer(&mut memory, "intValue").unwrap();
+        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        assert_eq!(context.regs[0], 42);
+    }
+
+    #[test]
     fn arm64_foundation_file_loading_selectors_are_handled() {
         let mut memory = Mem64::new();
         let mut runtime_state = state();
@@ -4461,8 +4784,7 @@ mod tests {
 
         let ns_string_class =
             objc_class_for_name(&mut memory, &mut runtime_state, "NSString").unwrap();
-        let ns_data_class =
-            objc_class_for_name(&mut memory, &mut runtime_state, "NSData").unwrap();
+        let ns_data_class = objc_class_for_name(&mut memory, &mut runtime_state, "NSData").unwrap();
         let input = memory.alloc_zeroed(6).unwrap();
         memory.write_bytes(input, b"asset").unwrap();
 
@@ -4471,7 +4793,7 @@ mod tests {
         context.regs[2] = input;
         objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
         let string = context.regs[0];
-        assert_eq!(objc_text(&memory, string).as_deref(), Some(b"asset"));
+        assert_eq!(objc_text(&memory, string).as_deref(), Some(&b"asset"[..]));
 
         let receiver =
             objc_instance_for_class(&mut memory, &mut runtime_state, "NSString").unwrap();
@@ -4480,7 +4802,7 @@ mod tests {
         context.regs[2] = input;
         objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
         assert_eq!(context.regs[0], receiver);
-        assert_eq!(objc_text(&memory, receiver).as_deref(), Some(b"asset"));
+        assert_eq!(objc_text(&memory, receiver).as_deref(), Some(&b"asset"[..]));
 
         let other = objc_string(&mut memory, "other").unwrap();
         context.regs[0] = string;
@@ -4488,7 +4810,7 @@ mod tests {
         context.regs[2] = other;
         context.regs[3] = 0;
         objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
-        assert_eq!(context.regs[0], 0);
+        assert_eq!(context.regs[0], (-1_i64) as u64);
 
         context.regs[0] = ns_data_class;
         context.regs[1] = selector_pointer(&mut memory, "dataWithContentsOfFile:").unwrap();
