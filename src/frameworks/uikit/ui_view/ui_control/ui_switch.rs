@@ -94,10 +94,10 @@ fn init_common(env: &mut Environment, this: id) -> id {
 
     let white_color: id = msg_class![env; UIColor whiteColor];
     let light_gray_color: id = msg_class![env; UIColor lightGrayColor];
-    let blue_color: id = msg_class![env; UIColor colorWithRed:(83.0f32/255.0)
-                                                        green:(141.0f32/255.0)
-                                                         blue:(235.0f32/255.0)
-                                                        alpha:1.0f32];
+    let green_color: id = msg_class![env; UIColor colorWithRed:(52.0f32/255.0)
+                                                         green:(199.0f32/255.0)
+                                                          blue:(89.0f32/255.0)
+                                                         alpha:1.0f32];
     let thumb_color: id = msg_class![env; UIColor colorWithRed:(205.0f32/255.0)
                                                          green:(205.0f32/255.0)
                                                           blue:(205.0f32/255.0)
@@ -113,7 +113,7 @@ fn init_common(env: &mut Environment, this: id) -> id {
     () = msg![env; thumb setBackgroundColor:thumb_color];
 
     let label_on: id = msg_class![env; UILabel new];
-    () = msg![env; label_on setBackgroundColor:blue_color];
+    () = msg![env; label_on setBackgroundColor:green_color];
     () = msg![env; label_on setTextAlignment:UITextAlignmentCenter];
     let text = ns_string::get_static_str(env, "ON");
     () = msg![env; label_on setText:text];

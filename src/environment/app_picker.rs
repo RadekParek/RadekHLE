@@ -795,7 +795,7 @@ fn app_picker_inner(
     fn update_quick_option_buttons(env: &mut Environment, buttons: &[id], selected_idx: usize) {
         for (idx, &button) in buttons.iter().enumerate() {
             let color: id = if idx == selected_idx {
-                msg_class![env; UIColor magentaColor]
+                msg_class![env; UIColor greenColor]
             } else {
                 msg_class![env; UIColor grayColor]
             };
@@ -827,7 +827,7 @@ fn app_picker_inner(
             let item_tag: NSInteger = msg![env; item tag];
             let selected = item_tag == tag as NSInteger;
             let color: id = if selected {
-                msg_class![env; UIColor magentaColor]
+                msg_class![env; UIColor greenColor]
             } else {
                 msg_class![env; UIColor darkGrayColor]
             };
@@ -2461,7 +2461,7 @@ fn update_device_model_menu(
         let tag: NSInteger = msg![env; item tag];
         let is_selected = selected.is_some_and(|v| v as NSInteger == tag);
         let color: id = if is_selected {
-            msg_class![env; UIColor magentaColor]
+            msg_class![env; UIColor greenColor]
         } else {
             msg_class![env; UIColor darkGrayColor]
         };
@@ -2509,7 +2509,7 @@ fn update_graphics_api_dropdown(
 ) {
     for (index, &item) in items.iter().enumerate() {
         let color: id = if GRAPHICS_API_ENTRIES[index].1 == value {
-            msg_class![env; UIColor magentaColor]
+            msg_class![env; UIColor greenColor]
         } else {
             msg_class![env; UIColor darkGrayColor]
         };
@@ -2613,7 +2613,7 @@ fn make_ios_version_dropdown(
     () = msg![env; button_label setFont:button_font];
     let white: id = msg_class![env; UIColor whiteColor];
     let dark_gray: id = msg_class![env; UIColor darkGrayColor];
-    let magenta: id = msg_class![env; UIColor magentaColor];
+    let magenta: id = msg_class![env; UIColor greenColor];
     () = msg![env; button setTitleColor:white forState:UIControlStateNormal];
     () = msg![env; button setBackgroundColor:dark_gray];
     () = msg![env; button setFrame:button_frame];
