@@ -2211,7 +2211,7 @@ fn setup_quick_options(
         RowKind::GraphicsApiDropdown,
         RowKind::Label("Dynarmic JIT"),
         RowKind::Switch("arm64Backend:", false),
-        RowKind::Label("ARM64 Fallback"),
+        RowKind::Label("Interpreter fallback"),
         RowKind::Switch("arm64Fallback:", false),
         RowKind::Label("Metal translator (ARM64)"),
         RowKind::Switch("metalTranslator:", true),
