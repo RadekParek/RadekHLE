@@ -781,18 +781,166 @@ fn arm64_search_path(state: &RuntimeState, directory: u64, domain_mask: u64) -> 
     }
 }
 fn cxx_string_bytes(mem: &Mem64, object: u64) -> Option<Vec<u8>> {
-    let first = mem.read_u64(object).ok()?;
-    if first & 1 == 0 {
-        let length = ((first & 0xff) / 2) as u64;
-        mem.read_bytes(object + 1, length).ok()
-    } else {
-        let length = mem.read_u64(object + 8).ok()?;
-        let capacity = mem.read_u64(object + 16).ok()?;
-        if length > capacity || length > MAX_CSTRING {
-            return None;
-        }
-        mem.read_bytes(first & !1, length).ok()
+    let short_size = mem.read_u8(object + 23).ok()?;
+    if short_size & 0x80 == 0 {
+        let length = u64::from(short_size);
+        return mem.read_bytes(object, length).ok();
     }
+    let pointer = mem.read_u64(object).ok()?;
+    let length = mem.read_u64(object + 8).ok()?;
+    let capacity = mem.read_u64(object + 16).ok()? & !(1_u64 << 63);
+    if pointer == 0 || length > capacity || length > MAX_CSTRING {
+        return None;
+    }
+    mem.read_bytes(pointer, length).ok()
+}
+
+fn cxx_string_is_long(mem: &Mem64, object: u64) -> bool {
+    mem.read_u8(object + 23)
+        .map(|value| value & 0x80 != 0)
+        .unwrap_or(false)
+}
+
+fn cxx_string_write(mem: &mut Mem64, object: u64, bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() as u64 > MAX_CSTRING {
+        return Err("ARM64 C++ string is too large".to_owned());
+    }
+    let old_pointer = if cxx_string_is_long(mem, object) {
+        mem.read_u64(object).unwrap_or(0)
+    } else {
+        0
+    };
+    if bytes.len() <= 22 {
+        let mut short = [0_u8; 23];
+        short[..bytes.len()].copy_from_slice(bytes);
+        mem.write_bytes(object, &short).map_err(str::to_owned)?;
+        mem.write_u8(object + 23, bytes.len() as u8)
+            .map_err(str::to_owned)?;
+        if old_pointer != 0 && mem.allocation_size(old_pointer).is_some() {
+            mem.free(old_pointer);
+        }
+        return Ok(());
+    }
+    let capacity = bytes.len().next_power_of_two().max(23);
+    let pointer = mem
+        .alloc_zeroed(capacity as u64 + 1)
+        .map_err(str::to_owned)?;
+    mem.write_bytes(pointer, bytes).map_err(str::to_owned)?;
+    mem.write_u8(pointer + bytes.len() as u64, 0)
+        .map_err(str::to_owned)?;
+    mem.write_u64(object, pointer).map_err(str::to_owned)?;
+    mem.write_u64(object + 8, bytes.len() as u64)
+        .map_err(str::to_owned)?;
+    mem.write_u64(object + 16, capacity as u64 | (1_u64 << 63))
+        .map_err(str::to_owned)?;
+    if old_pointer != 0 && old_pointer != pointer && mem.allocation_size(old_pointer).is_some() {
+        mem.free(old_pointer);
+    }
+    Ok(())
+}
+
+fn cxx_string_source(mem: &Mem64, pointer: u64, length: Option<u64>) -> Result<Vec<u8>, String> {
+    let bytes = if let Some(length) = length {
+        let length = usize::try_from(length).map_err(|_| "ARM64 C++ string length is too large")?;
+        mem.read_bytes(pointer, length as u64)
+            .map_err(str::to_owned)?
+    } else {
+        c_string(mem, pointer).ok_or("ARM64 C++ string source is unreadable")?
+    };
+    if bytes.len() as u64 > MAX_CSTRING {
+        return Err("ARM64 C++ string source is too large".to_owned());
+    }
+    Ok(bytes)
+}
+
+fn cxx_string_destroy(mem: &mut Mem64, object: u64) {
+    if cxx_string_is_long(mem, object) {
+        let pointer = mem.read_u64(object).unwrap_or(0);
+        if pointer != 0 && mem.allocation_size(pointer).is_some() {
+            mem.free(pointer);
+        }
+    }
+    let _ = mem.write_bytes(object, &[0; 23]);
+    let _ = mem.write_u8(object + 23, 0);
+}
+
+fn cxx_string_replace_range(
+    mem: &mut Mem64,
+    object: u64,
+    position: u64,
+    count: u64,
+    replacement: &[u8],
+) -> Result<(), String> {
+    let mut bytes = cxx_string_bytes(mem, object).unwrap_or_default();
+    let position = usize::try_from(position)
+        .map_err(|_| "ARM64 C++ string position is too large")?
+        .min(bytes.len());
+    let count = usize::try_from(count)
+        .unwrap_or(usize::MAX)
+        .min(bytes.len() - position);
+    let end = position + count;
+    let new_length = position
+        .checked_add(replacement.len())
+        .and_then(|value| value.checked_add(bytes.len() - end))
+        .ok_or("ARM64 C++ string length overflows")?;
+    if new_length as u64 > MAX_CSTRING {
+        return Err("ARM64 C++ string result is too large".to_owned());
+    }
+    bytes.splice(position..end, replacement.iter().copied());
+    cxx_string_write(mem, object, &bytes)
+}
+
+fn cxx_string_assign(
+    mem: &mut Mem64,
+    object: u64,
+    pointer: u64,
+    length: Option<u64>,
+) -> Result<(), String> {
+    let bytes = cxx_string_source(mem, pointer, length)?;
+    cxx_string_write(mem, object, &bytes)
+}
+
+fn cxx_string_append(
+    mem: &mut Mem64,
+    object: u64,
+    pointer: u64,
+    length: Option<u64>,
+) -> Result<(), String> {
+    let mut bytes = cxx_string_bytes(mem, object).unwrap_or_default();
+    bytes.extend(cxx_string_source(mem, pointer, length)?);
+    cxx_string_write(mem, object, &bytes)
+}
+
+fn cxx_string_push_byte(mem: &mut Mem64, object: u64, byte: u8) -> Result<(), String> {
+    let mut bytes = cxx_string_bytes(mem, object).unwrap_or_default();
+    bytes.push(byte);
+    cxx_string_write(mem, object, &bytes)
+}
+
+fn cxx_string_insert(
+    mem: &mut Mem64,
+    object: u64,
+    position: u64,
+    pointer: u64,
+    length: Option<u64>,
+) -> Result<(), String> {
+    let replacement = cxx_string_source(mem, pointer, length)?;
+    let mut bytes = cxx_string_bytes(mem, object).unwrap_or_default();
+    let position = usize::try_from(position)
+        .map_err(|_| "ARM64 C++ string position is too large")?
+        .min(bytes.len());
+    bytes.splice(position..position, replacement);
+    cxx_string_write(mem, object, &bytes)
+}
+
+fn cxx_string_resize(mem: &mut Mem64, object: u64, length: u64, fill: u8) -> Result<(), String> {
+    let length = usize::try_from(length).map_err(|_| "ARM64 C++ string length is too large")?;
+    if length > MAX_CSTRING as usize {
+        return Err("ARM64 C++ string is too large".to_owned());
+    }
+    let mut bytes = cxx_string_bytes(mem, object).unwrap_or_default();
+    bytes.resize(length, fill);
+    cxx_string_write(mem, object, &bytes)
 }
 
 fn normalize_arm64_allocation_size(requested: u64) -> Option<u64> {
@@ -3265,8 +3413,12 @@ pub fn dispatch(
             Ok(true)
         }
         "gxx_personality_v0"
-        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev"
         | "ZSt9terminatev" | "Unwind_Resume" | "__Unwind_Resume" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev" => {
+            cxx_string_destroy(mem, context.regs[0]);
             return_value(context, 0);
             Ok(true)
         }
@@ -3311,13 +3463,90 @@ pub fn dispatch(
             return_value(context, u64::from(left.cmp(&right) as i8 as i64 as u64));
             Ok(true)
         }
-        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6eraseEmm"
-        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcmm"
-        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEmc"
-        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKc"
-        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm"
-        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKc"
-        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKcm" => {
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcmm" => {
+            cxx_string_assign(mem, context.regs[0], context.regs[1], Some(context.regs[2]))?;
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEmc" => {
+            let length = context.regs[1];
+            let fill = context.regs[2] as u8;
+            cxx_string_resize(mem, context.regs[0], length, fill)?;
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKc" => {
+            cxx_string_append(mem, context.regs[0], context.regs[1], None)?;
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm" => {
+            cxx_string_append(mem, context.regs[0], context.regs[1], Some(context.regs[2]))?;
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKc" => {
+            cxx_string_assign(mem, context.regs[0], context.regs[1], None)?;
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKcm" => {
+            cxx_string_assign(mem, context.regs[0], context.regs[1], Some(context.regs[2]))?;
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7eraseEmm" => {
+            cxx_string_replace_range(mem, context.regs[0], context.regs[1], context.regs[2], &[])?;
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7replaceEmmPKcm" => {
+            let replacement = cxx_string_source(mem, context.regs[3], Some(context.regs[4]))?;
+            cxx_string_replace_range(mem, context.regs[0], context.regs[1], context.regs[2], &replacement)?;
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5insertEmPKc" => {
+            cxx_string_insert(mem, context.regs[0], context.regs[1], context.regs[2], None)?;
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5insertEmPKcm" => {
+            cxx_string_insert(mem, context.regs[0], context.regs[1], context.regs[2], Some(context.regs[3]))?;
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7resizeEmc" => {
+            cxx_string_resize(mem, context.regs[0], context.regs[1], context.regs[2] as u8)?;
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7reserveEm" => {
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE9push_backEc" => {
+            cxx_string_push_byte(mem, context.regs[0], context.regs[1] as u8)?;
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1ERKS5_" => {
+            let bytes = cxx_string_bytes(mem, context.regs[1]).unwrap_or_default();
+            cxx_string_write(mem, context.regs[0], &bytes)?;
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1ERKS5_mmRKS4_" => {
+            let bytes = cxx_string_bytes(mem, context.regs[1]).unwrap_or_default();
+            let start = usize::try_from(context.regs[2]).unwrap_or(usize::MAX).min(bytes.len());
+            let count = usize::try_from(context.regs[3]).unwrap_or(usize::MAX).min(bytes.len() - start);
+            cxx_string_write(mem, context.regs[0], &bytes[start..start + count])?;
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEaSERKS5_" => {
+            let bytes = cxx_string_bytes(mem, context.regs[1]).unwrap_or_default();
+            cxx_string_write(mem, context.regs[0], &bytes)?;
             return_value(context, context.regs[0]);
             Ok(true)
         }
