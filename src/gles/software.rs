@@ -53,6 +53,8 @@ const GL_COMPILE_STATUS: GLenum = 0x8B81;
 const GL_INFO_LOG_LENGTH: GLenum = 0x8B84;
 const GL_LINK_STATUS: GLenum = 0x8B82;
 const GL_VALIDATE_STATUS: GLenum = 0x8B83;
+const GL_BUFFER_ACCESS: GLenum = 0x88BB;
+const GL_BUFFER_MAPPED: GLenum = 0x88BC;
 
 #[derive(Clone, Copy)]
 struct ArrayState {
@@ -114,6 +116,11 @@ pub struct SoftwareState {
     bound_renderbuffer: GLuint,
     renderbuffers: HashSet<GLuint>,
     framebuffers: HashSet<GLuint>,
+    framebuffer_color: HashMap<GLuint, GLuint>,
+    framebuffer_depth: HashMap<GLuint, GLuint>,
+    framebuffer_texture: HashMap<GLuint, GLuint>,
+    renderbuffer_sizes: HashMap<GLuint, (usize, usize)>,
+    mapped_buffers: HashSet<GLuint>,
     arrays: [ArrayState; 4],
     attributes: [ArrayState; 16],
     current_color: [f32; 4],
@@ -186,6 +193,11 @@ impl SoftwareState {
             bound_renderbuffer: 0,
             renderbuffers: HashSet::new(),
             framebuffers: HashSet::new(),
+            framebuffer_color: HashMap::new(),
+            framebuffer_depth: HashMap::new(),
+            framebuffer_texture: HashMap::new(),
+            renderbuffer_sizes: HashMap::new(),
+            mapped_buffers: HashSet::new(),
             arrays: [ArrayState::default(); 4],
             attributes: [ArrayState::default(); 16],
             current_color: [1.0; 4],
@@ -693,6 +705,36 @@ impl GLES for SoftwareGLES<'_> {
             params.copy_from_nonoverlapping(self.state.current_color.as_ptr(), 4);
         }
     }
+    unsafe fn GetBooleanv(&mut self, pname: GLenum, params: *mut GLboolean) {
+        if params.is_null() {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        }
+        let value = match pname {
+            gl::DEPTH_TEST | gl::CULL_FACE | gl::BLEND | gl::ALPHA_TEST | gl::SCISSOR_TEST => {
+                self.state.enabled.contains(&pname)
+            }
+            0x0B72 => self.state.depth_mask,
+            _ => false,
+        };
+        *params = if value { gl::TRUE } else { gl::FALSE };
+    }
+    unsafe fn GetFixedv(&mut self, pname: GLenum, params: *mut GLfixed) {
+        if params.is_null() {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        }
+        let mut values = [0.0; 16];
+        self.GetFloatv(pname, values.as_mut_ptr());
+        let count = if matches!(pname, gl::MODELVIEW_MATRIX | gl::PROJECTION_MATRIX) {
+            16
+        } else {
+            4
+        };
+        for (index, value) in values.into_iter().take(count).enumerate() {
+            *params.add(index) = (value * 65536.0).round() as GLfixed;
+        }
+    }
     unsafe fn GetString(&mut self, name: GLenum) -> *const GLubyte {
         self.state
             .strings
@@ -890,6 +932,68 @@ impl GLES for SoftwareGLES<'_> {
                 normalized: normalized != 0,
             };
         }
+    }
+    unsafe fn GetVertexAttribiv(&mut self, index: GLuint, pname: GLenum, params: *mut GLint) {
+        if params.is_null() {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        }
+        let Some(array) = self.state.attributes.get(index as usize).copied() else {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        };
+        *params = match pname {
+            0x8622 => array.enabled as GLint,
+            0x8623 => array.size,
+            0x8624 => array.stride,
+            0x8625 => array.type_ as GLint,
+            0x886A => array.normalized as GLint,
+            0x889F => array.buffer as GLint,
+            _ => {
+                self.state.error(gl::INVALID_ENUM);
+                0
+            }
+        };
+    }
+    unsafe fn GetVertexAttribfv(&mut self, index: GLuint, pname: GLenum, params: *mut GLfloat) {
+        if params.is_null() {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        }
+        let Some(array) = self.state.attributes.get(index as usize).copied() else {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        };
+        if pname == 0x8626 {
+            params.copy_from_nonoverlapping(self.state.current_color.as_ptr(), 4);
+        } else {
+            let mut value = 0;
+            self.GetVertexAttribiv(index, pname, &mut value);
+            *params = value as GLfloat;
+        }
+        let _ = array;
+    }
+    unsafe fn GetVertexAttribPointerv(
+        &mut self,
+        index: GLuint,
+        pname: GLenum,
+        pointer: *mut *mut GLvoid,
+    ) {
+        if pointer.is_null() {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        }
+        if pname != 0x8645 {
+            self.state.error(gl::INVALID_ENUM);
+            *pointer = std::ptr::null_mut();
+            return;
+        }
+        let Some(array) = self.state.attributes.get(index as usize).copied() else {
+            self.state.error(gl::INVALID_VALUE);
+            *pointer = std::ptr::null_mut();
+            return;
+        };
+        *pointer = array.pointer as *mut GLvoid;
     }
     unsafe fn VertexAttrib4f(
         &mut self,
@@ -1099,6 +1203,66 @@ impl GLES for SoftwareGLES<'_> {
         if !params.is_null() {
             self.TexParameterx(target, pname, *params);
         }
+    }
+    unsafe fn GetTexParameteriv(&mut self, _target: GLenum, pname: GLenum, params: *mut GLint) {
+        if params.is_null() {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        }
+        *params = self.state.texture().map(|texture| match pname {
+            gl::TEXTURE_MIN_FILTER => texture.min_filter as GLint,
+            gl::TEXTURE_MAG_FILTER => texture.mag_filter as GLint,
+            gl::TEXTURE_WRAP_S => texture.wrap_s as GLint,
+            gl::TEXTURE_WRAP_T => texture.wrap_t as GLint,
+            _ => 0,
+        }).unwrap_or(0);
+    }
+    unsafe fn GetTexParameterfv(&mut self, target: GLenum, pname: GLenum, params: *mut GLfloat) {
+        if params.is_null() {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        }
+        let mut value = 0;
+        self.GetTexParameteriv(target, pname, &mut value);
+        *params = value as GLfloat;
+    }
+    unsafe fn GetTexParameterxv(&mut self, target: GLenum, pname: GLenum, params: *mut GLfixed) {
+        if params.is_null() {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        }
+        let mut value = 0.0;
+        self.GetTexParameterfv(target, pname, &mut value);
+        *params = (value * 65536.0).round() as GLfixed;
+    }
+    unsafe fn GetTexEnviv(&mut self, _target: GLenum, pname: GLenum, params: *mut GLint) {
+        if params.is_null() {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        }
+        *params = if pname == gl::TEXTURE_ENV_MODE {
+            self.state.texture().map(|texture| texture.env_mode as GLint).unwrap_or(gl::MODULATE as GLint)
+        } else {
+            0
+        };
+    }
+    unsafe fn GetTexEnvfv(&mut self, target: GLenum, pname: GLenum, params: *mut GLfloat) {
+        if params.is_null() {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        }
+        let mut value = 0;
+        self.GetTexEnviv(target, pname, &mut value);
+        *params = value as GLfloat;
+    }
+    unsafe fn GetTexEnvxv(&mut self, target: GLenum, pname: GLenum, params: *mut GLfixed) {
+        if params.is_null() {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        }
+        let mut value = 0.0;
+        self.GetTexEnvfv(target, pname, &mut value);
+        *params = (value * 65536.0).round() as GLfixed;
     }
     unsafe fn TexImage2D(
         &mut self,
@@ -1429,7 +1593,15 @@ impl GLES for SoftwareGLES<'_> {
     unsafe fn DeleteBuffers(&mut self, n: GLsizei, buffers: *const GLuint) {
         if !buffers.is_null() {
             for i in 0..n.max(0) as usize {
-                self.state.buffers.remove(&*buffers.add(i));
+                let id = *buffers.add(i);
+                self.state.buffers.remove(&id);
+                self.state.mapped_buffers.remove(&id);
+                if self.state.bound_array_buffer == id {
+                    self.state.bound_array_buffer = 0;
+                }
+                if self.state.bound_element_buffer == id {
+                    self.state.bound_element_buffer = 0;
+                }
             }
         }
     }
@@ -1491,45 +1663,216 @@ impl GLES for SoftwareGLES<'_> {
             }
         }
     }
-    unsafe fn GenFramebuffersOES(&mut self, n: GLsizei, framebuffers: *mut GLuint) {
-        if !framebuffers.is_null() {
-            for i in 0..n.max(0) as usize {
-                let id = self.state.alloc_id();
-                self.state.framebuffers.insert(id);
-                *framebuffers.add(i) = id;
+    unsafe fn GetBufferParameteriv(&mut self, target: GLenum, pname: GLenum, params: *mut GLint) {
+        if params.is_null() {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        }
+        let id = match target {
+            gl::ARRAY_BUFFER => self.state.bound_array_buffer,
+            gl::ELEMENT_ARRAY_BUFFER => self.state.bound_element_buffer,
+            _ => {
+                self.state.error(gl::INVALID_ENUM);
+                *params = 0;
+                return;
             }
+        };
+        let size = self.state.buffers.get(&id).map_or(0, Vec::len) as GLint;
+        *params = match pname {
+            gl::BUFFER_SIZE => size,
+            GL_BUFFER_ACCESS => if self.state.mapped_buffers.contains(&id) { gl::WRITE_ONLY_OES as GLint } else { 0 },
+            GL_BUFFER_MAPPED => self.state.mapped_buffers.contains(&id) as GLint,
+            _ => {
+                self.state.error(gl::INVALID_ENUM);
+                0
+            }
+        };
+    }
+    unsafe fn MapBufferOES(&mut self, target: GLenum, access: GLenum) -> *mut GLvoid {
+        let id = match target {
+            gl::ARRAY_BUFFER => self.state.bound_array_buffer,
+            gl::ELEMENT_ARRAY_BUFFER => self.state.bound_element_buffer,
+            _ => {
+                self.state.error(gl::INVALID_ENUM);
+                return std::ptr::null_mut();
+            }
+        };
+        if access != gl::WRITE_ONLY_OES || id == 0 || self.state.mapped_buffers.contains(&id) {
+            self.state.error(gl::INVALID_OPERATION);
+            return std::ptr::null_mut();
+        }
+        let Some(buffer) = self.state.buffers.get_mut(&id) else {
+            self.state.error(gl::INVALID_OPERATION);
+            return std::ptr::null_mut();
+        };
+        self.state.mapped_buffers.insert(id);
+        buffer.as_mut_ptr().cast()
+    }
+    unsafe fn UnmapBufferOES(&mut self, target: GLenum) -> GLboolean {
+        let id = match target {
+            gl::ARRAY_BUFFER => self.state.bound_array_buffer,
+            gl::ELEMENT_ARRAY_BUFFER => self.state.bound_element_buffer,
+            _ => {
+                self.state.error(gl::INVALID_ENUM);
+                return gl::FALSE;
+            }
+        };
+        if self.state.mapped_buffers.remove(&id) {
+            gl::TRUE
+        } else {
+            self.state.error(gl::INVALID_OPERATION);
+            gl::FALSE
+        }
+    }
+    unsafe fn BindFramebuffer(&mut self, target: GLenum, framebuffer: GLuint) {
+        self.BindFramebufferOES(target, framebuffer);
+    }
+    unsafe fn BindRenderbuffer(&mut self, target: GLenum, renderbuffer: GLuint) {
+        self.BindRenderbufferOES(target, renderbuffer);
+    }
+    unsafe fn RenderbufferStorage(
+        &mut self,
+        target: GLenum,
+        internalformat: GLenum,
+        width: GLsizei,
+        height: GLsizei,
+    ) {
+        self.RenderbufferStorageOES(target, internalformat, width, height);
+    }
+    unsafe fn FramebufferRenderbuffer(
+        &mut self,
+        target: GLenum,
+        attachment: GLenum,
+        renderbuffertarget: GLenum,
+        renderbuffer: GLuint,
+    ) {
+        self.FramebufferRenderbufferOES(target, attachment, renderbuffertarget, renderbuffer);
+    }
+    unsafe fn FramebufferTexture2D(
+        &mut self,
+        target: GLenum,
+        attachment: GLenum,
+        textarget: GLenum,
+        texture: GLuint,
+        level: i32,
+    ) {
+        self.FramebufferTexture2DOES(target, attachment, textarget, texture, level);
+    }
+    unsafe fn CheckFramebufferStatus(&mut self, target: GLenum) -> GLenum {
+        self.CheckFramebufferStatusOES(target)
+    }
+    unsafe fn DeleteFramebuffers(&mut self, n: GLsizei, framebuffers: *const GLuint) {
+        self.DeleteFramebuffersOES(n, framebuffers);
+    }
+    unsafe fn DeleteRenderbuffers(&mut self, n: GLsizei, renderbuffers: *const GLuint) {
+        self.DeleteRenderbuffersOES(n, renderbuffers);
+    }
+    unsafe fn GenerateMipmap(&mut self, target: GLenum) {
+        self.GenerateMipmapOES(target);
+    }
+    unsafe fn GetFramebufferAttachmentParameteriv(
+        &mut self,
+        target: GLenum,
+        attachment: GLenum,
+        pname: GLenum,
+        params: *mut GLint,
+    ) {
+        self.GetFramebufferAttachmentParameterivOES(target, attachment, pname, params);
+    }
+    unsafe fn GetRenderbufferParameteriv(
+        &mut self,
+        target: GLenum,
+        pname: GLenum,
+        params: *mut GLint,
+    ) {
+        self.GetRenderbufferParameterivOES(target, pname, params);
+    }
+
+    unsafe fn GenFramebuffersOES(&mut self, n: GLsizei, framebuffers: *mut GLuint) {
+        if framebuffers.is_null() {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        }
+        for i in 0..n.max(0) as usize {
+            let id = self.state.alloc_id();
+            self.state.framebuffers.insert(id);
+            *framebuffers.add(i) = id;
         }
     }
     unsafe fn DeleteFramebuffersOES(&mut self, n: GLsizei, framebuffers: *const GLuint) {
         if !framebuffers.is_null() {
             for i in 0..n.max(0) as usize {
-                self.state.framebuffers.remove(&*framebuffers.add(i));
+                let id = *framebuffers.add(i);
+                self.state.framebuffers.remove(&id);
+                self.state.framebuffer_color.remove(&id);
+                self.state.framebuffer_depth.remove(&id);
+                self.state.framebuffer_texture.remove(&id);
+                if self.state.bound_framebuffer == id {
+                    self.state.bound_framebuffer = 0;
+                }
             }
         }
     }
-    unsafe fn BindFramebufferOES(&mut self, _target: GLenum, framebuffer: GLuint) {
+    unsafe fn BindFramebufferOES(&mut self, target: GLenum, framebuffer: GLuint) {
+        if target != gl::FRAMEBUFFER_OES {
+            self.state.error(gl::INVALID_ENUM);
+            return;
+        }
+        if framebuffer != 0 && !self.state.framebuffers.contains(&framebuffer) {
+            self.state.error(gl::INVALID_OPERATION);
+            return;
+        }
         self.state.bound_framebuffer = framebuffer;
     }
-    unsafe fn CheckFramebufferStatusOES(&mut self, _target: GLenum) -> GLenum {
-        gl::FRAMEBUFFER_COMPLETE_OES
+    unsafe fn CheckFramebufferStatusOES(&mut self, target: GLenum) -> GLenum {
+        if target != gl::FRAMEBUFFER_OES {
+            self.state.error(gl::INVALID_ENUM);
+            return 0;
+        }
+        if self.state.bound_framebuffer == 0 {
+            gl::FRAMEBUFFER_COMPLETE_OES
+        } else if self.state.framebuffer_color.contains_key(&self.state.bound_framebuffer)
+            || self.state.framebuffer_texture.contains_key(&self.state.bound_framebuffer)
+        {
+            gl::FRAMEBUFFER_COMPLETE_OES
+        } else {
+            gl::FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT_OES
+        }
     }
     unsafe fn GenRenderbuffersOES(&mut self, n: GLsizei, renderbuffers: *mut GLuint) {
-        if !renderbuffers.is_null() {
-            for i in 0..n.max(0) as usize {
-                let id = self.state.alloc_id();
-                self.state.renderbuffers.insert(id);
-                *renderbuffers.add(i) = id;
-            }
+        if renderbuffers.is_null() {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        }
+        for i in 0..n.max(0) as usize {
+            let id = self.state.alloc_id();
+            self.state.renderbuffers.insert(id);
+            *renderbuffers.add(i) = id;
         }
     }
     unsafe fn DeleteRenderbuffersOES(&mut self, n: GLsizei, renderbuffers: *const GLuint) {
         if !renderbuffers.is_null() {
             for i in 0..n.max(0) as usize {
-                self.state.renderbuffers.remove(&*renderbuffers.add(i));
+                let id = *renderbuffers.add(i);
+                self.state.renderbuffers.remove(&id);
+                self.state.renderbuffer_sizes.remove(&id);
+                self.state.framebuffer_color.retain(|_, value| *value != id);
+                self.state.framebuffer_depth.retain(|_, value| *value != id);
+                if self.state.bound_renderbuffer == id {
+                    self.state.bound_renderbuffer = 0;
+                }
             }
         }
     }
-    unsafe fn BindRenderbufferOES(&mut self, _target: GLenum, renderbuffer: GLuint) {
+    unsafe fn BindRenderbufferOES(&mut self, target: GLenum, renderbuffer: GLuint) {
+        if target != gl::RENDERBUFFER_OES {
+            self.state.error(gl::INVALID_ENUM);
+            return;
+        }
+        if renderbuffer != 0 && !self.state.renderbuffers.contains(&renderbuffer) {
+            self.state.error(gl::INVALID_OPERATION);
+            return;
+        }
         self.state.bound_renderbuffer = renderbuffer;
     }
     unsafe fn RenderbufferStorageOES(
@@ -1543,8 +1886,12 @@ impl GLES for SoftwareGLES<'_> {
             self.state.error(gl::INVALID_VALUE);
             return;
         }
-        self.state.width = width as usize;
-        self.state.height = height as usize;
+        let size = (width as usize, height as usize);
+        if self.state.bound_renderbuffer != 0 {
+            self.state.renderbuffer_sizes.insert(self.state.bound_renderbuffer, size);
+        }
+        self.state.width = size.0;
+        self.state.height = size.1;
         self.state
             .color
             .resize(self.state.width * self.state.height * 4, 0);
@@ -1555,35 +1902,101 @@ impl GLES for SoftwareGLES<'_> {
     }
     unsafe fn FramebufferRenderbufferOES(
         &mut self,
-        _target: GLenum,
-        _attachment: GLenum,
-        _renderbuffertarget: GLenum,
+        target: GLenum,
+        attachment: GLenum,
+        renderbuffertarget: GLenum,
         renderbuffer: GLuint,
     ) {
-        self.state.bound_renderbuffer = renderbuffer;
+        if target != gl::FRAMEBUFFER_OES || renderbuffertarget != gl::RENDERBUFFER_OES {
+            self.state.error(gl::INVALID_ENUM);
+            return;
+        }
+        if self.state.bound_framebuffer == 0 {
+            self.state.error(gl::INVALID_OPERATION);
+            return;
+        }
+        match attachment {
+            gl::COLOR_ATTACHMENT0_OES => {
+                self.state.framebuffer_color.insert(self.state.bound_framebuffer, renderbuffer);
+            }
+            gl::DEPTH_ATTACHMENT_OES => {
+                self.state.framebuffer_depth.insert(self.state.bound_framebuffer, renderbuffer);
+            }
+            _ => self.state.error(gl::INVALID_ENUM),
+        }
     }
     unsafe fn FramebufferTexture2DOES(
         &mut self,
-        _target: GLenum,
-        _attachment: GLenum,
+        target: GLenum,
+        attachment: GLenum,
         _textarget: GLenum,
-        _texture: GLuint,
+        texture: GLuint,
         _level: i32,
     ) {
+        if target != gl::FRAMEBUFFER_OES || attachment != gl::COLOR_ATTACHMENT0_OES {
+            self.state.error(gl::INVALID_ENUM);
+            return;
+        }
+        if self.state.bound_framebuffer == 0 {
+            self.state.error(gl::INVALID_OPERATION);
+            return;
+        }
+        self.state.framebuffer_texture.insert(self.state.bound_framebuffer, texture);
     }
-    unsafe fn GetRenderbufferParameterivOES(
+    unsafe fn GetFramebufferAttachmentParameterivOES(
         &mut self,
-        _target: GLenum,
+        target: GLenum,
+        attachment: GLenum,
         pname: GLenum,
         params: *mut GLint,
     ) {
-        if !params.is_null() {
-            *params = match pname {
-                gl::RENDERBUFFER_WIDTH_OES => self.state.width as GLint,
-                gl::RENDERBUFFER_HEIGHT_OES => self.state.height as GLint,
-                _ => 0,
-            };
+        if params.is_null() {
+            self.state.error(gl::INVALID_VALUE);
+            return;
         }
+        if target != gl::FRAMEBUFFER_OES {
+            self.state.error(gl::INVALID_ENUM);
+            *params = 0;
+            return;
+        }
+        let object = match attachment {
+            gl::COLOR_ATTACHMENT0_OES => self.state.framebuffer_color.get(&self.state.bound_framebuffer).copied().unwrap_or(0),
+            gl::DEPTH_ATTACHMENT_OES => self.state.framebuffer_depth.get(&self.state.bound_framebuffer).copied().unwrap_or(0),
+            _ => {
+                self.state.error(gl::INVALID_ENUM);
+                0
+            }
+        };
+        *params = match pname {
+            gl::FRAMEBUFFER_ATTACHMENT_OBJECT_NAME_OES => object as GLint,
+            gl::FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE_OES => if object != 0 { gl::RENDERBUFFER_OES as GLint } else { 0 },
+            _ => {
+                self.state.error(gl::INVALID_ENUM);
+                0
+            }
+        };
+    }
+    unsafe fn GetRenderbufferParameterivOES(
+        &mut self,
+        target: GLenum,
+        pname: GLenum,
+        params: *mut GLint,
+    ) {
+        if params.is_null() {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        }
+        if target != gl::RENDERBUFFER_OES {
+            self.state.error(gl::INVALID_ENUM);
+            *params = 0;
+            return;
+        }
+        let (width, height) = self.state.renderbuffer_sizes.get(&self.state.bound_renderbuffer).copied().unwrap_or((self.state.width, self.state.height));
+        *params = match pname {
+            gl::RENDERBUFFER_WIDTH_OES => width as GLint,
+            gl::RENDERBUFFER_HEIGHT_OES => height as GLint,
+            _ => 0,
+        };
     }
     unsafe fn GenerateMipmapOES(&mut self, _target: GLenum) {}
     unsafe fn CreateShader(&mut self, _type_: GLenum) -> GLuint {

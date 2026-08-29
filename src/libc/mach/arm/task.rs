@@ -23,6 +23,13 @@ type mach_msg_type_number_t = natural_t;
 
 type exception_mask_t = u32;
 type exception_behavior_t = i32;
+type exception_flavor_t = i32;
+type exception_mask_array_t = MutPtr<exception_mask_t>;
+type exception_handler_array_t = MutPtr<mach_port_t>;
+type exception_behavior_array_t = MutPtr<exception_behavior_t>;
+type exception_flavor_array_t = MutPtr<exception_flavor_t>;
+
+const KERN_INVALID_ARGUMENT: kern_return_t = 4;
 
 fn task_threads(
     env: &mut Environment,
@@ -66,6 +73,39 @@ const EXC_MASK_BAD_ACCESS: MachExceptionMaskType = 1 << EXC_BAD_ACCESS;
 type MachExceptionBehaviourType = i32;
 const EXCEPTION_DEFAULT: MachExceptionBehaviourType = 1;
 
+fn task_get_exception_ports(
+    env: &mut Environment,
+    task: task_t,
+    exception_mask: exception_mask_t,
+    masks: exception_mask_array_t,
+    masks_cnt: MutPtr<mach_msg_type_number_t>,
+    old_handlers: exception_handler_array_t,
+    old_behaviors: exception_behavior_array_t,
+    old_flavors: exception_flavor_array_t,
+) -> kern_return_t {
+    if task != MACH_TASK_SELF || masks_cnt.is_null() {
+        return KERN_INVALID_ARGUMENT;
+    }
+    let capacity = env.mem.read(masks_cnt);
+    let count = if exception_mask & EXC_MASK_BAD_ACCESS != 0 { 0 } else { 0 };
+    if capacity > 0 {
+        if !masks.is_null() {
+            env.mem.write(masks, 0);
+        }
+        if !old_handlers.is_null() {
+            env.mem.write(old_handlers, 0);
+        }
+        if !old_behaviors.is_null() {
+            env.mem.write(old_behaviors, 0);
+        }
+        if !old_flavors.is_null() {
+            env.mem.write(old_flavors, 0);
+        }
+    }
+    env.mem.write(masks_cnt, count);
+    KERN_SUCCESS
+}
+
 fn task_set_exception_ports(
     _env: &mut Environment,
     task: task_t,
@@ -74,9 +114,13 @@ fn task_set_exception_ports(
     behavior: exception_behavior_t,
     new_flavor: thread_state_flavor_t,
 ) -> kern_return_t {
-    assert_eq!(task, MACH_TASK_SELF);
-    assert_eq!(exception_mask, EXC_MASK_BAD_ACCESS);
-    assert_eq!(behavior, EXCEPTION_DEFAULT);
+    if task != MACH_TASK_SELF {
+        return KERN_INVALID_ARGUMENT;
+    }
+    // Guests commonly install handlers for several exception classes and use
+    // non-default behaviours. The emulator does not deliver guest faults via
+    // Mach exception ports, so accept the registration without imposing the
+    // narrower shape used by one caller.
     // Mono's exception handler thread (Unity) installs an EXC_BAD_ACCESS
     // handler with this call. Per Apple's
     // [task_set_exception_ports](https://developer.apple.com/documentation/kernel/1402141-task_set_exception_ports?language=objc)
@@ -167,6 +211,7 @@ fn task_swap_exception_ports(
 
 pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(task_threads(_, _, _)),
+    export_c_func!(task_get_exception_ports(_, _, _, _, _, _, _)),
     export_c_func!(task_set_exception_ports(_, _, _, _, _)),
     export_c_func!(task_swap_exception_ports(_, _, _, _, _, _, _, _, _, _)),
 ];
