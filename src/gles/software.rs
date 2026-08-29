@@ -85,8 +85,16 @@ pub struct SoftwareState {
     enabled: HashSet<GLenum>,
     blend_src: GLenum,
     blend_dst: GLenum,
+    blend_equation: GLenum,
     depth_func: GLenum,
     depth_mask: bool,
+    depth_range: [f32; 2],
+    cull_face: GLenum,
+    front_face: GLenum,
+    alpha_func: GLenum,
+    alpha_ref: f32,
+    polygon_offset: [f32; 2],
+    shade_model: GLenum,
     color_mask: [bool; 4],
     clear_color: [f32; 4],
     clear_depth: f32,
@@ -149,8 +157,16 @@ impl SoftwareState {
             enabled: HashSet::new(),
             blend_src: gl::ONE,
             blend_dst: gl::ZERO,
+            blend_equation: gl::FUNC_ADD_OES,
             depth_func: gl::LESS,
             depth_mask: true,
+            depth_range: [0.0, 1.0],
+            cull_face: gl::BACK,
+            front_face: gl::CCW,
+            alpha_func: gl::ALWAYS,
+            alpha_ref: 0.0,
+            polygon_offset: [0.0, 0.0],
+            shade_model: gl::SMOOTH,
             color_mask: [true; 4],
             clear_color: [0.0, 0.0, 0.0, 0.0],
             clear_depth: 1.0,
@@ -428,7 +444,29 @@ impl SoftwareGLES<'_> {
                 {
                     continue;
                 }
-                let depth = a.z * w0 + b.z * w1 + c.z * w2;
+                let depth = (self.state.depth_range[0]
+                    + (self.state.depth_range[1] - self.state.depth_range[0])
+                        * (a.z * w0 + b.z * w1 + c.z * w2))
+                    .clamp(0.0, 1.0)
+                    + if self.state.enabled.contains(&gl::POLYGON_OFFSET_FILL) {
+                        (self.state.polygon_offset[0] * 0.000001
+                            + self.state.polygon_offset[1] * 0.000001)
+                            .clamp(-0.0001, 0.0001)
+                    } else {
+                        0.0
+                    };
+                let winding_is_front = if self.state.front_face == gl::CCW {
+                    area > 0.0
+                } else {
+                    area < 0.0
+                };
+                if self.state.enabled.contains(&gl::CULL_FACE)
+                    && ((self.state.cull_face == gl::BACK && !winding_is_front)
+                        || (self.state.cull_face == gl::FRONT && winding_is_front)
+                        || self.state.cull_face == gl::FRONT_AND_BACK)
+                {
+                    continue;
+                }
                 if x < 0 || y < 0 || x >= self.state.width as i32 || y >= self.state.height as i32 {
                     continue;
                 }
@@ -447,6 +485,11 @@ impl SoftwareGLES<'_> {
                     a.v * w0 + b.v * w1 + c.v * w2,
                 ];
                 let src = self.sample(uv, color);
+                if self.state.enabled.contains(&gl::ALPHA_TEST)
+                    && !alpha_pass(self.state.alpha_func, src[3], self.state.alpha_ref)
+                {
+                    continue;
+                }
                 let dst_offset = offset * 4;
                 let dst = [
                     self.state.color[dst_offset] as f32 / 255.0,
@@ -454,7 +497,13 @@ impl SoftwareGLES<'_> {
                     self.state.color[dst_offset + 2] as f32 / 255.0,
                     self.state.color[dst_offset + 3] as f32 / 255.0,
                 ];
-                let out = blend(src, dst, self.state.blend_src, self.state.blend_dst);
+                let out = blend_equation(
+                    src,
+                    dst,
+                    self.state.blend_src,
+                    self.state.blend_dst,
+                    self.state.blend_equation,
+                );
                 for i in 0..4 {
                     if self.state.color_mask[i] {
                         self.state.color[dst_offset + i] =
@@ -533,6 +582,9 @@ impl GLES for SoftwareGLES<'_> {
         let value = self.state.error;
         self.state.error = gl::NO_ERROR;
         value
+    }
+    unsafe fn IsBuffer(&mut self, buffer: GLuint) -> GLboolean {
+        self.state.buffers.contains_key(&buffer) as GLboolean
     }
     unsafe fn Enable(&mut self, cap: GLenum) {
         self.state.enabled.insert(cap);
@@ -616,6 +668,49 @@ impl GLES for SoftwareGLES<'_> {
         self.state.blend_src = src;
         self.state.blend_dst = dst;
     }
+    unsafe fn BlendEquationOES(&mut self, mode: GLenum) {
+        self.state.blend_equation = mode;
+    }
+    unsafe fn AlphaFunc(&mut self, func: GLenum, reference: GLclampf) {
+        self.state.alpha_func = func;
+        self.state.alpha_ref = reference.clamp(0.0, 1.0);
+    }
+    unsafe fn AlphaFuncx(&mut self, func: GLenum, reference: GLclampx) {
+        self.AlphaFunc(func, reference as f32 / 65536.0);
+    }
+    unsafe fn CullFace(&mut self, mode: GLenum) {
+        if matches!(mode, gl::FRONT | gl::BACK | gl::FRONT_AND_BACK) {
+            self.state.cull_face = mode;
+        } else {
+            self.state.error(gl::INVALID_ENUM);
+        }
+    }
+    unsafe fn FrontFace(&mut self, mode: GLenum) {
+        if matches!(mode, gl::CW | gl::CCW) {
+            self.state.front_face = mode;
+        } else {
+            self.state.error(gl::INVALID_ENUM);
+        }
+    }
+    unsafe fn ShadeModel(&mut self, mode: GLenum) {
+        if matches!(mode, gl::FLAT | gl::SMOOTH) {
+            self.state.shade_model = mode;
+        } else {
+            self.state.error(gl::INVALID_ENUM);
+        }
+    }
+    unsafe fn PolygonOffset(&mut self, factor: GLfloat, units: GLfloat) {
+        self.state.polygon_offset = [factor, units];
+    }
+    unsafe fn PolygonOffsetx(&mut self, factor: GLfixed, units: GLfixed) {
+        self.PolygonOffset(factor as f32 / 65536.0, units as f32 / 65536.0);
+    }
+    unsafe fn DepthRangef(&mut self, near: GLclampf, far: GLclampf) {
+        self.state.depth_range = [near.clamp(0.0, 1.0), far.clamp(0.0, 1.0)];
+    }
+    unsafe fn DepthRangex(&mut self, near: GLclampx, far: GLclampx) {
+        self.DepthRangef(near as f32 / 65536.0, far as f32 / 65536.0);
+    }
     unsafe fn DepthFunc(&mut self, func: GLenum) {
         self.state.depth_func = func;
     }
@@ -630,6 +725,16 @@ impl GLES for SoftwareGLES<'_> {
     }
     unsafe fn Scissor(&mut self, x: GLint, y: GLint, width: GLsizei, height: GLsizei) {
         self.state.scissor = [x, y, width.max(0), height.max(0)];
+    }
+    unsafe fn PixelStorei(&mut self, _pname: GLenum, _param: GLint) {}
+    unsafe fn Hint(&mut self, _target: GLenum, _mode: GLenum) {}
+    unsafe fn LineWidth(&mut self, _value: GLfloat) {}
+    unsafe fn LineWidthx(&mut self, value: GLfixed) {
+        self.LineWidth(value as f32 / 65536.0);
+    }
+    unsafe fn PointSize(&mut self, _value: GLfloat) {}
+    unsafe fn PointSizex(&mut self, value: GLfixed) {
+        self.PointSize(value as f32 / 65536.0);
     }
     unsafe fn Color4f(&mut self, r: GLfloat, g: GLfloat, b: GLfloat, a: GLfloat) {
         self.state.current_color = [r, g, b, a];
@@ -818,6 +923,14 @@ impl GLES for SoftwareGLES<'_> {
     unsafe fn ClearStencil(&mut self, value: GLint) {
         self.state.clear_stencil = value;
     }
+    unsafe fn StencilFunc(&mut self, _func: GLenum, _reference: GLint, _mask: GLuint) {}
+    unsafe fn StencilOp(&mut self, _sfail: GLenum, _dpfail: GLenum, _dppass: GLenum) {}
+    unsafe fn StencilMask(&mut self, _mask: GLuint) {}
+    unsafe fn LogicOp(&mut self, _opcode: GLenum) {}
+    unsafe fn SampleCoverage(&mut self, _value: GLclampf, _invert: GLboolean) {}
+    unsafe fn SampleCoveragex(&mut self, value: GLclampx, invert: GLboolean) {
+        self.SampleCoverage(value as f32 / 65536.0, invert);
+    }
     unsafe fn ReadPixels(
         &mut self,
         x: GLint,
@@ -920,6 +1033,34 @@ impl GLES for SoftwareGLES<'_> {
                 gl::TEXTURE_WRAP_T => texture.wrap_t = param as GLenum,
                 _ => {}
             }
+        }
+    }
+    unsafe fn IsTexture(&mut self, texture: GLuint) -> GLboolean {
+        if self.state.textures.contains_key(&texture) {
+            gl::TRUE
+        } else {
+            gl::FALSE
+        }
+    }
+    unsafe fn TexParameterf(&mut self, target: GLenum, pname: GLenum, param: GLfloat) {
+        self.TexParameteri(target, pname, param as GLint);
+    }
+    unsafe fn TexParameterx(&mut self, target: GLenum, pname: GLenum, param: GLfixed) {
+        self.TexParameteri(target, pname, param >> 16);
+    }
+    unsafe fn TexParameteriv(&mut self, target: GLenum, pname: GLenum, params: *const GLint) {
+        if !params.is_null() {
+            self.TexParameteri(target, pname, *params);
+        }
+    }
+    unsafe fn TexParameterfv(&mut self, target: GLenum, pname: GLenum, params: *const GLfloat) {
+        if !params.is_null() {
+            self.TexParameterf(target, pname, *params);
+        }
+    }
+    unsafe fn TexParameterxv(&mut self, target: GLenum, pname: GLenum, params: *const GLfixed) {
+        if !params.is_null() {
+            self.TexParameterx(target, pname, *params);
         }
     }
     unsafe fn TexImage2D(
@@ -1029,6 +1170,51 @@ impl GLES for SoftwareGLES<'_> {
     }
     unsafe fn TexEnvi(&mut self, target: GLenum, pname: GLenum, param: GLint) {
         self.TexEnvf(target, pname, param as f32);
+    }
+    unsafe fn TexEnvx(&mut self, target: GLenum, pname: GLenum, param: GLfixed) {
+        self.TexEnvf(target, pname, param as f32 / 65536.0);
+    }
+    unsafe fn TexEnvfv(&mut self, target: GLenum, pname: GLenum, params: *const GLfloat) {
+        if !params.is_null() {
+            self.TexEnvf(target, pname, *params);
+        }
+    }
+    unsafe fn TexEnvxv(&mut self, target: GLenum, pname: GLenum, params: *const GLfixed) {
+        if !params.is_null() {
+            self.TexEnvx(target, pname, *params);
+        }
+    }
+    unsafe fn TexEnviv(&mut self, target: GLenum, pname: GLenum, params: *const GLint) {
+        if !params.is_null() {
+            self.TexEnvi(target, pname, *params);
+        }
+    }
+    unsafe fn MultiTexCoord4f(
+        &mut self,
+        target: GLenum,
+        s: GLfloat,
+        t: GLfloat,
+        r: GLfloat,
+        q: GLfloat,
+    ) {
+        let unit = target.saturating_sub(gl::TEXTURE0).min(3) as usize;
+        self.state.current_texcoord[unit] = [s, t, r, q];
+    }
+    unsafe fn MultiTexCoord4x(
+        &mut self,
+        target: GLenum,
+        s: GLfixed,
+        t: GLfixed,
+        r: GLfixed,
+        q: GLfixed,
+    ) {
+        self.MultiTexCoord4f(
+            target,
+            s as f32 / 65536.0,
+            t as f32 / 65536.0,
+            r as f32 / 65536.0,
+            q as f32 / 65536.0,
+        );
     }
     unsafe fn MatrixMode(&mut self, mode: GLenum) {
         self.state.matrix_mode = mode;
@@ -1697,20 +1883,49 @@ fn factor(kind: GLenum, source: [f32; 4], destination: [f32; 4]) -> [f32; 4] {
     }
 }
 
-fn blend(
+fn blend_equation(
     source: [f32; 4],
     destination: [f32; 4],
     src_factor: GLenum,
     dst_factor: GLenum,
+    equation: GLenum,
 ) -> [f32; 4] {
     let s = factor(src_factor, source, destination);
     let d = factor(dst_factor, source, destination);
-    [
+    let add = [
         source[0] * s[0] + destination[0] * d[0],
         source[1] * s[1] + destination[1] * d[1],
         source[2] * s[2] + destination[2] * d[2],
         source[3] * s[3] + destination[3] * d[3],
-    ]
+    ];
+    match equation {
+        gl::FUNC_SUBTRACT_OES => [
+            source[0] * s[0] - destination[0] * d[0],
+            source[1] * s[1] - destination[1] * d[1],
+            source[2] * s[2] - destination[2] * d[2],
+            source[3] * s[3] - destination[3] * d[3],
+        ],
+        gl::FUNC_REVERSE_SUBTRACT_OES => [
+            destination[0] * d[0] - source[0] * s[0],
+            destination[1] * d[1] - source[1] * s[1],
+            destination[2] * d[2] - source[2] * s[2],
+            destination[3] * d[3] - source[3] * s[3],
+        ],
+        _ => add,
+    }
+}
+
+fn alpha_pass(func: GLenum, source: f32, reference: f32) -> bool {
+    match func {
+        gl::NEVER => false,
+        gl::LESS => source < reference,
+        gl::EQUAL => (source - reference).abs() < 0.0001,
+        gl::LEQUAL => source <= reference,
+        gl::GREATER => source > reference,
+        gl::NOTEQUAL => (source - reference).abs() >= 0.0001,
+        gl::GEQUAL => source >= reference,
+        _ => true,
+    }
 }
 
 fn wrap(value: f32, mode: GLenum) -> f32 {
