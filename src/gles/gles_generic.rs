@@ -106,6 +106,12 @@ pub trait GLES {
     fn is_native_es1(&self) -> bool {
         false
     }
+    fn is_software(&self) -> bool {
+        false
+    }
+    fn software_frame(&self) -> Option<(Vec<u8>, u32, u32)> {
+        None
+    }
     // Generic state manipulation
     unsafe fn GetError(&mut self) -> GLenum {
         unimplemented!("GetError not implemented by this backend")

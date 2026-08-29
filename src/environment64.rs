@@ -631,7 +631,8 @@ fn detect_graphics_backend(
         | crate::options::GraphicsApi::GLES20
         | crate::options::GraphicsApi::GLES30
         | crate::options::GraphicsApi::Translator
-        | crate::options::GraphicsApi::TranslatorGLES30 => (
+        | crate::options::GraphicsApi::TranslatorGLES30
+        | crate::options::GraphicsApi::Software => (
             A64GraphicsBackend::OpenGLESCompatibility,
             "graphics option explicitly selects OpenGL ES compatibility",
         ),

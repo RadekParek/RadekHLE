@@ -88,6 +88,7 @@ fn effective_eagl_api(
         GraphicsApi::GLES10 | GraphicsApi::GLES11 => kEAGLRenderingAPIOpenGLES1,
         GraphicsApi::Translator => kEAGLRenderingAPIOpenGLES2,
         GraphicsApi::TranslatorGLES30 => kEAGLRenderingAPIOpenGLES3,
+        GraphicsApi::Software => kEAGLRenderingAPIOpenGLES1,
         GraphicsApi::GLES20 => kEAGLRenderingAPIOpenGLES2,
         GraphicsApi::GLES30 => kEAGLRenderingAPIOpenGLES3,
         GraphicsApi::Metal => {
@@ -203,6 +204,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     );
 
     let mut gles_ins = match (env.options.graphics_api, effective_api) {
+        (GraphicsApi::Software, _) => create_gles1_ctx(env),
         (GraphicsApi::Translator, _) => create_gles1_translator_ctx(env),
         (GraphicsApi::TranslatorGLES30, _) => create_gles1_gles3_translator_ctx(env),
         (_, kEAGLRenderingAPIOpenGLES3) => create_gles3_ctx(env),
@@ -245,6 +247,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     );
 
     let mut gles_ins = match (env.options.graphics_api, effective_api) {
+        (GraphicsApi::Software, _) => create_gles1_ctx(env),
         (GraphicsApi::Translator, _) => create_gles1_translator_ctx(env),
         (GraphicsApi::TranslatorGLES30, _) => create_gles1_gles3_translator_ctx(env),
         (_, kEAGLRenderingAPIOpenGLES3) => create_gles3_ctx(env),
@@ -660,6 +663,21 @@ pub const CLASSES: ClassExports = objc_classes! {
         gles.GetIntegerv(gles11::RENDERBUFFER_BINDING_OES, &mut renderbuffer);
         renderbuffer as _
     };
+
+    if gles.is_software() {
+        let frame = gles.software_frame();
+        std::mem::drop(gles);
+        if let Some((pixels, width, height)) = frame {
+            env.window
+                .as_mut()
+                .unwrap()
+                .present_software_frame(pixels, width, height);
+        }
+        if let Some(sleep_for) = sleep_for {
+            env.sleep(sleep_for);
+        }
+        return true;
+    }
 
     std::mem::drop(gles);
 

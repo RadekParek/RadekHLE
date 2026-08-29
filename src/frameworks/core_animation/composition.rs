@@ -176,6 +176,9 @@ pub fn recomposite_if_necessary(env: &mut Environment, force: bool) -> Option<In
         msg![env; screen bounds]
     };
     let (fb_width, fb_height) = env.window().framebuffer_size();
+    if env.window().is_software_presentation() {
+        return new_recomposite_next;
+    }
     let present_frame_args = (
         env.window().viewport(),
         env.window().rotation_matrix(),

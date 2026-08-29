@@ -95,6 +95,7 @@ pub enum GraphicsApi {
     GLES11,
     GLES20,
     GLES30,
+    Software,
     Metal,
 }
 
@@ -114,6 +115,7 @@ impl GraphicsApi {
             "gles1.1" | "gles11" => Ok(Self::GLES11),
             "gles2.0" | "gles20" => Ok(Self::GLES20),
             "gles3.0" | "gles30" => Ok(Self::GLES30),
+            "software" | "software-rendering" | "cpu" => Ok(Self::Software),
             "metal" => Ok(Self::Metal),
             _ => Err(()),
         }
@@ -128,6 +130,7 @@ impl GraphicsApi {
             Self::GLES11 => "OpenGL ES 1.1",
             Self::GLES20 => "OpenGL ES 2.0",
             Self::GLES30 => "OpenGL ES 3.0",
+            Self::Software => "Software rendering",
             Self::Metal => "Metal compatibility",
         }
     }
@@ -449,6 +452,7 @@ impl Options {
         } else if let Some(value) = arg.strip_prefix("--graphics-api=") {
             self.graphics_api = GraphicsApi::from_short_name(value)
                 .map_err(|_| "Unrecognized --graphics-api= value".to_string())?;
+            self.software_presentation = matches!(self.graphics_api, GraphicsApi::Software);
         } else if arg == "--angle-driver" {
             self.angle_driver = true;
         } else if arg == "--disable-angle-driver" {

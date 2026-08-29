@@ -460,12 +460,10 @@ const CLASSES: ClassExports = objc_classes! {
 }
 - (())graphicsApi:(id)sender {
     let tag: NSInteger = msg![env; sender tag];
-    let api = match tag as i32 {
-        0 => crate::options::GraphicsApi::Default,
-        1 => crate::options::GraphicsApi::Translator,
-        2 => crate::options::GraphicsApi::TranslatorGLES30,
-        _ => crate::options::GraphicsApi::Default,
-    };
+    let api = GRAPHICS_API_ENTRIES
+        .get(tag as usize)
+        .map(|(_, api)| *api)
+        .unwrap_or(crate::options::GraphicsApi::Default);
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).graphics_api = Some(api);
 }
 
@@ -1268,6 +1266,7 @@ fn app_picker_inner(
             crate::options::GraphicsApi::GLES11 => "gles1.1",
             crate::options::GraphicsApi::GLES20 => "gles2.0",
             crate::options::GraphicsApi::GLES30 => "gles3.0",
+            crate::options::GraphicsApi::Software => "software",
             crate::options::GraphicsApi::Metal => "metal",
             crate::options::GraphicsApi::Default => unreachable!(),
         };
@@ -2509,6 +2508,10 @@ fn update_device_model_menu(
 /// Graphics API choices shown in the settings dropdown.
 const GRAPHICS_API_ENTRIES: &[(&str, crate::options::GraphicsApi)] = &[
     ("Default (game)", crate::options::GraphicsApi::Default),
+    (
+        "Software rendering (CPU)",
+        crate::options::GraphicsApi::Software,
+    ),
     (
         "OpenGL ES 1.1 → OpenGL ES 2.0 translator",
         crate::options::GraphicsApi::Translator,

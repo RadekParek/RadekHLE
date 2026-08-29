@@ -16,7 +16,7 @@ use crate::gles::present::present_frame;
 use crate::gles::{
     create_gles1_ctx_no_parent_stack, create_gles1_gles3_translator_ctx_no_parent_stack,
     create_gles1_translator_ctx_no_parent_stack, create_gles2_ctx_no_parent_stack, GLESContext,
-    GLES,
+    SoftwareGLESContext, GLES,
 };
 use crate::image::Image;
 use crate::matrix::Matrix;
@@ -983,6 +983,42 @@ fn surface_from_image(image: &Image) -> Surface<'_> {
     surface
 }
 
+fn orient_software_pixels(
+    pixels: Vec<u8>,
+    width: u32,
+    height: u32,
+    orientation: DeviceOrientation,
+) -> (Vec<u8>, u32, u32) {
+    let quarter_turns = match orientation {
+        DeviceOrientation::Portrait => 0,
+        DeviceOrientation::LandscapeRight => 1,
+        DeviceOrientation::PortraitUpsideDown => 2,
+        DeviceOrientation::LandscapeLeft => 3,
+    };
+    if quarter_turns == 0 {
+        return (pixels, width, height);
+    }
+    let (output_width, output_height) = if quarter_turns % 2 == 0 {
+        (width, height)
+    } else {
+        (height, width)
+    };
+    let mut output = vec![0u8; output_width as usize * output_height as usize * 4];
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let (destination_x, destination_y) = match quarter_turns {
+                1 => (height as usize - 1 - y, x),
+                2 => (width as usize - 1 - x, height as usize - 1 - y),
+                _ => (y, width as usize - 1 - x),
+            };
+            let source = (y * width as usize + x) * 4;
+            let destination = (destination_y * output_width as usize + destination_x) * 4;
+            output[destination..destination + 4].copy_from_slice(&pixels[source..source + 4]);
+        }
+    }
+    (output, output_width, output_height)
+}
+
 /// Query the host's primary display size in physical pixels, if possible.
 ///
 /// Used by `--device-family=auto` to pick the closest emulated device before
@@ -1106,7 +1142,8 @@ impl Window {
         options: &Options,
     ) -> Window {
         crate::gles::configure_angle_driver(options.angle_driver);
-        let software_presentation = options.software_presentation;
+        let software_presentation = options.software_presentation
+            || matches!(options.graphics_api, crate::options::GraphicsApi::Software);
         let sdl_ctx = sdl2::init().unwrap();
         let video_ctx = sdl_ctx.video().unwrap();
 
@@ -1300,7 +1337,9 @@ impl Window {
         // (see src/frameworks/core_animation/composition.rs). OpenGL ES is used
         // because SDL2 won't let us use more than one graphics API in the same
         // window, and we also need OpenGL ES for the app's own rendering.
-        if software_presentation {
+        if software_presentation
+            && !matches!(options.graphics_api, crate::options::GraphicsApi::Software)
+        {
             return window;
         }
 
@@ -1317,6 +1356,10 @@ impl Window {
             crate::options::GraphicsApi::GLES10 | crate::options::GraphicsApi::GLES11 => {
                 create_gles1_ctx_no_parent_stack(&mut window, options)
             }
+            crate::options::GraphicsApi::Software => Box::new(
+                SoftwareGLESContext::new(&mut window)
+                    .expect("Could not create software GLES context"),
+            ),
             crate::options::GraphicsApi::Metal => create_gles2_ctx_no_parent_stack(&mut window),
             crate::options::GraphicsApi::Default => {
                 if options.prefer_gles2_context || options.angle_driver {
@@ -2273,10 +2316,88 @@ impl Window {
         self.display_splash();
     }
 
+    pub fn present_software_frame(&mut self, pixels: Vec<u8>, width: u32, height: u32) {
+        self.present_software_pixels(pixels, width, height, true);
+    }
+
+    fn present_software_pixels(
+        &mut self,
+        pixels: Vec<u8>,
+        width: u32,
+        height: u32,
+        bottom_up: bool,
+    ) {
+        if width == 0 || height == 0 || pixels.len() < width as usize * height as usize * 4 {
+            return;
+        }
+        let mut source_pixels = vec![0u8; width as usize * height as usize * 4];
+        for y in 0..height as usize {
+            let source_y = if bottom_up {
+                height as usize - 1 - y
+            } else {
+                y
+            };
+            let source = source_y * width as usize * 4;
+            let destination = y * width as usize * 4;
+            source_pixels[destination..destination + width as usize * 4]
+                .copy_from_slice(&pixels[source..source + width as usize * 4]);
+        }
+
+        let (mut source_pixels, source_width, source_height) =
+            orient_software_pixels(source_pixels, width, height, self.device_orientation);
+        let source = match Surface::from_data(
+            &mut source_pixels,
+            source_width,
+            source_height,
+            source_width * 4,
+            PixelFormatEnum::RGBA32,
+        ) {
+            Ok(surface) => surface,
+            Err(error) => {
+                log!("Could not create software presentation surface: {}", error);
+                return;
+            }
+        };
+        let (x, y, target_width, target_height) = self.viewport();
+        let mut target = match self.window.surface(&self.event_pump) {
+            Ok(surface) => surface,
+            Err(error) => {
+                log!("Could not access software presentation target: {}", error);
+                return;
+            }
+        };
+        if let Err(error) = source.blit_scaled(
+            None,
+            &mut *target,
+            Some(sdl2::rect::Rect::new(
+                x as i32,
+                y as i32,
+                target_width,
+                target_height,
+            )),
+        ) {
+            log!("Could not scale software presentation frame: {}", error);
+            return;
+        }
+        if let Err(error) = target.update_window() {
+            log!("Could not update software presentation target: {}", error);
+        }
+    }
+
+    fn present_software_image(&mut self, pixels: Vec<u8>, width: u32, height: u32) {
+        self.present_software_pixels(pixels, width, height, false);
+    }
+
     fn display_splash(&mut self) {
         assert!(self.splash_image.is_some());
 
         let image = self.splash_image.as_ref().unwrap();
+        if self.software_presentation {
+            let (width, height) = image.dimensions();
+            self.present_software_image(image.pixels().to_vec(), width, height);
+            return;
+        }
+
         let (image_width, image_height) = image.dimensions();
 
         // Legacy iPhone landscape launch images are stored in a portrait-sized
@@ -2521,6 +2642,10 @@ impl Window {
 
     pub fn framebuffer_size(&self) -> (u32, u32) {
         size_for_orientation_from_size(self.screen_size(), self.device_orientation, self.scale_hack)
+    }
+
+    pub fn is_software_presentation(&self) -> bool {
+        self.software_presentation
     }
 
     /// Get the region of the on-screen window (x, y, width, height) used to

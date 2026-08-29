@@ -73,6 +73,7 @@ pub mod gles3_native;
 pub mod gles3_on_gl3;
 mod gles_generic;
 pub mod present;
+pub mod software;
 pub mod util;
 use touchHLE_gl_bindings::gl21compat as gl21compat_raw;
 use touchHLE_gl_bindings::gl33core as gl33core_raw;
@@ -91,6 +92,7 @@ use gles3_native::GLES3NativeContext;
 use gles3_on_gl3::GLES3OnGL3Context;
 pub use gles_generic::GLESContext;
 pub use gles_generic::GLES;
+pub use software::SoftwareGLESContext;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 static TRANSLATOR_TRACE_EVENTS: AtomicU32 = AtomicU32::new(0);
@@ -164,6 +166,7 @@ pub enum GLESImplementation {
     GLES1OnGL2,
     /// [gles1_on_gles2::GLES1OnGLES2].
     GLES1OnGLES2,
+    Software,
 }
 impl GLESImplementation {
     /// List of OpenGL ES 1.1 implementations in order of preference.
@@ -175,6 +178,7 @@ impl GLESImplementation {
             "gles1_on_gl2" => Ok(Self::GLES1OnGL2),
             "gles1_on_gles2" => Ok(Self::GLES1OnGLES2),
             "gles1_native" => Ok(Self::GLES1Native),
+            "software" | "software-rendering" | "cpu" => Ok(Self::Software),
             _ => Err(()),
         }
     }
@@ -184,6 +188,7 @@ impl GLESImplementation {
             Self::GLES1Native => GLES1NativeContext::description(),
             Self::GLES1OnGL2 => GLES1OnGL2Context::description(),
             Self::GLES1OnGLES2 => GLES1OnGLES2Context::description(),
+            Self::Software => SoftwareGLESContext::description(),
         }
     }
     /// See [GLESContext::new].
@@ -198,6 +203,7 @@ impl GLESImplementation {
             Self::GLES1Native => GLES1NativeContext::new(window).map(boxer),
             Self::GLES1OnGL2 => GLES1OnGL2Context::new(window).map(boxer),
             Self::GLES1OnGLES2 => GLES1OnGLES2Context::new(window).map(boxer),
+            Self::Software => SoftwareGLESContext::new(window).map(boxer),
         }
     }
 }
@@ -398,6 +404,12 @@ pub fn create_gles1_ctx_no_parent_stack(
     assert!(window.on_main_stack());
     log!("Creating an OpenGL ES 1.1 context:");
     configure_angle_driver(options.angle_driver);
+    if matches!(options.graphics_api, crate::options::GraphicsApi::Software) {
+        log!("Using CPU software OpenGL ES 1.1 rasterizer");
+        return Box::new(
+            SoftwareGLESContext::new(window).expect("Could not create software GLES context"),
+        );
+    }
     let list = if let Some(ref preference) = options.gles1_implementation {
         std::slice::from_ref(preference)
     } else {
