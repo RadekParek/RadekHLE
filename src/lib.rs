@@ -437,6 +437,10 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
         mach_o::architecture_name(architecture)
     );
     crate::gles::present::set_onscreen_hud_architecture(mach_o::architecture_name(architecture));
+    if options.llvmpipe_fallback && crate::gles::llvmpipe_fallback_available() {
+        options.prefer_gles2_context = true;
+        log!("LLVMPipe fallback libraries detected; ARM32 GLES1 apps will use the GLES2 translator on LLVMPipe");
+    }
 
     if architecture == mach_o::MachOArchitecture::Arm64 && !options.force_32_bit {
         return environment64::run(bundle, fs, options, app_args.unwrap_or_default());

@@ -6,6 +6,43 @@ use crate::window::{GLContext, Window};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_void, CStr, CString};
 use std::marker::PhantomData;
+use std::path::Path;
+
+pub fn available() -> bool {
+    let Some(egl) = std::env::var_os("TOUCHHLE_LLVMPIPE_EGL") else {
+        return false;
+    };
+    let Some(gles) = std::env::var_os("TOUCHHLE_LLVMPIPE_GLES") else {
+        return false;
+    };
+    Path::new(&egl).is_file() && Path::new(&gles).is_file()
+}
+
+pub fn configure(enabled: bool) -> bool {
+    if !enabled {
+        return false;
+    }
+    let Some(egl) = std::env::var_os("TOUCHHLE_LLVMPIPE_EGL") else {
+        log_once!("LLVMPipe fallback enabled but TOUCHHLE_LLVMPIPE_EGL is not configured");
+        return false;
+    };
+    let Some(gles) = std::env::var_os("TOUCHHLE_LLVMPIPE_GLES") else {
+        log_once!("LLVMPipe fallback enabled but TOUCHHLE_LLVMPIPE_GLES is not configured");
+        return false;
+    };
+    if !Path::new(&egl).is_file() || !Path::new(&gles).is_file() {
+        log_once!("LLVMPipe fallback enabled but configured Mesa libraries were not found");
+        return false;
+    }
+    unsafe {
+        std::env::set_var("SDL_VIDEO_EGL_DRIVER", &egl);
+        std::env::set_var("SDL_VIDEO_GL_DRIVER", &gles);
+    }
+    sdl2::hint::set("SDL_OPENGL_ES_DRIVER", "1");
+    std::env::set_var("GALLIUM_DRIVER", "llvmpipe");
+    log_once!("LLVMPipe fallback active: using configured Mesa EGL/GLES libraries");
+    true
+}
 
 const IDENTITY: [f32; 16] = [
     1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,

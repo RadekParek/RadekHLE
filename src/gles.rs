@@ -115,6 +115,14 @@ pub(crate) fn trace_translator_event(event: String) {
     }
 }
 
+pub fn llvmpipe_fallback_available() -> bool {
+    software::available()
+}
+
+pub fn configure_llvmpipe_fallback(enabled: bool) -> bool {
+    software::configure(enabled)
+}
+
 pub fn configure_angle_driver(enabled: bool) {
     if !enabled {
         return;

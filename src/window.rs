@@ -1142,6 +1142,7 @@ impl Window {
         options: &Options,
     ) -> Window {
         crate::gles::configure_angle_driver(options.angle_driver);
+        let llvmpipe_active = crate::gles::configure_llvmpipe_fallback(options.llvmpipe_fallback);
         let software_presentation = options.software_presentation
             || matches!(options.graphics_api, crate::options::GraphicsApi::Software);
         let sdl_ctx = sdl2::init().unwrap();
@@ -1168,7 +1169,8 @@ impl Window {
                         | crate::options::GraphicsApi::GLES30
                         | crate::options::GraphicsApi::Metal
                 ) || (matches!(options.graphics_api, crate::options::GraphicsApi::Default)
-                    && (options.prefer_gles2_context || options.angle_driver));
+                    && (options.prefer_gles2_context || options.angle_driver || llvmpipe_active));
+
             if use_gles2 {
                 let version = if matches!(
                     options.graphics_api,
@@ -1362,7 +1364,9 @@ impl Window {
             ),
             crate::options::GraphicsApi::Metal => create_gles2_ctx_no_parent_stack(&mut window),
             crate::options::GraphicsApi::Default => {
-                if options.prefer_gles2_context || options.angle_driver {
+                if llvmpipe_active {
+                    create_gles1_translator_ctx_no_parent_stack(&mut window)
+                } else if options.prefer_gles2_context || options.angle_driver {
                     create_gles2_ctx_no_parent_stack(&mut window)
                 } else {
                     create_gles1_ctx_no_parent_stack(&mut window, options)

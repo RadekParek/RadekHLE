@@ -174,6 +174,7 @@ pub struct Options {
     pub force_64_bit: bool,
     pub arm64_backend: Arm64Backend,
     pub arm64_fallback: Arm64Fallback,
+    pub llvmpipe_fallback: bool,
     pub metal_translator: bool,
     pub gdb_listen_addrs: Option<Vec<SocketAddr>>,
     pub preferred_languages: Option<Vec<String>>,
@@ -265,6 +266,7 @@ impl Default for Options {
             force_64_bit: false,
             arm64_backend: Arm64Backend::Interpreter,
             arm64_fallback: Arm64Fallback::Interpreter,
+            llvmpipe_fallback: true,
             metal_translator: true,
             gdb_listen_addrs: None,
             preferred_languages: None,
@@ -523,6 +525,10 @@ impl Options {
             self.arm64_backend = Arm64Backend::parse(value)?;
         } else if let Some(value) = arg.strip_prefix("--arm64-fallback=") {
             self.arm64_fallback = Arm64Fallback::parse(value)?;
+        } else if arg == "--llvmpipe-fallback" {
+            self.llvmpipe_fallback = true;
+        } else if arg == "--disable-llvmpipe-fallback" {
+            self.llvmpipe_fallback = false;
         } else if arg == "--metal-translator" {
             self.metal_translator = true;
         } else if arg == "--disable-metal-translator" {

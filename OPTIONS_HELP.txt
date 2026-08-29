@@ -285,6 +285,10 @@ Debugging options:
         interpreter; `jit` preserves the error for diagnostics. This applies
         when the selected backend is `auto` or `jit`.
 
+    --llvmpipe-fallback / --disable-llvmpipe-fallback
+        Enable or disable the Mesa LLVMPipe CPU rasterizer fallback when
+        creating the ARM32 OpenGL ES compatibility context. Enabled by default.
+
     --gdb=...
         Starts touchHLE in debugging mode, listening for GDB remote serial
         protocol connections over TCP on the specified host and port.

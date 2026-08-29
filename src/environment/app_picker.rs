@@ -268,6 +268,7 @@ struct AppPickerDelegateHostObject {
     graphics_api: Option<crate::options::GraphicsApi>,
     arm64_backend: Option<crate::options::Arm64Backend>,
     arm64_fallback: Option<crate::options::Arm64Fallback>,
+    llvmpipe_fallback: Option<bool>,
     metal_translator: Option<bool>,
 }
 impl HostObject for AppPickerDelegateHostObject {}
@@ -450,6 +451,10 @@ const CLASSES: ClassExports = objc_classes! {
     } else {
         crate::options::Arm64Fallback::Interpreter
     });
+}
+- (())llvmpipeFallback:(id)switch {
+    let switch_state: bool = msg![env; switch isOn];
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).llvmpipe_fallback = Some(switch_state);
 }
 - (())metalTranslator:(id)switch {
     let switch_state: bool = msg![env; switch isOn];
@@ -794,6 +799,7 @@ fn app_picker_inner(
     let mut quick_options_graphics_api = crate::options::GraphicsApi::Default;
     let mut quick_options_arm64_backend = crate::options::Arm64Backend::Interpreter;
     let mut quick_options_arm64_fallback = crate::options::Arm64Fallback::Interpreter;
+    let mut quick_options_llvmpipe_fallback = true;
     let mut quick_options_metal_translator = true;
 
     fn update_quick_option_buttons(env: &mut Environment, buttons: &[id], selected_idx: usize) {
@@ -1205,6 +1211,8 @@ fn app_picker_inner(
                 false => None,
                 true => Some(()),
             };
+        } else if let Some(enabled) = std::mem::take(&mut host_obj.llvmpipe_fallback) {
+            quick_options_llvmpipe_fallback = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.metal_translator) {
             quick_options_metal_translator = enabled;
         }
@@ -1282,6 +1290,14 @@ fn app_picker_inner(
             quick_options_arm64_fallback.label()
         ));
     }
+    option_args.push(
+        if quick_options_llvmpipe_fallback {
+            "--llvmpipe-fallback"
+        } else {
+            "--disable-llvmpipe-fallback"
+        }
+        .to_string(),
+    );
     option_args.push(
         if quick_options_metal_translator {
             "--metal-translator"
@@ -2228,6 +2244,8 @@ fn setup_quick_options(
         RowKind::Switch("arm64Backend:", false),
         RowKind::Label("Interpreter fallback"),
         RowKind::Switch("arm64Fallback:", false),
+        RowKind::Label("LLVMPipe fallback"),
+        RowKind::Switch("llvmpipeFallback:", true),
         RowKind::Label("Metal translator (ARM64)"),
         RowKind::Switch("metalTranslator:", true),
         RowKind::Label("Game folder"),
