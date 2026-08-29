@@ -286,8 +286,8 @@ impl A64Interpreter {
             return Ok(None);
         }
         if matches!(
-            instruction & 0x1f3f_fc00,
-            0x1e00_c000 | 0x1e20_4000 | 0x1e20_c000 | 0x1e21_c000
+            instruction & 0x1f20_fc00,
+            0x1e00_c000 | 0x1e20_4000 | 0x1e20_c000
         ) {
             self.execute_scalar_unary(context, instruction)?;
             context.pc = pc.wrapping_add(4);
@@ -439,9 +439,10 @@ impl A64Interpreter {
     ) -> Result<(), InterpreterError> {
         let sf = instruction & 0x8000_0000 != 0;
         let immediate = instruction & 0x0000_0800 != 0;
-        let compare_negative = instruction & 0x4000_0000 != 0;
-        let condition = instruction & 0xf;
-        let nzcv = (instruction >> 12) & 0xf;
+        // op = 1 encodes CCMP (subtract); op = 0 encodes CCMN (add).
+        let subtract = instruction & 0x4000_0000 != 0;
+        let condition = (instruction >> 12) & 0xf;
+        let nzcv = instruction & 0xf;
         if condition_holds(context, condition) {
             let left = read_reg(context, ((instruction >> 5) & 31) as usize, sf);
             let right = if immediate {
@@ -449,13 +450,8 @@ impl A64Interpreter {
             } else {
                 read_reg(context, ((instruction >> 16) & 31) as usize, sf)
             };
-            if compare_negative {
-                let (result, carry, overflow) = add_sub(left, right, false, sf);
-                set_flags(context, result, carry, overflow, sf);
-            } else {
-                let (result, carry, overflow) = add_sub(left, right, true, sf);
-                set_flags(context, result, carry, overflow, sf);
-            }
+            let (result, carry, overflow) = add_sub(left, right, subtract, sf);
+            set_flags(context, result, carry, overflow, sf);
         } else {
             context.pstate = (context.pstate & !(NZCV_N | NZCV_Z | NZCV_C | NZCV_V)) | (nzcv << 28);
         }
@@ -766,10 +762,10 @@ impl A64Interpreter {
         } else {
             f32::from_bits(context.vectors[source][0] as u32) as f64
         };
-        let result = match instruction & 0x0010_fc00 {
-            0x0000_4000 => -value,
-            0x0000_c000 => value.abs(),
-            0x0000_c800 => value.sqrt(),
+        let result = match instruction & 0x1f20_fc00 {
+            0x1e20_4000 => -value,
+            0x1e00_c000 => value.abs(),
+            0x1e20_c000 => value.sqrt(),
             _ => return Err(InterpreterError::Undefined),
         };
         if double {
@@ -1389,19 +1385,14 @@ impl A64Interpreter {
         let base = read_sp_or_reg(context, base_reg, true);
         let offset = sign_extend(((instruction >> 12) & 0x1ff) as u64, 9);
         let mode = (instruction >> 10) & 3;
-        let address = if mode == 1 || mode == 3 {
+        let address = if mode == 1 {
             base
         } else {
             base.wrapping_add_signed(offset)
         };
         self.load_store(memory, context, instruction, address, size, load)?;
         if mode == 1 || mode == 3 {
-            write_sp_or_reg(
-                context,
-                base_reg,
-                base.wrapping_add_signed(offset),
-                true,
-            );
+            write_sp_or_reg(context, base_reg, base.wrapping_add_signed(offset), true);
         }
         Ok(())
     }
@@ -1817,19 +1808,22 @@ mod scalar_floating_tests {
             pc: CODE,
             ..Default::default()
         };
+        let source = ((instruction >> 5) & 31) as usize;
+        let second_source = ((instruction >> 16) & 31) as usize;
+        let destination = (instruction & 31) as usize;
         if instruction & 0x0040_0000 != 0 {
-            context.vectors[0][0] = left.to_bits();
-            context.vectors[1][0] = right.to_bits();
+            context.vectors[source][0] = left.to_bits();
+            context.vectors[second_source][0] = right.to_bits();
         } else {
-            context.vectors[0][0] = (left as f32).to_bits() as u64;
-            context.vectors[1][0] = (right as f32).to_bits() as u64;
+            context.vectors[source][0] = (left as f32).to_bits() as u64;
+            context.vectors[second_source][0] = (right as f32).to_bits() as u64;
         }
         assert_eq!(
             A64Interpreter::new().run_or_step(&mut memory, &mut context, None),
             -1
         );
         assert_eq!(context.pc, CODE + 4);
-        context.vectors[0][0]
+        context.vectors[destination][0]
     }
 
     #[test]
@@ -2151,7 +2145,7 @@ mod bitfield_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::A64Interpreter;
+    use super::{A64Interpreter, NZCV_C, NZCV_N, NZCV_V, NZCV_Z};
     use crate::mem64::{Mem64, Permissions};
     use touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context;
 
@@ -2258,9 +2252,7 @@ mod tests {
         memory
             .load_bytes(CODE, &0xf8408460u32.to_le_bytes())
             .unwrap();
-        memory
-            .write_u64(DATA + 8, 0x1234_5678_9abc_def0)
-            .unwrap();
+        memory.write_u64(DATA, 0x1234_5678_9abc_def0).unwrap();
         let mut context = touchHLE_DynarmicA64Context::default();
         context.pc = CODE;
         context.regs[3] = DATA;
@@ -2342,7 +2334,10 @@ mod tests {
             A64Interpreter::new().run_or_step(&mut memory, &mut context, None),
             -1
         );
-        assert_eq!(context.pstate & (NZCV_N | NZCV_Z | NZCV_C | NZCV_V), NZCV_Z | NZCV_C);
+        assert_eq!(
+            context.pstate & (NZCV_N | NZCV_Z | NZCV_C | NZCV_V),
+            NZCV_Z | NZCV_C
+        );
     }
 
     #[test]

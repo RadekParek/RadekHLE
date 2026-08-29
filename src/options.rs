@@ -277,7 +277,7 @@ impl Default for Options {
             dumping_options: Default::default(),
             dumping_file: crate::paths::user_data_base_path().join("DUMP.txt"),
             ignore_gl_errors: false,
-            trace_gl_errors: false,
+            trace_gl_errors: true,
             fix_texture_min_filter: cfg!(target_os = "android"),
             software_presentation: false,
             zero_stack_after_guest_to_host_call: None,
@@ -537,6 +537,8 @@ impl Options {
             self.ignore_gl_errors = true;
         } else if arg == "--trace-gl-errors" {
             self.trace_gl_errors = true;
+        } else if arg == "--disable-trace-gl-errors" {
+            self.trace_gl_errors = false;
         } else if arg == "--fix-texture-min-filter" {
             self.fix_texture_min_filter = true;
         } else if arg == "--no-fix-texture-min-filter" {

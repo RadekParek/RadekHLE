@@ -253,6 +253,7 @@ struct AppPickerDelegateHostObject {
     fullscreen: Option<bool>,
     angle_driver: Option<bool>,
     log_file: Option<bool>,
+    trace_gl_errors: Option<bool>,
     fast_memory: Option<bool>,
     force_32_bit: Option<bool>,
     force_64_bit: Option<bool>,
@@ -393,6 +394,10 @@ const CLASSES: ClassExports = objc_classes! {
 - (())logFile:(id)switch { // UISwitch*
     let switch_state: bool = msg![env; switch isOn];
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).log_file = Some(switch_state);
+}
+- (())traceGLErrors:(id)switch { // UISwitch*
+    let switch_state: bool = msg![env; switch isOn];
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).trace_gl_errors = Some(switch_state);
 }
 - (())fastMemory:(id)switch { // UISwitch*
     let switch_state: bool = msg![env; switch isOn];
@@ -780,6 +785,7 @@ fn app_picker_inner(
     let mut quick_options_frame_generation: Option<u8> = None;
     let mut quick_options_angle_driver = false;
     let mut quick_options_log_file = true;
+    let mut quick_options_trace_gl_errors = true;
     let mut quick_options_fast_memory = true;
     let mut quick_options_force_32_bit = false;
     let mut quick_options_force_64_bit = false;
@@ -1171,6 +1177,8 @@ fn app_picker_inner(
             quick_options_angle_driver = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.log_file) {
             quick_options_log_file = enabled;
+        } else if let Some(enabled) = std::mem::take(&mut host_obj.trace_gl_errors) {
+            quick_options_trace_gl_errors = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.fast_memory) {
             quick_options_fast_memory = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.force_32_bit) {
@@ -1296,6 +1304,14 @@ fn app_picker_inner(
             "--enable-log-file"
         } else {
             "--disable-log-file"
+        }
+        .to_string(),
+    );
+    option_args.push(
+        if quick_options_trace_gl_errors {
+            "--trace-gl-errors"
+        } else {
+            "--disable-trace-gl-errors"
         }
         .to_string(),
     );
@@ -2245,6 +2261,8 @@ fn setup_quick_options(
         RowKind::Switch("angleDriver:", false),
         RowKind::Label("Enable log file"),
         RowKind::Switch("logFile:", true),
+        RowKind::Label("Trace GL errors"),
+        RowKind::Switch("traceGLErrors:", true),
         RowKind::Label("Fast memory"),
         RowKind::Switch("fastMemory:", true),
         RowKind::Label("Force 32-bit"),
