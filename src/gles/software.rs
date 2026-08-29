@@ -366,8 +366,8 @@ impl SoftwareGLES<'_> {
         let component_size = match array.type_ {
             gl::BYTE | gl::UNSIGNED_BYTE => 1,
             gl::SHORT | gl::UNSIGNED_SHORT => 2,
-            gl::FIXED => 4,
-            _ => 4,
+            gl::FIXED | gl::FLOAT => 4,
+            _ => return 0.0,
         };
         let stride = if array.stride <= 0 {
             component_size * array.size.max(1) as usize
@@ -393,7 +393,14 @@ impl SoftwareGLES<'_> {
         let Some(ptr) = ptr else { return 0.0 };
         unsafe {
             match array.type_ {
-                gl::BYTE => *(ptr as *const i8) as f32 / 127.0,
+                gl::BYTE => {
+                    let value = *(ptr as *const i8);
+                    if array.normalized {
+                        (value as f32 / 127.0).clamp(-1.0, 1.0)
+                    } else {
+                        value as f32
+                    }
+                }
                 gl::UNSIGNED_BYTE => {
                     let value = *ptr;
                     if array.normalized {
@@ -419,7 +426,8 @@ impl SoftwareGLES<'_> {
                     }
                 }
                 gl::FIXED => *(ptr as *const i32) as f32 / 65536.0,
-                _ => *(ptr as *const f32),
+                gl::FLOAT => *(ptr as *const f32),
+                _ => 0.0,
             }
         }
     }
@@ -537,6 +545,12 @@ impl SoftwareGLES<'_> {
                         || self.state.cull_face == gl::FRONT_AND_BACK)
                 {
                     continue;
+                }
+                if self.state.enabled.contains(&gl::SCISSOR_TEST) {
+                    let [sx, sy, sw, sh] = self.state.scissor;
+                    if x < sx || y < sy || x >= sx + sw || y >= sy + sh {
+                        continue;
+                    }
                 }
                 if x < 0 || y < 0 || x >= self.state.width as i32 || y >= self.state.height as i32 {
                     continue;
@@ -695,7 +709,11 @@ impl GLES for SoftwareGLES<'_> {
         self.state.enabled.remove(&cap);
     }
     unsafe fn ClientActiveTexture(&mut self, texture: GLenum) {
-        self.state.active_texture = texture.saturating_sub(gl::TEXTURE0) as usize;
+        if !(gl::TEXTURE0..gl::TEXTURE0 + 4).contains(&texture) {
+            self.state.error(gl::INVALID_ENUM);
+            return;
+        }
+        self.state.active_texture = (texture - gl::TEXTURE0) as usize;
     }
     unsafe fn EnableClientState(&mut self, array: GLenum) {
         if let Some(a) = array_index(array) {
@@ -1089,6 +1107,20 @@ impl GLES for SoftwareGLES<'_> {
         self.draw_indexed(mode, &values);
     }
     unsafe fn Clear(&mut self, mask: GLbitfield) {
+        let [sx, sy, sw, sh] = self.state.scissor;
+        let clipped = self.state.enabled.contains(&gl::SCISSOR_TEST);
+        let x0 = if clipped { sx.max(0) as usize } else { 0 };
+        let y0 = if clipped { sy.max(0) as usize } else { 0 };
+        let x1 = if clipped {
+            (sx + sw).min(self.state.width as GLint).max(0) as usize
+        } else {
+            self.state.width
+        };
+        let y1 = if clipped {
+            (sy + sh).min(self.state.height as GLint).max(0) as usize
+        } else {
+            self.state.height
+        };
         if mask & gl::COLOR_BUFFER_BIT != 0 {
             let c = [
                 (self.state.clear_color[0].clamp(0.0, 1.0) * 255.0) as u8,
@@ -1096,16 +1128,27 @@ impl GLES for SoftwareGLES<'_> {
                 (self.state.clear_color[2].clamp(0.0, 1.0) * 255.0) as u8,
                 (self.state.clear_color[3].clamp(0.0, 1.0) * 255.0) as u8,
             ];
-            for pixel in self.state.color.chunks_exact_mut(4) {
-                pixel.copy_from_slice(&c);
+            for y in y0.min(y1)..y1 {
+                for x in x0.min(x1)..x1 {
+                    let offset = (y * self.state.width + x) * 4;
+                    for channel in 0..4 {
+                        if self.state.color_mask[channel] {
+                            self.state.color[offset + channel] = c[channel];
+                        }
+                    }
+                }
             }
         }
         if mask & gl::DEPTH_BUFFER_BIT != 0 {
-            self.state.depth.fill(self.state.clear_depth);
+            for y in y0.min(y1)..y1 {
+                let start = y * self.state.width + x0.min(x1);
+                let end = y * self.state.width + x1;
+                self.state.depth[start..end].fill(self.state.clear_depth);
+            }
         }
     }
     unsafe fn ClearColor(&mut self, r: GLclampf, g: GLclampf, b: GLclampf, a: GLclampf) {
-        self.state.clear_color = [r, g, b, a];
+        self.state.clear_color = [r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0), a.clamp(0.0, 1.0)];
     }
     unsafe fn ClearColorx(&mut self, r: GLclampx, g: GLclampx, b: GLclampx, a: GLclampx) {
         self.ClearColor(
@@ -1363,9 +1406,17 @@ impl GLES for SoftwareGLES<'_> {
         }
     }
     unsafe fn ActiveTexture(&mut self, texture: GLenum) {
-        self.state.active_texture = texture.saturating_sub(gl::TEXTURE0).min(3) as usize;
+        if !(gl::TEXTURE0..gl::TEXTURE0 + 4).contains(&texture) {
+            self.state.error(gl::INVALID_ENUM);
+            return;
+        }
+        self.state.active_texture = (texture - gl::TEXTURE0) as usize;
     }
-    unsafe fn BindTexture(&mut self, _target: GLenum, texture: GLuint) {
+    unsafe fn BindTexture(&mut self, target: GLenum, texture: GLuint) {
+        if target != gl::TEXTURE_2D {
+            self.state.error(gl::INVALID_ENUM);
+            return;
+        }
         if texture != 0 && !self.state.textures.contains_key(&texture) {
             self.state.textures.insert(
                 texture,
@@ -1500,8 +1551,24 @@ impl GLES for SoftwareGLES<'_> {
         type_: GLenum,
         pixels: *const GLvoid,
     ) {
-        if target != gl::TEXTURE_2D || level < 0 || width <= 0 || height <= 0 || border != 0 {
+        if target != gl::TEXTURE_2D || level < 0 || width < 0 || height < 0 || border != 0 {
             self.state.error(gl::INVALID_VALUE);
+            return;
+        }
+        if width == 0 || height == 0 {
+            if let Some(texture) = self.state.texture_mut() {
+                texture.width = width as usize;
+                texture.height = height as usize;
+                texture.pixels.clear();
+            }
+            return;
+        }
+        if pixels.is_null() {
+            if let Some(texture) = self.state.texture_mut() {
+                texture.width = width as usize;
+                texture.height = height as usize;
+                texture.pixels.fill(0);
+            }
             return;
         }
         let channels = match (format, type_) {
@@ -1664,7 +1731,11 @@ impl GLES for SoftwareGLES<'_> {
         );
     }
     unsafe fn MatrixMode(&mut self, mode: GLenum) {
-        self.state.matrix_mode = mode;
+        if matches!(mode, gl::MODELVIEW | gl::PROJECTION | gl::TEXTURE) {
+            self.state.matrix_mode = mode;
+        } else {
+            self.state.error(gl::INVALID_ENUM);
+        }
     }
     unsafe fn LoadIdentity(&mut self) {
         *self.state.matrix_mut() = IDENTITY;
