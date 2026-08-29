@@ -1211,17 +1211,40 @@ impl GLES for SoftwareGLES<'_> {
     }
     unsafe fn CompressedTexSubImage2D(
         &mut self,
-        _target: GLenum,
-        _level: GLint,
-        _xoffset: GLint,
-        _yoffset: GLint,
-        _width: GLsizei,
-        _height: GLsizei,
-        _format: GLenum,
-        _image_size: GLsizei,
-        _data: *const GLvoid,
+        target: GLenum,
+        level: GLint,
+        xoffset: GLint,
+        yoffset: GLint,
+        width: GLsizei,
+        height: GLsizei,
+        format: GLenum,
+        image_size: GLsizei,
+        data: *const GLvoid,
     ) {
-        self.state.error(gl::INVALID_OPERATION);
+        if target != gl::TEXTURE_2D
+            || level < 0
+            || xoffset < 0
+            || yoffset < 0
+            || width <= 0
+            || height <= 0
+            || image_size < 0
+            || data.is_null()
+        {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        }
+        let bytes = std::slice::from_raw_parts(data.cast::<u8>(), image_size as usize);
+        let Some(texture) = self.state.texture_mut() else {
+            self.state.error(gl::INVALID_OPERATION);
+            return;
+        };
+        if texture.width == 0 || texture.height == 0 {
+            self.state.error(gl::INVALID_OPERATION);
+            return;
+        }
+        if !crate::gles::util::try_decode_pvrtc(self, target, level, format, width, height, 0, bytes) {
+            self.state.error(gl::INVALID_ENUM);
+        }
     }
     unsafe fn CopyTexImage2D(
         &mut self,
@@ -1571,7 +1594,7 @@ impl GLES for SoftwareGLES<'_> {
             if let Some(texture) = self.state.texture_mut() {
                 texture.width = width as usize;
                 texture.height = height as usize;
-                texture.pixels.fill(0);
+                texture.pixels = vec![0; width as usize * height as usize * 4];
             }
             return;
         }
