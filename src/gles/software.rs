@@ -1562,6 +1562,15 @@ impl GLES for SoftwareGLES<'_> {
     ) {
         self.state.bound_renderbuffer = renderbuffer;
     }
+    unsafe fn FramebufferTexture2DOES(
+        &mut self,
+        _target: GLenum,
+        _attachment: GLenum,
+        _textarget: GLenum,
+        _texture: GLuint,
+        _level: i32,
+    ) {
+    }
     unsafe fn GetRenderbufferParameterivOES(
         &mut self,
         _target: GLenum,

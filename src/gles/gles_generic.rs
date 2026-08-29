@@ -879,13 +879,15 @@ pub trait GLES {
     }
     unsafe fn FramebufferTexture2DOES(
         &mut self,
-        _target: GLenum,
-        _attachment: GLenum,
+        target: GLenum,
+        attachment: GLenum,
         _textarget: GLenum,
-        _texture: GLuint,
-        _level: i32,
+        texture: GLuint,
+        level: i32,
     ) {
-        unimplemented!("FramebufferTexture2DOES not implemented by this backend")
+        eprintln!(
+            "STUB: glFramebufferTexture2DOES(target=0x{target:x}, attachment=0x{attachment:x}, texture={texture}, level={level})"
+        );
     }
     unsafe fn GetFramebufferAttachmentParameterivOES(
         &mut self,
@@ -1006,13 +1008,15 @@ pub trait GLES {
     }
     unsafe fn FramebufferTexture2D(
         &mut self,
-        _target: GLenum,
-        _attachment: GLenum,
+        target: GLenum,
+        attachment: GLenum,
         _textarget: GLenum,
-        _texture: GLuint,
-        _level: i32,
+        texture: GLuint,
+        level: i32,
     ) {
-        unimplemented!("FramebufferTexture2D not implemented by this backend")
+        eprintln!(
+            "STUB: glFramebufferTexture2D(target=0x{target:x}, attachment=0x{attachment:x}, texture={texture}, level={level})"
+        );
     }
     unsafe fn CheckFramebufferStatus(&mut self, _target: GLenum) -> GLenum {
         unimplemented!("CheckFramebufferStatus not implemented by this backend")
