@@ -93,6 +93,7 @@ struct Texture {
     env_mode: GLenum,
 }
 
+#[derive(Clone, Copy)]
 struct Vertex {
     position: [f32; 4],
     color: [f32; 4],
@@ -145,6 +146,9 @@ pub struct SoftwareState {
     clear_stencil: GLint,
     viewport: [GLint; 4],
     scissor: [GLint; 4],
+    pack_alignment: GLint,
+    unpack_alignment: GLint,
+    texture_crop: [GLint; 4],
     matrix_mode: GLenum,
     modelview: [f32; 16],
     projection: [f32; 16],
@@ -222,6 +226,9 @@ impl SoftwareState {
             clear_stencil: 0,
             viewport: [0, 0, width as GLint, height as GLint],
             scissor: [0, 0, width as GLint, height as GLint],
+            pack_alignment: 4,
+            unpack_alignment: 4,
+            texture_crop: [0, 0, width as GLint, height as GLint],
             matrix_mode: gl::MODELVIEW,
             modelview: IDENTITY,
             projection: IDENTITY,
@@ -358,10 +365,11 @@ impl SoftwareGLES<'_> {
     fn read_scalar(&self, array: ArrayState, index: usize, components: usize) -> f32 {
         let component_size = match array.type_ {
             gl::BYTE | gl::UNSIGNED_BYTE => 1,
-            gl::SHORT | gl::UNSIGNED_SHORT | gl::FIXED => 2,
+            gl::SHORT | gl::UNSIGNED_SHORT => 2,
+            gl::FIXED => 4,
             _ => 4,
         };
-        let stride = if array.stride == 0 {
+        let stride = if array.stride <= 0 {
             component_size * array.size.max(1) as usize
         } else {
             array.stride as usize
@@ -394,8 +402,22 @@ impl SoftwareGLES<'_> {
                         value as f32
                     }
                 }
-                gl::SHORT => *(ptr as *const i16) as f32 / 32767.0,
-                gl::UNSIGNED_SHORT => *(ptr as *const u16) as f32,
+                gl::SHORT => {
+                    let value = *(ptr as *const i16);
+                    if array.normalized {
+                        (value as f32 / 32767.0).clamp(-1.0, 1.0)
+                    } else {
+                        value as f32
+                    }
+                }
+                gl::UNSIGNED_SHORT => {
+                    let value = *(ptr as *const u16);
+                    if array.normalized {
+                        value as f32 / 65535.0
+                    } else {
+                        value as f32
+                    }
+                }
                 gl::FIXED => *(ptr as *const i32) as f32 / 65536.0,
                 _ => *(ptr as *const f32),
             }
@@ -575,10 +597,10 @@ impl SoftwareGLES<'_> {
         }
         let s = wrap(uv[0], texture.wrap_s);
         let t = wrap(uv[1], texture.wrap_t);
-        let x = (s * (texture.width.saturating_sub(1)) as f32)
+        let x = (s * texture.width as f32 - 0.5)
             .round()
             .clamp(0.0, texture.width.saturating_sub(1) as f32) as usize;
-        let y = ((1.0 - t) * (texture.height.saturating_sub(1)) as f32)
+        let y = ((1.0 - t) * texture.height as f32 - 0.5)
             .round()
             .clamp(0.0, texture.height.saturating_sub(1) as f32) as usize;
         let p = (y * texture.width + x) * 4;
@@ -600,7 +622,11 @@ impl SoftwareGLES<'_> {
     }
 
     fn index_at(&self, data: *const c_void, index: usize, type_: GLenum) -> usize {
-        let size = if type_ == gl::UNSIGNED_SHORT { 2 } else { 1 };
+        let size = match type_ {
+            gl::UNSIGNED_BYTE => 1,
+            gl::UNSIGNED_SHORT => 2,
+            _ => return 0,
+        };
         let ptr = if self.state.bound_element_buffer != 0 {
             self.state
                 .buffers
@@ -634,6 +660,26 @@ impl GLES for SoftwareGLES<'_> {
     }
     unsafe fn IsBuffer(&mut self, buffer: GLuint) -> GLboolean {
         self.state.buffers.contains_key(&buffer) as GLboolean
+    }
+    unsafe fn IsFramebufferOES(&mut self, framebuffer: GLuint) -> GLboolean {
+        if self.state.framebuffers.contains(&framebuffer) {
+            gl::TRUE
+        } else {
+            gl::FALSE
+        }
+    }
+    unsafe fn IsRenderbufferOES(&mut self, renderbuffer: GLuint) -> GLboolean {
+        if self.state.renderbuffers.contains(&renderbuffer) {
+            gl::TRUE
+        } else {
+            gl::FALSE
+        }
+    }
+    unsafe fn IsFramebuffer(&mut self, framebuffer: GLuint) -> GLboolean {
+        self.IsFramebufferOES(framebuffer)
+    }
+    unsafe fn IsRenderbuffer(&mut self, renderbuffer: GLuint) -> GLboolean {
+        self.IsRenderbufferOES(renderbuffer)
     }
     unsafe fn Enable(&mut self, cap: GLenum) {
         self.state.enabled.insert(cap);
@@ -805,7 +851,17 @@ impl GLES for SoftwareGLES<'_> {
     unsafe fn Scissor(&mut self, x: GLint, y: GLint, width: GLsizei, height: GLsizei) {
         self.state.scissor = [x, y, width.max(0), height.max(0)];
     }
-    unsafe fn PixelStorei(&mut self, _pname: GLenum, _param: GLint) {}
+    unsafe fn PixelStorei(&mut self, pname: GLenum, param: GLint) {
+        if !matches!(param, 1 | 2 | 4 | 8) {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        }
+        match pname {
+            gl::PACK_ALIGNMENT => self.state.pack_alignment = param,
+            gl::UNPACK_ALIGNMENT => self.state.unpack_alignment = param,
+            _ => self.state.error(gl::INVALID_ENUM),
+        }
+    }
     unsafe fn Hint(&mut self, _target: GLenum, _mode: GLenum) {}
     unsafe fn LineWidth(&mut self, _value: GLfloat) {}
     unsafe fn LineWidthx(&mut self, value: GLfixed) {
@@ -1022,7 +1078,11 @@ impl GLES for SoftwareGLES<'_> {
         type_: GLenum,
         indices: *const GLvoid,
     ) {
-        let mut values = Vec::with_capacity(count.max(0) as usize);
+        if !matches!(type_, gl::UNSIGNED_BYTE | gl::UNSIGNED_SHORT) || count < 0 {
+            self.state.error(gl::INVALID_ENUM);
+            return;
+        }
+        let mut values = Vec::with_capacity(count as usize);
         for i in 0..count.max(0) as usize {
             values.push(self.index_at(indices, i, type_));
         }
@@ -1072,6 +1132,124 @@ impl GLES for SoftwareGLES<'_> {
     unsafe fn SampleCoveragex(&mut self, value: GLclampx, invert: GLboolean) {
         self.SampleCoverage(value as f32 / 65536.0, invert);
     }
+    unsafe fn CompressedTexImage2D(
+        &mut self,
+        target: GLenum,
+        level: GLint,
+        internalformat: GLenum,
+        width: GLsizei,
+        height: GLsizei,
+        border: GLint,
+        image_size: GLsizei,
+        data: *const GLvoid,
+    ) {
+        if data.is_null() || image_size < 0 {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        }
+        let size = image_size as usize;
+        let bytes = std::slice::from_raw_parts(data.cast::<u8>(), size);
+        if !crate::gles::util::try_decode_pvrtc(
+            self,
+            target,
+            level,
+            internalformat,
+            width,
+            height,
+            border,
+            bytes,
+        ) {
+            self.state.error(gl::INVALID_ENUM);
+        }
+    }
+    unsafe fn CompressedTexSubImage2D(
+        &mut self,
+        _target: GLenum,
+        _level: GLint,
+        _xoffset: GLint,
+        _yoffset: GLint,
+        _width: GLsizei,
+        _height: GLsizei,
+        _format: GLenum,
+        _image_size: GLsizei,
+        _data: *const GLvoid,
+    ) {
+        self.state.error(gl::INVALID_OPERATION);
+    }
+    unsafe fn CopyTexImage2D(
+        &mut self,
+        target: GLenum,
+        level: GLint,
+        internalformat: GLenum,
+        x: GLint,
+        y: GLint,
+        width: GLsizei,
+        height: GLsizei,
+        border: GLint,
+    ) {
+        if width <= 0 || height <= 0 {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        }
+        let mut pixels = vec![0u8; width as usize * height as usize * 4];
+        self.ReadPixels(
+            x,
+            y,
+            width,
+            height,
+            gl::RGBA,
+            gl::UNSIGNED_BYTE,
+            pixels.as_mut_ptr().cast(),
+        );
+        self.TexImage2D(
+            target,
+            level,
+            internalformat as GLint,
+            width,
+            height,
+            border,
+            gl::RGBA,
+            gl::UNSIGNED_BYTE,
+            pixels.as_ptr().cast(),
+        );
+    }
+    unsafe fn CopyTexSubImage2D(
+        &mut self,
+        target: GLenum,
+        level: GLint,
+        xoffset: GLint,
+        yoffset: GLint,
+        x: GLint,
+        y: GLint,
+        width: GLsizei,
+        height: GLsizei,
+    ) {
+        if width <= 0 || height <= 0 {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        }
+        let mut pixels = vec![0u8; width as usize * height as usize * 4];
+        self.ReadPixels(
+            x,
+            y,
+            width,
+            height,
+            gl::RGBA,
+            gl::UNSIGNED_BYTE,
+            pixels.as_mut_ptr().cast(),
+        );
+        self.TexSubImage2D(
+            target,
+            level,
+            xoffset,
+            yoffset,
+            width,
+            height,
+            gl::RGBA,
+            gl::UNSIGNED_BYTE,
+            pixels.as_ptr().cast(),
+        );
+    }
     unsafe fn ReadPixels(
         &mut self,
         x: GLint,
@@ -1082,7 +1260,7 @@ impl GLES for SoftwareGLES<'_> {
         type_: GLenum,
         pixels: *mut GLvoid,
     ) {
-        if pixels.is_null() || type_ != gl::UNSIGNED_BYTE {
+        if pixels.is_null() || width < 0 || height < 0 || type_ != gl::UNSIGNED_BYTE {
             self.state.error(gl::INVALID_VALUE);
             return;
         }
@@ -1094,16 +1272,25 @@ impl GLES for SoftwareGLES<'_> {
             self.state.error(gl::INVALID_ENUM);
             return;
         };
-        for row in 0..height.max(0) as usize {
-            for col in 0..width.max(0) as usize {
-                let sx = x.max(0) as usize + col;
-                let sy = y.max(0) as usize + row;
-                let src = if sx < self.state.width && sy < self.state.height {
-                    (sy * self.state.width + sx) * 4
+        let width = width as usize;
+        let height = height as usize;
+        let row_bytes = width * channels;
+        let alignment = self.state.pack_alignment.max(1) as usize;
+        let row_stride = (row_bytes + alignment - 1) / alignment * alignment;
+        for row in 0..height {
+            for col in 0..width {
+                let sx = x + col as GLint;
+                let sy = y + row as GLint;
+                let src = if sx >= 0
+                    && sy >= 0
+                    && sx < self.state.width as GLint
+                    && sy < self.state.height as GLint
+                {
+                    (sy as usize * self.state.width + sx as usize) * 4
                 } else {
                     usize::MAX
                 };
-                let dst = (row * width.max(0) as usize + col) * channels;
+                let dst = row * row_stride + col * channels;
                 for channel in 0..channels {
                     *(pixels as *mut u8).add(dst + channel) = if src == usize::MAX {
                         0
@@ -1113,6 +1300,37 @@ impl GLES for SoftwareGLES<'_> {
                 }
             }
         }
+    }
+    unsafe fn DrawTexfOES(
+        &mut self,
+        x: GLfloat,
+        y: GLfloat,
+        z: GLfloat,
+        width: GLfloat,
+        height: GLfloat,
+    ) {
+        let Some(texture) = self.state.texture().cloned() else {
+            return;
+        };
+        if texture.width == 0 || texture.height == 0 || width <= 0.0 || height <= 0.0 {
+            return;
+        }
+        let crop = self.state.texture_crop;
+        let crop_width = crop[2].max(0).min(texture.width as GLint) as usize;
+        let crop_height = crop[3].max(0).min(texture.height as GLint) as usize;
+        if crop_width == 0 || crop_height == 0 {
+            return;
+        }
+        let crop_x = crop[0].max(0).min(texture.width as GLint) as usize;
+        let crop_y = crop[1].max(0).min(texture.height as GLint) as usize;
+        let vertices = [
+            Vertex { position: [x, y, z, 1.0], color: self.state.current_color, texcoord: [crop_x as f32 / texture.width as f32, crop_y as f32 / texture.height as f32] },
+            Vertex { position: [x + width, y, z, 1.0], color: self.state.current_color, texcoord: [(crop_x + crop_width) as f32 / texture.width as f32, crop_y as f32 / texture.height as f32] },
+            Vertex { position: [x, y + height, z, 1.0], color: self.state.current_color, texcoord: [crop_x as f32 / texture.width as f32, (crop_y + crop_height) as f32 / texture.height as f32] },
+            Vertex { position: [x + width, y + height, z, 1.0], color: self.state.current_color, texcoord: [(crop_x + crop_width) as f32 / texture.width as f32, (crop_y + crop_height) as f32 / texture.height as f32] },
+        ];
+        self.draw_triangle(vertices[0].clone(), vertices[1].clone(), vertices[2].clone());
+        self.draw_triangle(vertices[2].clone(), vertices[1].clone(), vertices[3].clone());
     }
     unsafe fn GenTextures(&mut self, n: GLsizei, textures: *mut GLuint) {
         if textures.is_null() {
@@ -1165,15 +1383,21 @@ impl GLES for SoftwareGLES<'_> {
         }
         self.state.bound_texture[self.state.active_texture] = texture;
     }
-    unsafe fn TexParameteri(&mut self, _target: GLenum, pname: GLenum, param: GLint) {
+    unsafe fn TexParameteri(&mut self, target: GLenum, pname: GLenum, param: GLint) {
+        if target != gl::TEXTURE_2D {
+            self.state.error(gl::INVALID_ENUM);
+            return;
+        }
         if let Some(texture) = self.state.texture_mut() {
             match pname {
                 gl::TEXTURE_MIN_FILTER => texture.min_filter = param as GLenum,
                 gl::TEXTURE_MAG_FILTER => texture.mag_filter = param as GLenum,
                 gl::TEXTURE_WRAP_S => texture.wrap_s = param as GLenum,
                 gl::TEXTURE_WRAP_T => texture.wrap_t = param as GLenum,
-                _ => {}
+                _ => self.state.error(gl::INVALID_ENUM),
             }
+        } else {
+            self.state.error(gl::INVALID_OPERATION);
         }
     }
     unsafe fn IsTexture(&mut self, texture: GLuint) -> GLboolean {
@@ -1266,98 +1490,120 @@ impl GLES for SoftwareGLES<'_> {
     }
     unsafe fn TexImage2D(
         &mut self,
-        _target: GLenum,
-        _level: GLint,
-        _internalformat: GLint,
+        target: GLenum,
+        level: GLint,
+        internalformat: GLint,
         width: GLsizei,
         height: GLsizei,
-        _border: GLint,
+        border: GLint,
         format: GLenum,
         type_: GLenum,
         pixels: *const GLvoid,
     ) {
-        if width <= 0 || height <= 0 {
+        if target != gl::TEXTURE_2D || level < 0 || width <= 0 || height <= 0 || border != 0 {
             self.state.error(gl::INVALID_VALUE);
             return;
         }
-        let mut output = vec![0; width as usize * height as usize * 4];
-        if !pixels.is_null() && type_ == gl::UNSIGNED_BYTE {
-            let channels = if format == gl::RGB {
-                3
-            } else if format == gl::RGBA || format == gl::BGRA_EXT {
-                4
-            } else {
-                0
-            };
-            if channels == 0 {
+        let channels = match (format, type_) {
+            (gl::RGB, gl::UNSIGNED_BYTE) => 3,
+            (gl::RGBA | gl::BGRA_EXT, gl::UNSIGNED_BYTE) => 4,
+            (gl::RGB, gl::UNSIGNED_SHORT_5_6_5) => 2,
+            (gl::RGBA, gl::UNSIGNED_SHORT_4_4_4_4) => 2,
+            _ => {
                 self.state.error(gl::INVALID_ENUM);
                 return;
             }
-            for i in 0..width as usize * height as usize {
-                let source = pixels as *const u8;
-                let src = i * channels;
-                let dst = i * 4;
-                if format == gl::BGRA_EXT {
-                    output[dst..dst + 4].copy_from_slice(&[
-                        *(source.add(src + 2)),
-                        *(source.add(src + 1)),
-                        *source.add(src),
-                        *source.add(src + 3),
-                    ]);
-                } else {
-                    output[dst..dst + channels]
-                        .copy_from_slice(std::slice::from_raw_parts(source.add(src), channels));
-                    if channels == 3 {
-                        output[dst + 3] = 255;
+        };
+        let width = width as usize;
+        let height = height as usize;
+        let mut output = vec![0; width * height * 4];
+        if !pixels.is_null() {
+            let row_bytes = width * channels;
+            let alignment = self.state.unpack_alignment.max(1) as usize;
+            let row_stride = (row_bytes + alignment - 1) / alignment * alignment;
+            let source = pixels.cast::<u8>();
+            for y in 0..height {
+                for x in 0..width {
+                    let src = source.add(y * row_stride + x * channels);
+                    let dst = (y * width + x) * 4;
+                    match type_ {
+                        gl::UNSIGNED_BYTE if format == gl::BGRA_EXT => {
+                            output[dst..dst + 4].copy_from_slice(&[*src.add(2), *src.add(1), *src, *src.add(3)]);
+                        }
+                        gl::UNSIGNED_BYTE => {
+                            output[dst..dst + channels].copy_from_slice(std::slice::from_raw_parts(src, channels));
+                            if channels == 3 { output[dst + 3] = 255; }
+                        }
+                        gl::UNSIGNED_SHORT_5_6_5 => {
+                            let value = u16::from_ne_bytes([*src, *src.add(1)]);
+                            output[dst] = ((value >> 11) as u8 * 255 / 31);
+                            output[dst + 1] = (((value >> 5) & 0x3f) as u8 * 255 / 63);
+                            output[dst + 2] = ((value & 0x1f) as u8 * 255 / 31);
+                            output[dst + 3] = 255;
+                        }
+                        gl::UNSIGNED_SHORT_4_4_4_4 => {
+                            let value = u16::from_ne_bytes([*src, *src.add(1)]);
+                            output[dst] = ((value >> 12) as u8) * 17;
+                            output[dst + 1] = (((value >> 8) & 0xf) as u8) * 17;
+                            output[dst + 2] = (((value >> 4) & 0xf) as u8) * 17;
+                            output[dst + 3] = (value as u8 & 0xf) * 17;
+                        }
+                        _ => unreachable!(),
                     }
                 }
             }
         }
         if let Some(texture) = self.state.texture_mut() {
-            texture.width = width as usize;
-            texture.height = height as usize;
+            texture.width = width;
+            texture.height = height;
             texture.pixels = output;
         }
     }
     unsafe fn TexSubImage2D(
         &mut self,
-        _target: GLenum,
-        _level: GLint,
+        target: GLenum,
+        level: GLint,
         xoffset: GLint,
         yoffset: GLint,
         width: GLsizei,
         height: GLsizei,
         format: GLenum,
-        _type_: GLenum,
+        type_: GLenum,
         pixels: *const GLvoid,
     ) {
-        if pixels.is_null() {
+        if target != gl::TEXTURE_2D || level < 0 || xoffset < 0 || yoffset < 0 || width < 0 || height < 0 || (pixels.is_null() && (width > 0 && height > 0)) {
+            self.state.error(gl::INVALID_VALUE);
             return;
         }
-        let channels = if format == gl::RGB {
-            3
-        } else if format == gl::RGBA {
-            4
-        } else {
-            self.state.error(gl::INVALID_ENUM);
-            return;
+        let channels = match (format, type_) {
+            (gl::RGB, gl::UNSIGNED_BYTE) => 3,
+            (gl::RGBA, gl::UNSIGNED_BYTE) | (gl::BGRA_EXT, gl::UNSIGNED_BYTE) => 4,
+            _ => {
+                self.state.error(gl::INVALID_ENUM);
+                return;
+            }
         };
-        let Some(texture) = self.state.texture_mut() else {
-            return;
-        };
-        for y in 0..height.max(0) as usize {
-            for x in 0..width.max(0) as usize {
-                let sx = (y * width.max(0) as usize + x) * channels;
-                let dx = xoffset.max(0) as usize + x;
-                let dy = yoffset.max(0) as usize + y;
-                if dx < texture.width && dy < texture.height {
-                    let d = (dy * texture.width + dx) * 4;
-                    let s = pixels as *const u8;
-                    texture.pixels[d..d + channels]
-                        .copy_from_slice(std::slice::from_raw_parts(s.add(sx), channels));
-                    if channels == 3 {
-                        texture.pixels[d + 3] = 255;
-                    }
+        let width = width as usize;
+        let height = height as usize;
+        let row_bytes = width * channels;
+        let alignment = self.state.unpack_alignment.max(1) as usize;
+        let row_stride = (row_bytes + alignment - 1) / alignment * alignment;
+        let Some(texture) = self.state.texture_mut() else { return; };
+        let source = pixels.cast::<u8>();
+        for y in 0..height {
+            for x in 0..width {
+                let dx = xoffset as usize + x;
+                let dy = yoffset as usize + y;
+                if dx >= texture.width || dy >= texture.height { continue; }
+                let src = source.add(y * row_stride + x * channels);
+                let d = (dy * texture.width + dx) * 4;
+                if format == gl::BGRA_EXT {
+                    texture.pixels[d..d + 4].copy_from_slice(&[
+                        *src.add(2), *src.add(1), *src, *src.add(3),
+                    ]);
+                } else {
+                    texture.pixels[d..d + channels].copy_from_slice(std::slice::from_raw_parts(src, channels));
+                    if channels == 3 { texture.pixels[d + 3] = 255; }
                 }
             }
         }
@@ -1739,6 +1985,26 @@ impl GLES for SoftwareGLES<'_> {
     ) {
         self.RenderbufferStorageOES(target, internalformat, width, height);
     }
+    unsafe fn RenderbufferStorageMultisampleAPPLE(
+        &mut self,
+        target: GLenum,
+        _samples: GLsizei,
+        internalformat: GLenum,
+        width: GLsizei,
+        height: GLsizei,
+    ) {
+        self.RenderbufferStorageOES(target, internalformat, width, height);
+    }
+    unsafe fn RenderbufferStorageMultisample(
+        &mut self,
+        target: GLenum,
+        _samples: GLsizei,
+        internalformat: GLenum,
+        width: GLsizei,
+        height: GLsizei,
+    ) {
+        self.RenderbufferStorageOES(target, internalformat, width, height);
+    }
     unsafe fn FramebufferRenderbuffer(
         &mut self,
         target: GLenum,
@@ -1998,7 +2264,19 @@ impl GLES for SoftwareGLES<'_> {
             _ => 0,
         };
     }
-    unsafe fn GenerateMipmapOES(&mut self, _target: GLenum) {}
+    unsafe fn GenerateMipmapOES(&mut self, target: GLenum) {
+        if target != gl::TEXTURE_2D {
+            self.state.error(gl::INVALID_ENUM);
+            return;
+        }
+        let Some(texture) = self.state.texture_mut() else {
+            self.state.error(gl::INVALID_OPERATION);
+            return;
+        };
+        if texture.width == 0 || texture.height == 0 {
+            self.state.error(gl::INVALID_OPERATION);
+        }
+    }
     unsafe fn CreateShader(&mut self, _type_: GLenum) -> GLuint {
         let id = self.state.alloc_id();
         self.state.shader_ids.insert(id);
