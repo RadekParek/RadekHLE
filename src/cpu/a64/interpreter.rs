@@ -285,6 +285,14 @@ impl A64Interpreter {
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
+        if matches!(
+            instruction & 0x1f3f_fc00,
+            0x1e00_c000 | 0x1e20_4000 | 0x1e20_c000 | 0x1e21_c000
+        ) {
+            self.execute_scalar_unary(context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
         if instruction & 0x1f00_0000 == 0x1e00_0000 {
             self.execute_scalar_floating(context, instruction)?;
             context.pc = pc.wrapping_add(4);
@@ -741,6 +749,34 @@ impl A64Interpreter {
         } else {
             context.vectors[rd][0] = (result as f32).to_bits() as u64;
             context.vectors[rd][1] = 0;
+        }
+        Ok(())
+    }
+
+    fn execute_scalar_unary(
+        &self,
+        context: &mut touchHLE_DynarmicA64Context,
+        instruction: u32,
+    ) -> Result<(), InterpreterError> {
+        let double = instruction & 0x0040_0000 != 0;
+        let destination = (instruction & 31) as usize;
+        let source = ((instruction >> 5) & 31) as usize;
+        let value = if double {
+            f64::from_bits(context.vectors[source][0])
+        } else {
+            f32::from_bits(context.vectors[source][0] as u32) as f64
+        };
+        let result = match instruction & 0x0010_fc00 {
+            0x0000_4000 => -value,
+            0x0000_c000 => value.abs(),
+            0x0000_c800 => value.sqrt(),
+            _ => return Err(InterpreterError::Undefined),
+        };
+        if double {
+            context.vectors[destination][0] = result.to_bits();
+        } else {
+            context.vectors[destination][0] = (result as f32).to_bits() as u64;
+            context.vectors[destination][1] = 0;
         }
         Ok(())
     }
@@ -1302,7 +1338,8 @@ impl A64Interpreter {
         let size = 1u64 << ((instruction >> 30) & 3);
         let load = instruction & 0x0040_0000 != 0;
         let signed = instruction & 0x0000_0800 != 0;
-        let base = read_sp_or_reg(context, ((instruction >> 5) & 31) as usize, true);
+        let base_reg = ((instruction >> 5) & 31) as usize;
+        let base = read_sp_or_reg(context, base_reg, true);
         let index = read_reg(context, ((instruction >> 16) & 31) as usize, true);
         let extend = (instruction >> 13) & 7;
         let mut offset = match extend {
@@ -1348,10 +1385,11 @@ impl A64Interpreter {
     ) -> Result<(), InterpreterError> {
         let size = 1u64 << ((instruction >> 30) & 3);
         let load = instruction & 0x0040_0000 != 0;
-        let base = read_sp_or_reg(context, ((instruction >> 5) & 31) as usize, true);
+        let base_reg = ((instruction >> 5) & 31) as usize;
+        let base = read_sp_or_reg(context, base_reg, true);
         let offset = sign_extend(((instruction >> 12) & 0x1ff) as u64, 9);
         let mode = (instruction >> 10) & 3;
-        let address = if mode == 1 {
+        let address = if mode == 1 || mode == 3 {
             base
         } else {
             base.wrapping_add_signed(offset)
@@ -1360,7 +1398,7 @@ impl A64Interpreter {
         if mode == 1 || mode == 3 {
             write_sp_or_reg(
                 context,
-                ((instruction >> 5) & 31) as usize,
+                base_reg,
                 base.wrapping_add_signed(offset),
                 true,
             );
@@ -1818,6 +1856,13 @@ mod scalar_floating_tests {
     }
 
     #[test]
+    fn scalar_unary_operations_cover_fneg_fabs_fsqrt() {
+        assert_eq!(run(0x1e2141ac, 4.0, 0.0), (-4.0f32).to_bits() as u64);
+        assert_eq!(run(0x1ec0c1ee, -4.0, 0.0), 4.0f64.to_bits());
+        assert_eq!(run(0x1e21c230, 9.0, 0.0), 3.0f32.to_bits() as u64);
+    }
+
+    #[test]
     fn scalar_fmov_immediate_decodes_single_and_double_values() {
         assert_eq!(run(0x1e2e_1000, 0.0, 0.0), 1.0f32.to_bits() as u64);
         assert_eq!(run(0x1e6e_1000, 0.0, 0.0), 1.0f64.to_bits());
@@ -2214,15 +2259,15 @@ mod tests {
             .load_bytes(CODE, &0xf8408460u32.to_le_bytes())
             .unwrap();
         memory
-            .write_u64(DATA + 0xff8, 0x1234_5678_9abc_def0)
+            .write_u64(DATA + 8, 0x1234_5678_9abc_def0)
             .unwrap();
         let mut context = touchHLE_DynarmicA64Context::default();
         context.pc = CODE;
-        context.regs[3] = DATA + 0xff8;
+        context.regs[3] = DATA;
         let mut interpreter = A64Interpreter::new();
         assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
         assert_eq!(context.regs[0], 0x1234_5678_9abc_def0);
-        assert_eq!(context.regs[3], DATA + 0x1000);
+        assert_eq!(context.regs[3], DATA + 8);
     }
 
     #[test]
@@ -2276,6 +2321,28 @@ mod tests {
         assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
         assert_eq!(context.sp, SP);
         assert!(context.pstate & (1 << 29) != 0);
+    }
+
+    #[test]
+    fn ccmp_immediate_decodes_the_known_minecraft_instruction() {
+        let mut memory = Mem64::new();
+        memory
+            .map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute())
+            .unwrap();
+        memory
+            .load_bytes(CODE, &0xfa40_dac4u32.to_le_bytes())
+            .unwrap();
+        let mut context = touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context {
+            pc: CODE,
+            ..Default::default()
+        };
+        context.regs[22] = 0;
+        context.pstate = NZCV_Z;
+        assert_eq!(
+            A64Interpreter::new().run_or_step(&mut memory, &mut context, None),
+            -1
+        );
+        assert_eq!(context.pstate & (NZCV_N | NZCV_Z | NZCV_C | NZCV_V), NZCV_Z | NZCV_C);
     }
 
     #[test]
