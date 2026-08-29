@@ -9,13 +9,13 @@
 use super::mutex::pthread_mutex_t;
 use crate::dyld::FunctionExports;
 use crate::libc::errno::{EINVAL, ETIMEDOUT};
-use crate::libc::pthread::mutex::{pthread_mutex_lock, pthread_mutex_unlock};
+use crate::libc::pthread::mutex::pthread_mutex_unlock;
 use crate::mem::{ConstPtr, MutPtr, Ptr, SafeRead};
 use crate::{export_c_func, Environment};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, SystemTime};
 
-use crate::environment::{MutexId, ThreadId};
+use crate::environment::{MutexId, ThreadBlock, ThreadId};
 use crate::libc::time::timespec;
 
 #[repr(C, packed)]
@@ -124,31 +124,64 @@ pub fn pthread_cond_timedwait(
     mutex: MutPtr<pthread_mutex_t>,
     abs_time: ConstPtr<timespec>,
 ) -> i32 {
-    let _ = abs_time;
+    let time = env.mem.read(abs_time);
+    // Per POSIX, tv_sec and tv_nsec are signed but negative values are invalid.
+    // Real iOS clamps them to 0 rather than crashing. Some games (e.g. Unity
+    // engine with uninitialized timespec) pass garbage values here.
+    let secs: u64 = time.tv_sec.max(0) as u64;
+    let nanos: u64 = time.tv_nsec.max(0) as u64;
+    let deadline = Duration::from_secs(secs) + Duration::from_nanos(nanos);
 
     if let Err(e) = check_or_register_cond(env, cond) {
         return e;
     }
 
     let res = pthread_mutex_unlock(env, mutex);
+    // ЧЕСТНЫЙ ФИКС: Если мьютекс не был заблокирован этим потоком (возвращен
+    // EPERM = 1),
+    // мы не паникуем, а возвращаем ошибку обратно в игру, как делает реальная
+    // ОС.
     if res != 0 {
         log_dbg!("Warning: pthread_cond_timedwait called with unlocked/invalid mutex, returning error {}", res);
         return res;
     }
 
-    let relock = pthread_mutex_lock(env, mutex);
-    if relock != 0 {
-        log_dbg!(
-            "Warning: pthread_cond_timedwait could not relock mutex, returning error {}",
-            relock
-        );
-        return relock;
-    }
     log_dbg!(
-        "pthread_cond_timedwait: returning ETIMEDOUT without blocking on {:?}",
-        cond
+        "Thread {} is blocking on condition variable {:?} with deadline {:?}",
+        env.current_thread,
+        cond,
+        deadline
     );
-    ETIMEDOUT
+
+    let current_thread = env.current_thread;
+    let mutex_id = env.mem.read(mutex).mutex_id;
+    let host_object = State::get_mut(env)
+        .condition_variables
+        .get_mut(&cond)
+        .unwrap();
+
+    // The mutex used must be the same as the currently waiting mutex, or there
+    // must be no other waiters.
+    assert!(
+        host_object.curr_mutex == Some(mutex_id)
+            || host_object.waking.is_empty() && host_object.waiting.is_empty()
+    );
+    host_object.curr_mutex = Some(mutex_id);
+    host_object.waiting.push_back(current_thread);
+
+    env.yield_thread(ThreadBlock::Condition(cond, Some(deadline)));
+
+    let host_object = State::get_mut(env)
+        .condition_variables
+        .get_mut(&cond)
+        .unwrap();
+
+    if host_object.timed_out.contains(&current_thread) {
+        host_object.timed_out.remove(&current_thread);
+        ETIMEDOUT
+    } else {
+        0 // success
+    }
 }
 
 pub fn pthread_cond_wait(
@@ -160,6 +193,7 @@ pub fn pthread_cond_wait(
         return e;
     }
     let res = pthread_mutex_unlock(env, mutex);
+    // ЧЕСТНЫЙ ФИКС: Аналогичная обработка для обычного wait без таймаута
     if res != 0 {
         log_dbg!(
             "Warning: pthread_cond_wait called with unlocked/invalid mutex, returning error {}",
@@ -168,19 +202,37 @@ pub fn pthread_cond_wait(
         return res;
     }
 
-    let relock = pthread_mutex_lock(env, mutex);
-    if relock != 0 {
-        log_dbg!(
-            "Warning: pthread_cond_wait could not relock mutex, returning error {}",
-            relock
-        );
-        return relock;
-    }
     log_dbg!(
-        "pthread_cond_wait: returning immediately without blocking on {:?}",
+        "Thread {} is blocking on condition variable {:?}",
+        env.current_thread,
         cond
     );
-    0
+
+    let current_thread = env.current_thread;
+    let mutex_id = env.mem.read(mutex).mutex_id;
+    let host_object = State::get_mut(env)
+        .condition_variables
+        .get_mut(&cond)
+        .unwrap();
+
+    // The mutex used must be the same as the currently waiting mutex, or there
+    // must be no other waiters.
+    assert!(
+        host_object.curr_mutex == Some(mutex_id)
+            || host_object.waking.is_empty() && host_object.waiting.is_empty()
+    );
+    host_object.curr_mutex = Some(mutex_id);
+    host_object.waiting.push_back(current_thread);
+
+    env.yield_thread(ThreadBlock::Condition(cond, None));
+
+    let host_object = State::get_mut(env)
+        .condition_variables
+        .get_mut(&cond)
+        .unwrap();
+
+    assert!(!host_object.timed_out.contains(&current_thread));
+    0 // success
 }
 
 pub fn pthread_cond_signal(env: &mut Environment, cond: MutPtr<pthread_cond_t>) -> i32 {
@@ -231,8 +283,12 @@ pub fn pthread_cond_destroy(env: &mut Environment, cond: MutPtr<pthread_cond_t>)
     if let Err(e) = check_or_register_cond(env, cond) {
         return e;
     }
-    State::get_mut(env).condition_variables.remove(&cond);
-    0
+    let old_object = State::get_mut(env)
+        .condition_variables
+        .remove(&cond)
+        .unwrap();
+    assert!(old_object.waiting.is_empty() && old_object.waking.is_empty());
+    0 // success
 }
 
 /// pthread_cond_timedwait_relative_np — Apple extension with a relative
