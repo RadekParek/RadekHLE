@@ -1143,8 +1143,7 @@ impl Window {
     ) -> Window {
         crate::gles::configure_angle_driver(options.angle_driver);
         let llvmpipe_active = crate::gles::configure_llvmpipe_fallback(options.llvmpipe_fallback);
-        let software_presentation = options.software_presentation
-            || matches!(options.graphics_api, crate::options::GraphicsApi::Software);
+        let software_presentation = options.software_rendering || options.software_presentation;
         let sdl_ctx = sdl2::init().unwrap();
         let video_ctx = sdl_ctx.video().unwrap();
 
@@ -1339,9 +1338,8 @@ impl Window {
         // (see src/frameworks/core_animation/composition.rs). OpenGL ES is used
         // because SDL2 won't let us use more than one graphics API in the same
         // window, and we also need OpenGL ES for the app's own rendering.
-        if software_presentation
-            && !matches!(options.graphics_api, crate::options::GraphicsApi::Software)
-        {
+        if software_presentation {
+            log!("Software rendering enabled: skipping host GL context creation; presentation uses CPU pixels and SDL only");
             return window;
         }
 

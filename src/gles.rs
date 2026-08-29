@@ -412,8 +412,8 @@ pub fn create_gles1_ctx_no_parent_stack(
     assert!(window.on_main_stack());
     log!("Creating an OpenGL ES 1.1 context:");
     configure_angle_driver(options.angle_driver);
-    if matches!(options.graphics_api, crate::options::GraphicsApi::Software) {
-        log!("Using CPU software OpenGL ES 1.1 rasterizer");
+    if options.software_rendering {
+        log!("Using CPU-only software OpenGL ES 1.1 rasterizer");
         return Box::new(
             SoftwareGLESContext::new(window).expect("Could not create software GLES context"),
         );

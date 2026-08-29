@@ -231,6 +231,10 @@ pub struct Options {
     /// (`level > 0`) do not trigger the fix-up so games that actually use
     /// mipmaps are unaffected.
     pub fix_texture_min_filter: bool,
+    pub software_rendering: bool,
+    pub anisotropic_filtering: u8,
+    pub texture_upscaler: u8,
+    pub anti_aliasing: u8,
     pub software_presentation: bool,
     pub zero_stack_after_guest_to_host_call: Option<u32>,
 }
@@ -284,6 +288,10 @@ impl Default for Options {
             ignore_gl_errors: false,
             trace_gl_errors: true,
             fix_texture_min_filter: cfg!(target_os = "android"),
+            software_rendering: false,
+            anisotropic_filtering: 1,
+            texture_upscaler: 1,
+            anti_aliasing: 1,
             software_presentation: false,
             zero_stack_after_guest_to_host_call: None,
         }
@@ -303,6 +311,14 @@ impl Options {
                 return Err(format!("Value for {name} is out of range"));
             }
             Ok(arg)
+        }
+        fn parse_quality(arg: &str, name: &str, allowed: &[u8]) -> Result<u8, String> {
+            let value = if arg == "off" { 1 } else { arg.parse::<u8>().unwrap_or(0) };
+            if allowed.contains(&value) {
+                Ok(value)
+            } else {
+                Err(format!("Invalid value for {name}"))
+            }
         }
 
         if arg == "--fullscreen" {
@@ -451,10 +467,23 @@ impl Options {
             );
         } else if arg == "--gles2-compat" {
             self.gles2_compat = true;
+        } else if arg == "--software-rendering" {
+            self.software_rendering = true;
+            self.software_presentation = true;
+        } else if arg == "--disable-software-rendering" {
+            self.software_rendering = false;
+            self.software_presentation = false;
+        } else if let Some(value) = arg.strip_prefix("--anisotropic-filtering=") {
+            self.anisotropic_filtering = parse_quality(value, "--anisotropic-filtering=", &[1, 2, 4, 8, 16])?;
+        } else if let Some(value) = arg.strip_prefix("--texture-upscaler=") {
+            self.texture_upscaler = parse_quality(value, "--texture-upscaler=", &[1, 2, 3, 4])?;
+        } else if let Some(value) = arg.strip_prefix("--anti-aliasing=") {
+            self.anti_aliasing = parse_quality(value, "--anti-aliasing=", &[1, 2, 4, 8])?;
         } else if let Some(value) = arg.strip_prefix("--graphics-api=") {
-            self.graphics_api = GraphicsApi::from_short_name(value)
+            let api = GraphicsApi::from_short_name(value)
                 .map_err(|_| "Unrecognized --graphics-api= value".to_string())?;
-            self.software_presentation = matches!(self.graphics_api, GraphicsApi::Software);
+            self.graphics_api = api;
+            self.software_presentation = self.software_rendering;
         } else if arg == "--angle-driver" {
             self.angle_driver = true;
         } else if arg == "--disable-angle-driver" {
