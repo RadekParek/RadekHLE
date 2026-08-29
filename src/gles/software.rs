@@ -1186,7 +1186,11 @@ impl GLES for SoftwareGLES<'_> {
         image_size: GLsizei,
         data: *const GLvoid,
     ) {
-        if data.is_null() || image_size < 0 {
+        if target != gl::TEXTURE_2D || level < 0 || width <= 0 || height <= 0 || border != 0 || image_size < 0 {
+            self.state.error(gl::INVALID_VALUE);
+            return;
+        }
+        if data.is_null() {
             self.state.error(gl::INVALID_VALUE);
             return;
         }
