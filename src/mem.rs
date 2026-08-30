@@ -470,9 +470,11 @@ impl Mem {
         self.bytes.cast()
     }
 
+    #[inline(always)]
     fn bytes(&self) -> &Bytes {
         unsafe { &*self.bytes }
     }
+    #[inline(always)]
     fn bytes_mut(&mut self) -> &mut Bytes {
         unsafe { &mut *self.bytes }
     }
@@ -575,15 +577,17 @@ impl Mem {
     /// 0. This may be inconvenient in some cases, but it makes the behavior
     /// when deriving a pointer from the slice consistent (though you should use
     /// [Self::ptr_at] for that).
+    #[inline(always)]
     pub fn bytes_at<const MUT: bool>(&self, ptr: Ptr<u8, MUT>, count: GuestUSize) -> &[u8] {
+        let _perf_scope = crate::perf::memory_scope();
         // ХАК: Вместо паники логируем и возвращаем данные из stub-страницы
         if ptr.to_bits() < self.null_segment_size {
             Self::null_check_fail(ptr.to_bits(), count, false, "bytes_at");
+            let count_usize = count as usize;
             // Возвращаем данные из stub-страницы вместо реальной памяти
             // Это предотвращает UndefinedInstruction когда игра использует
             // прочитанные значения как указатели на функции
             let offset = (ptr.to_bits() % PAGE_SIZE) as usize;
-            let count_usize = count as usize;
             let available = PAGE_SIZE as usize - offset;
             let actual_count = count_usize.min(available);
             return unsafe {
@@ -595,18 +599,27 @@ impl Mem {
         // return the stub page. This prevents panics when a game uses -1 or
         // another near-max address as a pointer (corrupted pointer arithmetic).
         let addr = ptr.to_bits() as usize;
-        let end = addr.saturating_add(count as usize);
-        if end > self.bytes().len() || end < addr {
+        let count_usize = count as usize;
+        let Some(end) = addr.checked_add(count_usize) else {
             Self::null_check_fail(ptr.to_bits(), count, false, "bytes_at(OOB)");
             let offset = (ptr.to_bits() % PAGE_SIZE) as usize;
-            let count_usize = count as usize;
+            let available = PAGE_SIZE as usize - offset;
+            let actual_count = count_usize.min(available);
+            return unsafe {
+                std::slice::from_raw_parts(self.null_stub_page.add(offset), actual_count)
+            };
+        };
+        if end > self.bytes().len() {
+            Self::null_check_fail(ptr.to_bits(), count, false, "bytes_at(OOB)");
+            let offset = (ptr.to_bits() % PAGE_SIZE) as usize;
             let available = PAGE_SIZE as usize - offset;
             let actual_count = count_usize.min(available);
             return unsafe {
                 std::slice::from_raw_parts(self.null_stub_page.add(offset), actual_count)
             };
         }
-        &self.bytes()[addr..][..count as usize]
+        let bytes = self.bytes();
+        unsafe { std::slice::from_raw_parts(bytes.as_ptr().add(addr), count_usize) }
     }
     /// Get a slice for reading `count` bytes without a null-page check.
     ///
@@ -619,18 +632,26 @@ impl Mem {
         count: GuestUSize,
     ) -> &[u8] {
         let addr = ptr.to_bits() as usize;
-        let end = addr.saturating_add(count as usize);
-        if end > self.bytes().len() || end < addr {
+        let count_usize = count as usize;
+        let Some(end) = addr.checked_add(count_usize) else {
             Self::null_check_fail(ptr.to_bits(), count, false, "unchecked_bytes_at(OOB)");
             let offset = (ptr.to_bits() % PAGE_SIZE) as usize;
-            let count_usize = count as usize;
             let available = PAGE_SIZE as usize - offset;
             let actual_count = count_usize.min(available);
             return unsafe {
                 std::slice::from_raw_parts(self.null_stub_page.add(offset), actual_count)
             };
+        };
+        if end > self.bytes().len() {
+            Self::null_check_fail(ptr.to_bits(), count, false, "unchecked_bytes_at(OOB)");
+            let offset = (ptr.to_bits() % PAGE_SIZE) as usize;
+            let actual_count = count_usize.min(PAGE_SIZE as usize - offset);
+            return unsafe {
+                std::slice::from_raw_parts(self.null_stub_page.add(offset), actual_count)
+            };
         }
-        &self.bytes()[addr..][..count as usize]
+        let bytes = self.bytes();
+        unsafe { std::slice::from_raw_parts(bytes.as_ptr().add(addr), count_usize) }
     }
     /// Get a slice for reading or writing `count` bytes.
     /// This is the basic
@@ -640,7 +661,10 @@ impl Mem {
     /// 0. This may be inconvenient in some cases, but it makes the behavior
     /// when deriving a pointer from the slice consistent (though you should use
     /// [Self::ptr_at_mut] for that).
+    #[inline(always)]
     pub fn bytes_at_mut(&mut self, ptr: MutPtr<u8>, count: GuestUSize) -> &mut [u8] {
+        let _perf_scope = crate::perf::memory_scope();
+        let count_usize = count as usize;
         // ХАК: Вместо паники логируем и возвращаем данные из stub-страницы
         if ptr.to_bits() < self.null_segment_size {
             Self::null_check_fail(ptr.to_bits(), count, true, "bytes_at_mut");
@@ -648,7 +672,6 @@ impl Mem {
             // writes are silently absorbed without corrupting the read stub
             // page's zeros.
             let offset = (ptr.to_bits() % PAGE_SIZE) as usize;
-            let count_usize = count as usize;
             let available = PAGE_SIZE as usize - offset;
             let actual_count = count_usize.min(available);
             return unsafe {
@@ -658,18 +681,26 @@ impl Mem {
         // Guard against out-of-bounds writes near the top of the 32-bit
         // address space (e.g. corrupted pointer = 0xFFFFFFFF).
         let addr = ptr.to_bits() as usize;
-        let end = addr.saturating_add(count as usize);
-        if end > self.bytes().len() || end < addr {
+        let Some(end) = addr.checked_add(count_usize) else {
             Self::null_check_fail(ptr.to_bits(), count, true, "bytes_at_mut(OOB)");
             let offset = (ptr.to_bits() % PAGE_SIZE) as usize;
-            let count_usize = count as usize;
+            let available = PAGE_SIZE as usize - offset;
+            let actual_count = count_usize.min(available);
+            return unsafe {
+                std::slice::from_raw_parts_mut(self.null_write_sink.add(offset), actual_count)
+            };
+        };
+        if end > self.bytes().len() {
+            Self::null_check_fail(ptr.to_bits(), count, true, "bytes_at_mut(OOB)");
+            let offset = (ptr.to_bits() % PAGE_SIZE) as usize;
             let available = PAGE_SIZE as usize - offset;
             let actual_count = count_usize.min(available);
             return unsafe {
                 std::slice::from_raw_parts_mut(self.null_write_sink.add(offset), actual_count)
             };
         }
-        &mut self.bytes_mut()[addr..][..count as usize]
+        let bytes = self.bytes_mut();
+        unsafe { std::slice::from_raw_parts_mut(bytes.as_mut_ptr().add(addr), count_usize) }
     }
 
     /// Get a pointer for reading an array of `count` elements of type `T`.

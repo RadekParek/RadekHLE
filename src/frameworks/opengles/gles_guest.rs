@@ -86,6 +86,7 @@ where
         return U::default();
     }
     let trace = env.options.trace_gl_errors;
+    let _perf_scope = crate::perf::gles_scope();
     let caller = std::panic::Location::caller();
     // `sync_context` now returns None when no GL context is bound to the
     // calling thread. The guard above already short-circuits the common

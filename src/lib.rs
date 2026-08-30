@@ -51,6 +51,7 @@ mod mem;
 mod mem64;
 mod objc;
 mod options;
+mod perf;
 mod paths;
 mod stack;
 mod window;
@@ -116,6 +117,14 @@ Special options:
         Print basic information about the app bundle without running the app.
 ";
 pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
+    struct PerfReportGuard;
+    impl Drop for PerfReportGuard {
+        fn drop(&mut self) {
+            crate::perf::report();
+        }
+    }
+    let _perf_report_guard = PerfReportGuard;
+    crate::perf::configure_from_environment();
     echo!(
         "RadekHLE 5.0 {}{}{} git_sha={}",
         branding(),

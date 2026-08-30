@@ -124,6 +124,7 @@ fn objc_msgSend_inner(
     tolerate_type_mismatch: bool,
     skip_initialize: bool,
 ) {
+    let _perf_scope = crate::perf::objc_scope();
     log_dbg!(
         "Dispatching {} for {:?}",
         selector.as_str(&env.mem),

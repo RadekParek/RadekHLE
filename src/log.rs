@@ -6,10 +6,12 @@
 //! Logging and terminal output macros.
 
 use std::fs::File;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 static FILE_LOGGING_ENABLED: AtomicBool = AtomicBool::new(true);
+static LOG_LINES: AtomicUsize = AtomicUsize::new(0);
+const LOG_FLUSH_INTERVAL: usize = 64;
 
 pub fn set_file_logging(enabled: bool) {
     FILE_LOGGING_ENABLED.store(enabled, Ordering::Relaxed);
@@ -20,6 +22,26 @@ pub fn set_file_logging(enabled: bool) {
 
 pub fn file_logging_enabled() -> bool {
     FILE_LOGGING_ENABLED.load(Ordering::Relaxed)
+}
+
+pub fn append_log_line(line: &str) {
+    if !file_logging_enabled() {
+        return;
+    }
+    if let Ok(mut log_file) = get_log_file().lock() {
+        let _ = std::io::Write::write_all(&mut *log_file, line.as_bytes());
+        let _ = std::io::Write::write_all(&mut *log_file, b"\n");
+        let count = LOG_LINES.fetch_add(1, Ordering::Relaxed) + 1;
+        if count % LOG_FLUSH_INTERVAL == 0 {
+            let _ = std::io::Write::flush(&mut *log_file);
+        }
+    }
+}
+
+pub fn flush_log() {
+    if let Ok(mut log_file) = get_log_file().lock() {
+        let _ = std::io::Write::flush(&mut *log_file);
+    }
 }
 
 /// Get a handle to the log file. This is only for use by logging macros!
@@ -103,13 +125,7 @@ macro_rules! echo {
             #[cfg(not(target_os = "android"))]
             eprintln!("{}", formatted_str);
 
-            if $crate::log::file_logging_enabled() {
-                if let Ok(mut log_file) = $crate::log::get_log_file().lock() {
-                    let _ = std::io::Write::write_all(&mut *log_file, formatted_str.as_bytes());
-                    let _ = std::io::Write::write_all(&mut *log_file, b"\n");
-                    let _ = std::io::Write::flush(&mut *log_file);
-                }
-            }
+            $crate::log::append_log_line(&formatted_str);
         }
     };
     () => {
@@ -121,12 +137,7 @@ macro_rules! echo {
             #[cfg(not(target_os = "android"))]
             eprintln!("");
 
-            if $crate::log::file_logging_enabled() {
-                if let Ok(mut log_file) = $crate::log::get_log_file().lock() {
-                    let _ = std::io::Write::write_all(&mut *log_file, b"\n");
-                    let _ = std::io::Write::flush(&mut *log_file);
-                }
-            }
+            $crate::log::append_log_line("");
         }
     }
 }
