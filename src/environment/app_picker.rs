@@ -2379,7 +2379,9 @@ fn setup_quick_options(
         &rows[..]
     };
 
-    let mut button_rows = Vec::new();
+    let mut scale_hack_buttons: Option<[id; 7]> = None;
+    let mut orientation_buttons: Option<[id; 4]> = None;
+    let mut frame_generation_buttons: Option<[id; 3]> = None;
     let mut ios_version_btn: id = nil;
     let mut ios_version_menu: id = nil;
     let mut ios_version_items: Vec<id> = Vec::new();
@@ -2449,10 +2451,18 @@ fn setup_quick_options(
                     () = msg![env; button setFrame:button_frame];
                     () = msg![env; button layoutSubviews];
                 }
-                if button_rows.len() >= 4 {
-                    quality_buttons.push(controls.clone());
+                match buttons.first().map(|button| button.1) {
+                    Some("scaleHackDefault") => {
+                        scale_hack_buttons = controls.try_into().ok();
+                    }
+                    Some("orientationDefault") => {
+                        orientation_buttons = controls.try_into().ok();
+                    }
+                    Some("frameGenerationOff") => {
+                        frame_generation_buttons = controls.try_into().ok();
+                    }
+                    _ => quality_buttons.push(controls.clone()),
                 }
-                button_rows.push(controls);
             }
             RowKind::IosVersionDropdown => {
                 let dropdown = make_ios_version_dropdown(
@@ -2524,9 +2534,9 @@ fn setup_quick_options(
         graphics_api_menu,
         graphics_api_items,
         quality_buttons,
-        scale_hack_buttons: button_rows[1][..].try_into().unwrap(),
-        orientation_buttons: button_rows[2][..].try_into().unwrap(),
-        frame_generation_buttons: button_rows[3][..].try_into().unwrap(),
+        scale_hack_buttons: scale_hack_buttons.unwrap_or([nil; 7]),
+        orientation_buttons: orientation_buttons.unwrap_or([nil; 4]),
+        frame_generation_buttons: frame_generation_buttons.unwrap_or([nil; 3]),
         device_model_btn,
         device_model_menu,
         device_model_items,
