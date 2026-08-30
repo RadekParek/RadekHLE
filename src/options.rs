@@ -482,8 +482,10 @@ impl Options {
         } else if let Some(value) = arg.strip_prefix("--graphics-api=") {
             let api = GraphicsApi::from_short_name(value)
                 .map_err(|_| "Unrecognized --graphics-api= value".to_string())?;
+            if api == GraphicsApi::Software {
+                return Err("Software rendering is controlled by --software-rendering".to_string());
+            }
             self.graphics_api = api;
-            self.software_presentation = self.software_rendering;
         } else if arg == "--angle-driver" {
             self.angle_driver = true;
         } else if arg == "--disable-angle-driver" {

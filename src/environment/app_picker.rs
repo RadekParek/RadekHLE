@@ -270,6 +270,10 @@ struct AppPickerDelegateHostObject {
     arm64_fallback: Option<crate::options::Arm64Fallback>,
     llvmpipe_fallback: Option<bool>,
     metal_translator: Option<bool>,
+    software_rendering: Option<bool>,
+    anisotropic_filtering: Option<u8>,
+    texture_upscaler: Option<u8>,
+    anti_aliasing: Option<u8>,
 }
 impl HostObject for AppPickerDelegateHostObject {}
 
@@ -460,6 +464,36 @@ const CLASSES: ClassExports = objc_classes! {
     let switch_state: bool = msg![env; switch isOn];
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).metal_translator = Some(switch_state);
 }
+- (())softwareRendering:(id)switch {
+    let switch_state: bool = msg![env; switch isOn];
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).software_rendering = Some(switch_state);
+}
+- (())anisotropicFiltering:(id)sender {
+    let tag: NSInteger = msg![env; sender tag];
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).anisotropic_filtering = Some(tag as u8);
+}
+- (())textureUpscaler:(id)sender {
+    let tag: NSInteger = msg![env; sender tag];
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).texture_upscaler = Some(tag as u8);
+}
+- (())antiAliasing:(id)sender {
+    let tag: NSInteger = msg![env; sender tag];
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).anti_aliasing = Some(tag as u8);
+}
+- (())anisotropicFiltering1 { env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).anisotropic_filtering = Some(1); }
+- (())anisotropicFiltering2 { env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).anisotropic_filtering = Some(2); }
+- (())anisotropicFiltering4 { env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).anisotropic_filtering = Some(4); }
+- (())anisotropicFiltering8 { env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).anisotropic_filtering = Some(8); }
+- (())anisotropicFiltering16 { env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).anisotropic_filtering = Some(16); }
+- (())textureUpscaler1 { env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).texture_upscaler = Some(1); }
+- (())textureUpscaler2 { env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).texture_upscaler = Some(2); }
+- (())textureUpscaler3 { env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).texture_upscaler = Some(3); }
+- (())textureUpscaler4 { env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).texture_upscaler = Some(4); }
+- (())antiAliasing1 { env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).anti_aliasing = Some(1); }
+- (())antiAliasing2 { env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).anti_aliasing = Some(2); }
+- (())antiAliasing4 { env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).anti_aliasing = Some(4); }
+- (())antiAliasing8 { env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).anti_aliasing = Some(8); }
+
 - (())graphicsApiToggle {
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).graphics_api_toggle = true;
 }
@@ -801,6 +835,10 @@ fn app_picker_inner(
     let mut quick_options_arm64_fallback = crate::options::Arm64Fallback::Interpreter;
     let mut quick_options_llvmpipe_fallback = true;
     let mut quick_options_metal_translator = true;
+    let mut quick_options_software_rendering = false;
+    let mut quick_options_anisotropic_filtering = 1u8;
+    let mut quick_options_texture_upscaler = 1u8;
+    let mut quick_options_anti_aliasing = 1u8;
 
     fn update_quick_option_buttons(env: &mut Environment, buttons: &[id], selected_idx: usize) {
         for (idx, &button) in buttons.iter().enumerate() {
@@ -881,6 +919,15 @@ fn app_picker_inner(
         &quick_options_stuff.graphics_api_items,
         quick_options_graphics_api,
     );
+    for (index, buttons) in quick_options_stuff.quality_buttons.iter().enumerate() {
+        let selected = match index {
+            0 => 0,
+            1 => 0,
+            2 => 0,
+            _ => 0,
+        };
+        update_quick_option_buttons(env, buttons, selected);
+    }
     update_scale_hack_buttons(
         env,
         &quick_options_stuff.scale_hack_buttons,
@@ -1215,6 +1262,14 @@ fn app_picker_inner(
             quick_options_llvmpipe_fallback = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.metal_translator) {
             quick_options_metal_translator = enabled;
+        } else if let Some(enabled) = std::mem::take(&mut host_obj.software_rendering) {
+            quick_options_software_rendering = enabled;
+        } else if let Some(value) = std::mem::take(&mut host_obj.anisotropic_filtering) {
+            quick_options_anisotropic_filtering = value;
+        } else if let Some(value) = std::mem::take(&mut host_obj.texture_upscaler) {
+            quick_options_texture_upscaler = value;
+        } else if let Some(value) = std::mem::take(&mut host_obj.anti_aliasing) {
+            quick_options_anti_aliasing = value;
         }
     };
 
@@ -1266,6 +1321,12 @@ fn app_picker_inner(
         quick_options_frame_generation
             .map_or_else(|| "off".to_string(), |multiplier| multiplier.to_string())
     ));
+    if quick_options_software_rendering {
+        option_args.push("--software-rendering".to_string());
+    }
+    option_args.push(format!("--anisotropic-filtering={quick_options_anisotropic_filtering}"));
+    option_args.push(format!("--texture-upscaler={quick_options_texture_upscaler}"));
+    option_args.push(format!("--anti-aliasing={quick_options_anti_aliasing}"));
     if quick_options_graphics_api != crate::options::GraphicsApi::Default {
         let value = match quick_options_graphics_api {
             crate::options::GraphicsApi::Translator => "translator",
@@ -1274,7 +1335,7 @@ fn app_picker_inner(
             crate::options::GraphicsApi::GLES11 => "gles1.1",
             crate::options::GraphicsApi::GLES20 => "gles2.0",
             crate::options::GraphicsApi::GLES30 => "gles3.0",
-            crate::options::GraphicsApi::Software => "software",
+            crate::options::GraphicsApi::Software => unreachable!("software rendering is standalone"),
             crate::options::GraphicsApi::Metal => "metal",
             crate::options::GraphicsApi::Default => unreachable!(),
         };
@@ -2034,6 +2095,7 @@ struct QuickOptionsStuff {
     graphics_api_btn: id,
     graphics_api_menu: id,
     graphics_api_items: Vec<id>,
+    quality_buttons: Vec<Vec<id>>,
     scale_hack_buttons: [id; 7],
     orientation_buttons: [id; 4],
     frame_generation_buttons: [id; 3],
@@ -2240,6 +2302,14 @@ fn setup_quick_options(
         RowKind::IosVersionDropdown,
         RowKind::Label("Graphics API"),
         RowKind::GraphicsApiDropdown,
+        RowKind::Label("Software rendering (CPU only)"),
+        RowKind::Switch("softwareRendering:", false),
+        RowKind::Label("Anisotropic filtering"),
+        RowKind::Buttons(&[("1×", "anisotropicFiltering1"), ("2×", "anisotropicFiltering2"), ("4×", "anisotropicFiltering4"), ("8×", "anisotropicFiltering8"), ("16×", "anisotropicFiltering16")]),
+        RowKind::Label("Texture upscaler"),
+        RowKind::Buttons(&[("1×", "textureUpscaler1"), ("2×", "textureUpscaler2"), ("3×", "textureUpscaler3"), ("4×", "textureUpscaler4")]),
+        RowKind::Label("Anti-aliasing"),
+        RowKind::Buttons(&[("1×", "antiAliasing1"), ("2×", "antiAliasing2"), ("4×", "antiAliasing4"), ("8×", "antiAliasing8")]),
         RowKind::Label("Dynarmic JIT"),
         RowKind::Switch("arm64Backend:", false),
         RowKind::Label("Interpreter fallback"),
@@ -2316,6 +2386,7 @@ fn setup_quick_options(
     let mut graphics_api_btn: id = nil;
     let mut graphics_api_menu: id = nil;
     let mut graphics_api_items: Vec<id> = Vec::new();
+    let mut quality_buttons: Vec<Vec<id>> = Vec::new();
     let mut device_model_btn: id = nil;
     let mut device_model_menu: id = nil;
     let mut device_model_items: Vec<id> = Vec::new();
@@ -2377,6 +2448,9 @@ fn setup_quick_options(
                     };
                     () = msg![env; button setFrame:button_frame];
                     () = msg![env; button layoutSubviews];
+                }
+                if button_rows.len() >= 4 {
+                    quality_buttons.push(controls.clone());
                 }
                 button_rows.push(controls);
             }
@@ -2449,6 +2523,7 @@ fn setup_quick_options(
         graphics_api_btn,
         graphics_api_menu,
         graphics_api_items,
+        quality_buttons,
         scale_hack_buttons: button_rows[1][..].try_into().unwrap(),
         orientation_buttons: button_rows[2][..].try_into().unwrap(),
         frame_generation_buttons: button_rows[3][..].try_into().unwrap(),
@@ -2526,10 +2601,6 @@ fn update_device_model_menu(
 /// Graphics API choices shown in the settings dropdown.
 const GRAPHICS_API_ENTRIES: &[(&str, crate::options::GraphicsApi)] = &[
     ("Default (game)", crate::options::GraphicsApi::Default),
-    (
-        "Software rendering (CPU)",
-        crate::options::GraphicsApi::Software,
-    ),
     (
         "OpenGL ES 1.1 → OpenGL ES 2.0 translator",
         crate::options::GraphicsApi::Translator,
