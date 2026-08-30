@@ -182,9 +182,8 @@ pub struct Options {
     pub print_fps: bool,
     pub fps_limit: Option<f64>,
     pub frame_pacing: bool,
-    /// Experimental frame synthesis multiplier. Disabled by default because
-    /// interpolation can introduce artifacts and does not create real game logic frames.
-    pub frame_generation: Option<u8>,
+    /// Generate presentation frames up to the host display refresh rate. Disabled by default.
+    pub frame_generation: bool,
     pub force_composition: bool,
     /// Force EAGL `initWithAPI:` to create an OpenGL ES 2.0 context even when
     /// the app requested an OpenGL ES 1.1 context.
@@ -278,7 +277,7 @@ impl Default for Options {
             print_fps: false,
             fps_limit: None, // Follow the host display; legacy apps can still opt into a fixed cap.
             frame_pacing: true,
-            frame_generation: None,
+            frame_generation: false,
             force_composition: false,
             prefer_gles2_context: false,
             network_access: false,
@@ -518,17 +517,10 @@ impl Options {
             self.frame_pacing = true;
         } else if arg == "--disable-frame-pacing" {
             self.frame_pacing = false;
-        } else if let Some(value) = arg.strip_prefix("--frame-generation=") {
-            self.frame_generation = match value {
-                "off" | "0" => None,
-                "2" => Some(2),
-                "3" => Some(3),
-                _ => {
-                    return Err(
-                        "Invalid value for --frame-generation= (use off, 2, or 3)".to_string()
-                    )
-                }
-            };
+        } else if arg == "--frame-generation" {
+            self.frame_generation = true;
+        } else if arg == "--disable-frame-generation" {
+            self.frame_generation = false;
         } else if let Some(value) = arg.strip_prefix("--fps-limit=") {
             if value == "off" {
                 self.fps_limit = None;

@@ -39,8 +39,8 @@ android {
         def branding = getTouchHLEBranding()
         applicationId 'org.radekhle.android'
         applicationIdSuffix(branding.isEmpty() ? null : branding.toLowerCase())
-        resValue 'string', 'app_name', 'RadekHLE 4.0'
-        buildConfigField 'String', 'APP_NAME', '"RadekHLE 4.0"'
+        resValue 'string', 'app_name', 'RadekHLE 5.0'
+        buildConfigField 'String', 'APP_NAME', '"RadekHLE 5.0"'
         manifestPlaceholders = [
                 icon: join('@drawable/icon', '_', branding.toLowerCase())
         ]
