@@ -312,7 +312,7 @@ impl Options {
             Ok(arg)
         }
         fn parse_quality(arg: &str, name: &str, allowed: &[u8]) -> Result<u8, String> {
-            let value = if arg == "off" { 1 } else { arg.parse::<u8>().unwrap_or(0) };
+            let value = arg.parse::<u8>().unwrap_or(0);
             if allowed.contains(&value) {
                 Ok(value)
             } else {
@@ -517,9 +517,9 @@ impl Options {
             self.frame_pacing = true;
         } else if arg == "--disable-frame-pacing" {
             self.frame_pacing = false;
-        } else if arg == "--frame-generation" {
+        } else if arg == "--frame-generation" || arg == "--frame-generation=on" {
             self.frame_generation = true;
-        } else if arg == "--disable-frame-generation" {
+        } else if arg == "--disable-frame-generation" || arg == "--frame-generation=off" {
             self.frame_generation = false;
         } else if let Some(value) = arg.strip_prefix("--fps-limit=") {
             if value == "off" {

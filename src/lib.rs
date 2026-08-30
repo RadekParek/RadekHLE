@@ -117,7 +117,7 @@ Special options:
 ";
 pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
     echo!(
-        "RadekHLE 4.0 {}{}{} git_sha={}",
+        "RadekHLE 5.0 {}{}{} git_sha={}",
         branding(),
         if branding().is_empty() { "" } else { " " },
         VERSION,
@@ -188,8 +188,11 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
         let mut options = options::Options::default();
         // Apply command-line options only (no app-specific options apply)
         for option_arg in &option_args {
-            let parse_result = options.parse_argument(option_arg);
-            assert!(parse_result == Ok(true));
+            match options.parse_argument(option_arg) {
+                Ok(true) => (),
+                Ok(false) => log!("Warning: ignoring unknown generated option {option_arg:?}"),
+                Err(error) => log!("Warning: ignoring invalid generated option {option_arg:?}: {error}"),
+            }
         }
         if options.headless {
             return Err(
@@ -406,8 +409,11 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
     echo!();
     // Apply command-line options
     for option_arg in option_args {
-        let parse_result = options.parse_argument(&option_arg);
-        assert!(parse_result == Ok(true));
+        match options.parse_argument(&option_arg) {
+            Ok(true) => (),
+            Ok(false) => log!("Warning: ignoring unknown generated option {option_arg:?}"),
+            Err(error) => log!("Warning: ignoring invalid generated option {option_arg:?}: {error}"),
+        }
     }
     if options.fps_limit.is_none() {
         if let Some(refresh_rate) = window::host_refresh_rate() {

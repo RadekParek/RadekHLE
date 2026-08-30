@@ -247,9 +247,7 @@ struct AppPickerDelegateHostObject {
     /// Quick option: show FPS counter (maps to --print-fps)
     show_fps: Option<bool>,
     frame_pacing: Option<bool>,
-    frame_generation_off: bool,
-    frame_generation2: bool,
-    frame_generation3: bool,
+    frame_generation: Option<bool>,
     fullscreen: Option<bool>,
     angle_driver: Option<bool>,
     log_file: Option<bool>,
@@ -379,14 +377,9 @@ const CLASSES: ClassExports = objc_classes! {
     let switch_state: bool = msg![env; switch isOn];
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).frame_pacing = Some(switch_state);
 }
-- (())frameGenerationOff {
-    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).frame_generation_off = true;
-}
-- (())frameGeneration2 {
-    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).frame_generation2 = true;
-}
-- (())frameGeneration3 {
-    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).frame_generation3 = true;
+- (())frameGeneration:(id)switch {
+    let switch_state: bool = msg![env; switch isOn];
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).frame_generation = Some(switch_state);
 }
 - (())fullscreen:(id)switch { // UISwitch*
     let switch_state: bool = msg![env; switch isOn];
@@ -819,7 +812,7 @@ fn app_picker_inner(
     let mut quick_options_network = false;
     let mut quick_options_show_fps = true;
     let mut quick_options_frame_pacing = true;
-    let mut quick_options_frame_generation: Option<u8> = None;
+    let mut quick_options_frame_generation = false;
     let mut quick_options_angle_driver = false;
     let mut quick_options_log_file = true;
     let mut quick_options_trace_gl_errors = true;
@@ -862,6 +855,18 @@ fn app_picker_inner(
             Some(_) => 0,
         };
         update_quick_option_buttons(env, buttons, selected);
+    }
+    fn update_quality_button_group(
+        env: &mut Environment,
+        groups: &[Vec<id>],
+        group_index: usize,
+        choices: &[u8],
+        value: u8,
+    ) {
+        if let Some(buttons) = groups.get(group_index) {
+            let selected = choices.iter().position(|choice| *choice == value).unwrap_or(0);
+            update_quick_option_buttons(env, buttons, selected);
+        }
     }
     fn update_ios_version_dropdown(
         env: &mut Environment,
@@ -919,21 +924,34 @@ fn app_picker_inner(
         &quick_options_stuff.graphics_api_items,
         quick_options_graphics_api,
     );
-    for (index, buttons) in quick_options_stuff.quality_buttons.iter().enumerate() {
-        let selected = match index {
-            0 => 0,
-            1 => 0,
-            2 => 0,
-            _ => 0,
-        };
-        update_quick_option_buttons(env, buttons, selected);
-    }
+    update_quality_button_group(
+        env,
+        &quick_options_stuff.quality_buttons,
+        0,
+        &[1, 2, 4, 8, 16],
+        quick_options_anisotropic_filtering,
+    );
+    update_quality_button_group(
+        env,
+        &quick_options_stuff.quality_buttons,
+        1,
+        &[1, 2, 3, 4],
+        quick_options_texture_upscaler,
+    );
+    update_quality_button_group(
+        env,
+        &quick_options_stuff.quality_buttons,
+        2,
+        &[1, 2, 4, 8],
+        quick_options_anti_aliasing,
+    );
     update_scale_hack_buttons(
         env,
         &quick_options_stuff.scale_hack_buttons,
         quick_options_scale_hack,
     );
-    update_quick_option_buttons(env, &quick_options_stuff.frame_generation_buttons, 0);
+    () = msg![env; (quick_options_stuff.frame_generation_switch)
+        setOn:quick_options_frame_generation];
     update_orientation_buttons(
         env,
         &quick_options_stuff.orientation_buttons,
@@ -1244,15 +1262,9 @@ fn app_picker_inner(
             }
         } else if let Some(enabled) = std::mem::take(&mut host_obj.frame_pacing) {
             quick_options_frame_pacing = enabled;
-        } else if std::mem::take(&mut host_obj.frame_generation_off) {
-            quick_options_frame_generation = None;
-            update_quick_option_buttons(env, &quick_options_stuff.frame_generation_buttons, 0);
-        } else if std::mem::take(&mut host_obj.frame_generation2) {
-            quick_options_frame_generation = Some(2);
-            update_quick_option_buttons(env, &quick_options_stuff.frame_generation_buttons, 1);
-        } else if std::mem::take(&mut host_obj.frame_generation3) {
-            quick_options_frame_generation = Some(3);
-            update_quick_option_buttons(env, &quick_options_stuff.frame_generation_buttons, 2);
+        } else if let Some(enabled) = std::mem::take(&mut host_obj.frame_generation) {
+            quick_options_frame_generation = enabled;
+            () = msg![env; (quick_options_stuff.frame_generation_switch) setOn:enabled];
         } else if let Some(fullscreen) = std::mem::take(&mut host_obj.fullscreen) {
             quick_options_fullscreen = match fullscreen {
                 false => None,
@@ -1266,10 +1278,13 @@ fn app_picker_inner(
             quick_options_software_rendering = enabled;
         } else if let Some(value) = std::mem::take(&mut host_obj.anisotropic_filtering) {
             quick_options_anisotropic_filtering = value;
+            update_quality_button_group(env, &quick_options_stuff.quality_buttons, 0, &[1, 2, 4, 8, 16], value);
         } else if let Some(value) = std::mem::take(&mut host_obj.texture_upscaler) {
             quick_options_texture_upscaler = value;
+            update_quality_button_group(env, &quick_options_stuff.quality_buttons, 1, &[1, 2, 3, 4], value);
         } else if let Some(value) = std::mem::take(&mut host_obj.anti_aliasing) {
             quick_options_anti_aliasing = value;
+            update_quality_button_group(env, &quick_options_stuff.quality_buttons, 2, &[1, 2, 4, 8], value);
         }
     };
 
@@ -1316,11 +1331,14 @@ fn app_picker_inner(
         }
         .to_string(),
     );
-    option_args.push(format!(
-        "--frame-generation={}",
-        quick_options_frame_generation
-            .map_or_else(|| "off".to_string(), |multiplier| multiplier.to_string())
-    ));
+    option_args.push(
+        if quick_options_frame_generation {
+            "--frame-generation"
+        } else {
+            "--disable-frame-generation"
+        }
+        .to_string(),
+    );
     if quick_options_software_rendering {
         option_args.push("--software-rendering".to_string());
     }
@@ -1432,14 +1450,15 @@ fn picker_ui_scale(size: CGSize) -> CGFloat {
 }
 
 fn picker_font(env: &mut Environment, size: CGFloat) -> id {
-    let name = ns_string::get_static_str(env, "HelveticaNeue");
-    let font: id = msg_class![env; UIFont fontWithName:name size:size];
-    release(env, name);
-    if font == nil {
-        msg_class![env; UIFont systemFontOfSize:size]
-    } else {
-        font
+    for family in ["HelveticaNeue-Medium", "HelveticaNeue"] {
+        let name = ns_string::get_static_str(env, family);
+        let font: id = msg_class![env; UIFont fontWithName:name size:size];
+        release(env, name);
+        if font != nil {
+            return font;
+        }
     }
+    msg_class![env; UIFont systemFontOfSize:size]
 }
 
 enum TappedIcon {
@@ -1787,7 +1806,8 @@ fn make_app_launcher_grid(
             ))[..],
             _ => unreachable!(),
         };
-        let image = Image::from_bytes(resource).expect("picker icon resource must be valid");
+        let mut image = Image::from_bytes(resource).expect("picker icon resource must be valid");
+        image.round_corners(12.0, /* four_corners: */ true, /* add_sheen: */ true);
         let image = cg_image::from_image(env, image);
         let image: id = msg_class![env; UIImage imageWithCGImage:image];
         () = msg![env; button setImage:image forState:UIControlStateNormal];
@@ -2098,7 +2118,7 @@ struct QuickOptionsStuff {
     quality_buttons: Vec<Vec<id>>,
     scale_hack_buttons: [id; 7],
     orientation_buttons: [id; 4],
-    frame_generation_buttons: [id; 3],
+    frame_generation_switch: id,
     /// The button that toggles the "Device model" dropdown open/closed. Its
     /// title shows the currently-selected model plus an up/down arrow.
     device_model_btn: id,
@@ -2361,11 +2381,7 @@ fn setup_quick_options(
         RowKind::Label("Show HUD"),
         RowKind::Switch("showFPS:", true),
         RowKind::Label("Frame generation (experimental)"),
-        RowKind::Buttons(&[
-            ("Off", "frameGenerationOff"),
-            ("2×", "frameGeneration2"),
-            ("3×", "frameGeneration3"),
-        ]),
+        RowKind::Switch("frameGeneration:", false),
         RowKind::Label("Use analog sticks for tilt controls"),
         RowKind::Switch("analogStickTiltControls:", true),
         // ---- (divider for stuff skipped below)
@@ -2381,7 +2397,7 @@ fn setup_quick_options(
 
     let mut scale_hack_buttons: Option<[id; 7]> = None;
     let mut orientation_buttons: Option<[id; 4]> = None;
-    let mut frame_generation_buttons: Option<[id; 3]> = None;
+    let mut frame_generation_switch: id = nil;
     let mut ios_version_btn: id = nil;
     let mut ios_version_menu: id = nil;
     let mut ios_version_items: Vec<id> = Vec::new();
@@ -2458,10 +2474,12 @@ fn setup_quick_options(
                     Some("orientationDefault") => {
                         orientation_buttons = controls.try_into().ok();
                     }
-                    Some("frameGenerationOff") => {
-                        frame_generation_buttons = controls.try_into().ok();
+                    Some("anisotropicFiltering1")
+                    | Some("textureUpscaler1")
+                    | Some("antiAliasing1") => {
+                        quality_buttons.push(controls.clone());
                     }
-                    _ => quality_buttons.push(controls.clone()),
+                    _ => {}
                 }
             }
             RowKind::IosVersionDropdown => {
@@ -2501,7 +2519,7 @@ fn setup_quick_options(
                 graphics_api_menu = dropdown.1;
                 graphics_api_items = dropdown.2;
             }
-            RowKind::Switch(selector, default_state) => {
+            RowKind::Switch(selector_name, default_state) => {
                 let switch_frame = CGRect {
                     origin: CGPoint {
                         x: main_frame.size.width * 0.70,
@@ -2516,11 +2534,14 @@ fn setup_quick_options(
                 let switch: id = msg_class![env; UISwitch alloc];
                 let switch: id = msg![env; switch initWithFrame:switch_frame];
                 () = msg![env; switch setOn:default_state];
-                let selector = env.objc.lookup_selector(selector).unwrap();
+                let selector = env.objc.lookup_selector(selector_name).unwrap();
                 () = msg![env; switch addTarget:delegate
                                          action:selector
                                forControlEvents:UIControlEventValueChanged];
                 () = msg![env; main_view addSubview:switch];
+                if selector_name == "frameGeneration:" {
+                    frame_generation_switch = switch;
+                }
             }
         }
     }
@@ -2536,7 +2557,7 @@ fn setup_quick_options(
         quality_buttons,
         scale_hack_buttons: scale_hack_buttons.unwrap_or([nil; 7]),
         orientation_buttons: orientation_buttons.unwrap_or([nil; 4]),
-        frame_generation_buttons: frame_generation_buttons.unwrap_or([nil; 3]),
+        frame_generation_switch,
         device_model_btn,
         device_model_menu,
         device_model_items,
