@@ -277,6 +277,16 @@ pub fn create_gles1_ctx(env: &mut Environment) -> Box<dyn GLESContext> {
 ///    OpenGL 2.1 compatibility profile context. Only used on the rare host
 ///    that has GL 2.1 compat but no GL 3.3 Core (e.g. very old macOS
 ///    installations); kept around for backwards compatibility.
+pub fn create_software_gles_ctx(env: &mut Environment) -> Box<dyn GLESContext> {
+    env.on_parent_stack_in_coroutine(|window, _options| {
+        log!("Using CPU software OpenGL ES 2.0 / 3.0 compatibility rasterizer");
+        Box::new(
+            SoftwareGLESContext::new(window)
+                .expect("Could not create software GLES context"),
+        )
+    })
+}
+
 pub fn create_gles2_ctx(env: &mut Environment) -> Box<dyn GLESContext> {
     env.on_parent_stack_in_coroutine(|window, _options| {
         assert!(window.on_main_stack());

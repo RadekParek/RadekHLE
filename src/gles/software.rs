@@ -175,11 +175,11 @@ impl SoftwareState {
         );
         strings.insert(
             gl::VERSION,
-            CString::new("OpenGL ES-CM 1.1 RadekHLE software").unwrap(),
+            CString::new("OpenGL ES 3.0 RadekHLE CPU rasterizer").unwrap(),
         );
         strings.insert(
             gl::EXTENSIONS,
-            CString::new("GL_OES_framebuffer_object GL_OES_draw_texture").unwrap(),
+            CString::new("GL_OES_framebuffer_object GL_OES_draw_texture GL_OES_vertex_array_object GL_OES_mapbuffer GL_EXT_texture_filter_anisotropic").unwrap(),
         );
         Self {
             width,
@@ -324,7 +324,7 @@ pub struct SoftwareGLESContext {
 
 impl GLESContext for SoftwareGLESContext {
     fn description() -> &'static str {
-        "CPU software OpenGL ES 1.1 rasterizer"
+        "CPU software OpenGL ES 2.0 / 3.0 rasterizer"
     }
 
     fn new(window: &mut Window) -> Result<Self, String> {
@@ -664,8 +664,20 @@ impl SoftwareGLES<'_> {
 }
 
 impl GLES for SoftwareGLES<'_> {
+    fn is_es2(&self) -> bool {
+        true
+    }
+
+    fn is_es3(&self) -> bool {
+        true
+    }
+
+    fn supports_vao_oes(&self) -> bool {
+        true
+    }
+
     unsafe fn driver_description(&self) -> String {
-        "OpenGL ES 1.1 / RadekHLE / CPU rasterizer".to_owned()
+        "OpenGL ES 3.0 / RadekHLE / CPU rasterizer".to_owned()
     }
     unsafe fn GetError(&mut self) -> GLenum {
         let value = self.state.error;

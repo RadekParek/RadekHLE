@@ -18,7 +18,7 @@ use crate::gles::gles11_raw::types::*;
 use crate::gles::present::{present_frame, FpsCounter};
 use crate::gles::{
     create_gles1_ctx, create_gles1_gles3_translator_ctx, create_gles1_translator_ctx,
-    create_gles2_ctx, create_gles3_ctx, gles1_on_gl2, GLESContext, GLES,
+    create_gles2_ctx, create_gles3_ctx, create_software_gles_ctx, gles1_on_gl2, GLESContext, GLES,
 };
 use crate::mem::MutPtr;
 use crate::objc::{
@@ -88,7 +88,10 @@ fn effective_eagl_api(
         GraphicsApi::GLES10 | GraphicsApi::GLES11 => kEAGLRenderingAPIOpenGLES1,
         GraphicsApi::Translator => kEAGLRenderingAPIOpenGLES2,
         GraphicsApi::TranslatorGLES30 => kEAGLRenderingAPIOpenGLES3,
-        GraphicsApi::Software => kEAGLRenderingAPIOpenGLES1,
+        GraphicsApi::Software => match requested {
+            kEAGLRenderingAPIOpenGLES3 => kEAGLRenderingAPIOpenGLES3,
+            _ => kEAGLRenderingAPIOpenGLES2,
+        },
         GraphicsApi::GLES20 => kEAGLRenderingAPIOpenGLES2,
         GraphicsApi::GLES30 => kEAGLRenderingAPIOpenGLES3,
         GraphicsApi::Metal => {
@@ -204,7 +207,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     );
 
     let mut gles_ins = match (env.options.graphics_api, effective_api) {
-        (GraphicsApi::Software, _) => create_gles1_ctx(env),
+        (GraphicsApi::Software, _) => create_software_gles_ctx(env),
         (GraphicsApi::Translator, _) => create_gles1_translator_ctx(env),
         (GraphicsApi::TranslatorGLES30, _) => create_gles1_gles3_translator_ctx(env),
         (_, kEAGLRenderingAPIOpenGLES3) => create_gles3_ctx(env),
@@ -1695,6 +1698,7 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
     // Capture this up front because the env borrow is moved into the GL
     // context machinery below.
     let trace_gl_errors = env.options.trace_gl_errors;
+    let frame_generation = env.window().is_frame_generation_enabled();
 
     // Save these for when we need to draw the frame
     let viewport = env.window.as_mut().unwrap().viewport();
