@@ -843,13 +843,6 @@ unsafe fn present_renderbuffer_readback(env: &mut Environment, drawable: id) {
         log!("GPU framebuffer readback skipped because the GL context disappeared.");
         return;
     };
-    if env.window().is_frame_generation_enabled() {
-        log_once!(
-            "Frame generation: presenting GPU framebuffer readback through the CPU display path on every backend"
-        );
-        env.window_mut().present_native_frame(pixels, width, height, true);
-        return;
-    }
     present_pixels(env, drawable, pixels, width, height);
     let force_composition = env.options.force_composition;
     env.options.force_composition = true;

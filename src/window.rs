@@ -1155,6 +1155,10 @@ impl Window {
         crate::gles::configure_angle_driver(options.angle_driver);
         let llvmpipe_active = crate::gles::configure_llvmpipe_fallback(options.llvmpipe_fallback);
         let software_presentation = options.software_rendering || options.software_presentation;
+        let frame_generation = options.frame_generation && software_presentation;
+        if options.frame_generation && !software_presentation {
+            log!("Frame generation requested with a GPU renderer; keeping the native GPU presentation path because CPU readback/interpolation is not safe or efficient for this backend");
+        }
         let sdl_ctx = sdl2::init().unwrap();
         let video_ctx = sdl_ctx.video().unwrap();
         let display_refresh_rate = video_ctx
@@ -1324,7 +1328,7 @@ impl Window {
             host_screen_size,
             software_presentation,
             display_refresh_rate,
-            frame_generation: options.frame_generation,
+            frame_generation,
             frame_generation_state: FrameGenerationState::default(),
             internal_gl_ins: None,
             splash_image,
