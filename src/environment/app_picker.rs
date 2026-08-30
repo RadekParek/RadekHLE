@@ -2324,6 +2324,8 @@ fn setup_quick_options(
         RowKind::GraphicsApiDropdown,
         RowKind::Label("Software rendering (CPU only)"),
         RowKind::Switch("softwareRendering:", false),
+        RowKind::Label("Frame generation"),
+        RowKind::Switch("frameGeneration:", false),
         RowKind::Label("Anisotropic filtering"),
         RowKind::Buttons(&[("1×", "anisotropicFiltering1"), ("2×", "anisotropicFiltering2"), ("4×", "anisotropicFiltering4"), ("8×", "anisotropicFiltering8"), ("16×", "anisotropicFiltering16")]),
         RowKind::Label("Texture upscaler"),
@@ -2380,8 +2382,6 @@ fn setup_quick_options(
         RowKind::Switch("framePacing:", true),
         RowKind::Label("Show HUD"),
         RowKind::Switch("showFPS:", true),
-        RowKind::Label("Frame generation (experimental)"),
-        RowKind::Switch("frameGeneration:", false),
         RowKind::Label("Use analog sticks for tilt controls"),
         RowKind::Switch("analogStickTiltControls:", true),
         // ---- (divider for stuff skipped below)
