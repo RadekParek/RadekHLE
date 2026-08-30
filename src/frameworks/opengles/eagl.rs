@@ -635,11 +635,6 @@ pub const CLASSES: ClassExports = objc_classes! {
     }
 
     let fullscreen_layer = find_fullscreen_eagl_layer(env);
-    let frame_generation = env
-        .window
-        .as_ref()
-        .map(|window| window.is_frame_generation_enabled())
-        .unwrap_or(false);
 
     // Unclear from documentation if this method requires the context to be
     // current, but it would be weird if it didn't?
@@ -843,6 +838,11 @@ unsafe fn present_renderbuffer_readback(env: &mut Environment, drawable: id) {
         log!("GPU framebuffer readback skipped because the GL context disappeared.");
         return;
     };
+    if env.window().is_frame_generation_enabled() {
+        log_once!("Frame generation: capturing GPU renderbuffers for interpolation on the native, translated, and shader GLES paths");
+        env.window_mut().present_native_frame(pixels, width, height, true);
+        return;
+    }
     present_pixels(env, drawable, pixels, width, height);
     let force_composition = env.options.force_composition;
     env.options.force_composition = true;
@@ -1826,7 +1826,7 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
     // glEnableClientState / glVertexPointer. Use a small dedicated
     // shader-based presenter instead.
     if gles.is_es2() {
-        if gles.is_translator() {
+        if frame_generation || gles.is_translator() {
             std::mem::drop(gles_boxed);
             present_renderbuffer_readback(env, drawable);
         } else {
