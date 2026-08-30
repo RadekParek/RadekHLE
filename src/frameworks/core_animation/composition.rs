@@ -176,9 +176,7 @@ pub fn recomposite_if_necessary(env: &mut Environment, force: bool) -> Option<In
         msg![env; screen bounds]
     };
     let (fb_width, fb_height) = env.window().framebuffer_size();
-    if env.window().is_software_presentation() {
-        return new_recomposite_next;
-    }
+    let software_presentation = env.window().is_software_presentation();
     let present_frame_args = (
         env.window().viewport(),
         env.window().rotation_matrix(),
@@ -190,6 +188,10 @@ pub fn recomposite_if_necessary(env: &mut Environment, force: bool) -> Option<In
     // Initial state for layer tree traversal (see composite_layer_recursive)
     let cumulative_transform = Matrix::<4>::identity();
     let opacity = 1.0;
+
+    if software_presentation {
+        return new_recomposite_next;
+    }
 
     let window = env.window.as_mut().unwrap();
     let mut gles = window.make_internal_gl_ctx_current();

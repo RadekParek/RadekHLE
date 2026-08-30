@@ -33,6 +33,14 @@ use std::f32::consts::{FRAC_PI_2, PI};
 use std::ptr::null_mut;
 use std::time::{Duration, Instant};
 
+#[derive(Default)]
+struct FrameGenerationState {
+    previous: Option<Vec<u8>>,
+    width: u32,
+    height: u32,
+    last_frame_at: Option<Instant>,
+}
+
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum DeviceFamily {
@@ -1072,6 +1080,9 @@ pub struct Window {
     scale_hack: f32,
     host_screen_size: Option<(u32, u32)>,
     software_presentation: bool,
+    display_refresh_rate: f64,
+    frame_generation: bool,
+    frame_generation_state: FrameGenerationState,
     internal_gl_ins: Option<Box<dyn GLESContext>>,
     splash_image: Option<Image>,
     /// Whether the selected image already targets the startup orientation.
@@ -1146,6 +1157,13 @@ impl Window {
         let software_presentation = options.software_rendering || options.software_presentation;
         let sdl_ctx = sdl2::init().unwrap();
         let video_ctx = sdl_ctx.video().unwrap();
+        let display_refresh_rate = video_ctx
+            .current_display_mode(0)
+            .ok()
+            .map(|mode| mode.refresh_rate as f64)
+            .filter(|rate| *rate > 0.0)
+            .unwrap_or(60.0)
+            .clamp(30.0, 240.0);
 
         // The "hidapi" feature of rust-sdl2 is enabled so that sdl2::sensor
         // is available, but we don't want to enable SDL's HIDAPI controller
@@ -1305,6 +1323,9 @@ impl Window {
             scale_hack,
             host_screen_size,
             software_presentation,
+            display_refresh_rate,
+            frame_generation: options.frame_generation,
+            frame_generation_state: FrameGenerationState::default(),
             internal_gl_ins: None,
             splash_image,
             splash_image_is_orientation_specific,
@@ -2319,7 +2340,85 @@ impl Window {
     }
 
     pub fn present_software_frame(&mut self, pixels: Vec<u8>, width: u32, height: u32) {
-        self.present_software_pixels(pixels, width, height, true);
+        self.present_frame_with_generation(pixels, width, height, true);
+    }
+
+    fn present_frame_with_generation(
+        &mut self,
+        pixels: Vec<u8>,
+        width: u32,
+        height: u32,
+        bottom_up: bool,
+    ) {
+        if !self.frame_generation {
+            self.present_software_pixels(pixels, width, height, bottom_up);
+            return;
+        }
+        let expected_len = width as usize * height as usize * 4;
+        if width == 0 || height == 0 || pixels.len() < expected_len {
+            log_dbg!(
+                "Frame generation skipped invalid frame: {}x{} with {} bytes (need {})",
+                width,
+                height,
+                pixels.len(),
+                expected_len
+            );
+            return;
+        }
+        let mut current = vec![0u8; expected_len];
+        for y in 0..height as usize {
+            let source_y = if bottom_up { height as usize - 1 - y } else { y };
+            let source = source_y * width as usize * 4;
+            let destination = y * width as usize * 4;
+            current[destination..destination + width as usize * 4]
+                .copy_from_slice(&pixels[source..source + width as usize * 4]);
+        }
+        let now = Instant::now();
+        let previous = if self.frame_generation_state.width == width
+            && self.frame_generation_state.height == height
+        {
+            self.frame_generation_state.previous.take()
+        } else {
+            self.frame_generation_state.previous = None;
+            None
+        };
+        let elapsed = self
+            .frame_generation_state
+            .last_frame_at
+            .map_or(Duration::from_secs_f64(1.0 / 60.0), |last| {
+                now.saturating_duration_since(last)
+            });
+        self.frame_generation_state.width = width;
+        self.frame_generation_state.height = height;
+        self.frame_generation_state.last_frame_at = Some(now);
+        let display_interval = Duration::from_secs_f64(1.0 / self.display_refresh_rate.max(1.0));
+        let display_slots = (elapsed.as_secs_f64() / display_interval.as_secs_f64())
+            .round()
+            .clamp(1.0, 8.0) as usize;
+        if let Some(previous) = previous {
+            let mut generated = 0;
+            for step in 1..display_slots {
+                let blend = step as u32 * 256 / display_slots as u32;
+                let inverse = 256 - blend;
+                let mut interpolated = vec![0u8; expected_len];
+                for index in 0..expected_len {
+                    interpolated[index] =
+                        ((previous[index] as u32 * inverse + current[index] as u32 * blend) >> 8)
+                            as u8;
+                }
+                self.present_software_pixels(interpolated, width, height, false);
+                generated += 1;
+                std::thread::sleep(display_interval);
+            }
+            log_dbg!(
+                "Frame generation: rendered frame interval {:.2}ms, displayed {} generated frame(s) at {:.2}Hz",
+                elapsed.as_secs_f64() * 1000.0,
+                generated,
+                self.display_refresh_rate
+            );
+        }
+        self.present_software_pixels(current.clone(), width, height, false);
+        self.frame_generation_state.previous = Some(current);
     }
 
     fn present_software_pixels(
@@ -2481,7 +2580,9 @@ impl Window {
     /// Swap front-buffer and back-buffer so the result of OpenGL rendering is
     /// presented.
     pub fn swap_window(&mut self) {
-        self.window.gl_swap_window();
+        if !self.software_presentation {
+            self.window.gl_swap_window();
+        }
 
         // FPS logging / UI: count frames and print once per second if enabled.
         if self.show_fps_counter.get() {
@@ -2648,6 +2749,10 @@ impl Window {
 
     pub fn is_software_presentation(&self) -> bool {
         self.software_presentation
+    }
+
+    pub fn is_frame_generation_enabled(&self) -> bool {
+        self.frame_generation
     }
 
     /// Get the region of the on-screen window (x, y, width, height) used to
