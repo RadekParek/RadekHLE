@@ -2421,6 +2421,22 @@ impl Window {
         self.frame_generation_state.previous = Some(current);
     }
 
+    pub fn present_native_frame(
+        &mut self,
+        pixels: Vec<u8>,
+        width: u32,
+        height: u32,
+        bottom_up: bool,
+    ) {
+        if self.frame_generation {
+            self.present_frame_with_generation(pixels, width, height, bottom_up);
+        } else {
+            self.frame_generation_state.previous = None;
+            self.frame_generation_state.last_frame_at = None;
+            self.window.gl_swap_window();
+        }
+    }
+
     fn present_software_pixels(
         &mut self,
         pixels: Vec<u8>,

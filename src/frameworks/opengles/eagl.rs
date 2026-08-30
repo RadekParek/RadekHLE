@@ -635,6 +635,11 @@ pub const CLASSES: ClassExports = objc_classes! {
     }
 
     let fullscreen_layer = find_fullscreen_eagl_layer(env);
+    let frame_generation = env
+        .window
+        .as_ref()
+        .map(|window| window.is_frame_generation_enabled())
+        .unwrap_or(false);
 
     // Unclear from documentation if this method requires the context to be
     // current, but it would be weird if it didn't?
@@ -835,9 +840,16 @@ unsafe fn present_renderbuffer_readback(env: &mut Environment, drawable: id) {
         }
     };
     let Some((pixels, width, height)) = read_result else {
-        log!("Native ES1 readback skipped because the GL context disappeared.");
+        log!("GPU framebuffer readback skipped because the GL context disappeared.");
         return;
     };
+    if env.window().is_frame_generation_enabled() {
+        log_once!(
+            "Frame generation: presenting GPU framebuffer readback through the CPU display path on every backend"
+        );
+        env.window_mut().present_native_frame(pixels, width, height, true);
+        return;
+    }
     present_pixels(env, drawable, pixels, width, height);
     let force_composition = env.options.force_composition;
     env.options.force_composition = true;

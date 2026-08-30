@@ -384,6 +384,7 @@ pub fn recomposite_if_necessary(env: &mut Environment, force: bool) -> Option<In
     }
 
     // Re-borrow
+    let frame_generation = env.window().is_frame_generation_enabled();
     let window = env.window.as_mut().unwrap();
     let mut gles = window.make_internal_gl_ctx_current();
 
@@ -416,8 +417,29 @@ pub fn recomposite_if_necessary(env: &mut Environment, force: bool) -> Option<In
             present_frame_args.2,
         );
     }
-    std::mem::drop(gles);
-    window.swap_window();
+    if frame_generation {
+        unsafe {
+            gles.Finish();
+        }
+        let pixels = unsafe {
+            let mut pixels = vec![0u8; fb_width as usize * fb_height as usize * 4];
+            gles.ReadPixels(
+                0,
+                0,
+                fb_width as _,
+                fb_height as _,
+                gles11::RGBA,
+                gles11::UNSIGNED_BYTE,
+                pixels.as_mut_ptr().cast(),
+            );
+            pixels
+        };
+        std::mem::drop(gles);
+        window.present_native_frame(pixels, fb_width, fb_height, true);
+    } else {
+        std::mem::drop(gles);
+        window.swap_window();
+    }
 
     animation_state.update_started_and_finished_animations(env);
 
