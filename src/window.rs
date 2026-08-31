@@ -1276,26 +1276,14 @@ impl Window {
             let screen_size = video_ctx.display_bounds(0).unwrap().size();
             let (width, height) = rotate_fullscreen_size(device_orientation, screen_size);
             let mut builder = video_ctx.window(title, width, height);
-            if options.graphics_api != crate::options::GraphicsApi::Wgpu {
-                builder.opengl();
-            }
-            let window = builder
-                .fullscreen()
-                .vulkan()
-                .build()
-                .unwrap();
+            builder.opengl();
+            let window = builder.fullscreen().build().unwrap();
             window
         } else if fullscreen {
             let (width, height) = video_ctx.display_bounds(0).unwrap().size();
             let mut builder = video_ctx.window(title, width, height);
-            if options.graphics_api != crate::options::GraphicsApi::Wgpu {
-                builder.opengl();
-            }
-            let window = builder
-                .fullscreen_desktop()
-                .vulkan()
-                .build()
-                .unwrap();
+            builder.opengl();
+            let window = builder.fullscreen_desktop().build().unwrap();
             window
         } else {
             let (width, height) = size_for_orientation_from_size(
@@ -1304,13 +1292,10 @@ impl Window {
                 scale_hack,
             );
             let mut builder = video_ctx.window(title, width, height);
-            if options.graphics_api != crate::options::GraphicsApi::Wgpu {
-                builder.opengl();
-            }
+            builder.opengl();
             let window = builder
                 .position_centered()
                 .resizable()
-                .vulkan()
                 .build()
                 .unwrap();
             window
