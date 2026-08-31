@@ -2305,15 +2305,13 @@ fn setup_quick_options(
 
     let main_view: id = msg_class![env; UIScrollView alloc];
     let main_view: id = msg![env; main_view initWithFrame:visible_frame];
-    let main_background: id = msg_class![env; UIColor colorWithRed:0.72 green:0.72 blue:0.72 alpha:1.0];
-    () = msg![env; super_view setBackgroundColor:main_background];
+    let settings_background: id = msg_class![env; UIColor colorWithRed:0.72 green:0.72 blue:0.72 alpha:1.0];
     let content_size = main_frame.size;
     () = msg![env; main_view setContentSize:content_size];
     () = msg![env; main_view setScrollEnabled:true];
     () = msg![env; main_view setShowsVerticalScrollIndicator:true];
     () = msg![env; main_view setAlwaysBounceVertical:true];
-    let bg_color: id = msg_class![env; UIColor colorWithRed:0.72 green:0.72 blue:0.72 alpha:1.0];
-    () = msg![env; main_view setBackgroundColor:bg_color];
+    () = msg![env; main_view setBackgroundColor:settings_background];
     () = msg![env; main_view setOpaque:true];
     // This main_view is hidden until the copyright info button is tapped.
     () = msg![env; main_view setHidden:true];
