@@ -147,6 +147,8 @@ pub struct Options {
     /// `--device-family=auto` (from the host display) or via the explicit
     /// `--screen-size=WxH` override below.
     pub host_screen_size: Option<(u32, u32)>,
+    /// Explicit custom logical screen size selected in the app picker.
+    pub custom_screen_size: Option<(u32, u32)>,
     pub initial_orientation: DeviceOrientation,
     /// iOS version reported to guest applications. `None` uses the latest compatibility version.
     pub ios_version: Option<(i32, i32, i32)>,
@@ -245,6 +247,7 @@ impl Default for Options {
             device_family: None,
             auto_device_family: false,
             host_screen_size: None,
+            custom_screen_size: None,
             initial_orientation: DeviceOrientation::Portrait,
             ios_version: None,
             scale_hack: 1.0,
@@ -375,6 +378,26 @@ impl Options {
                 return Err("--screen-size= dimensions must be non-zero".to_string());
             }
             self.host_screen_size = Some((w, h));
+        } else if let Some(value) = arg.strip_prefix("--custom-resolution=") {
+            let (w, h) = value
+                .split_once(|c| c == 'x' || c == 'X' || c == ',')
+                .ok_or_else(|| "--custom-resolution= requires WIDTHxHEIGHT".to_string())?;
+            let w: u32 = w
+                .trim()
+                .parse()
+                .map_err(|_| "Invalid width for --custom-resolution=".to_string())?;
+            let h: u32 = h
+                .trim()
+                .parse()
+                .map_err(|_| "Invalid height for --custom-resolution=".to_string())?;
+            if !(64..=16384).contains(&w) || !(64..=16384).contains(&h) {
+                return Err("--custom-resolution= dimensions must be between 64 and 16384".to_string());
+            }
+            self.custom_screen_size = Some((w, h));
+            self.host_screen_size = Some((w, h));
+        } else if arg == "--clear-custom-resolution" {
+            self.custom_screen_size = None;
+            self.host_screen_size = None;
         } else if let Some(value) = arg.strip_prefix("--scale-hack=") {
             self.scale_hack = value
                 .parse::<f32>()

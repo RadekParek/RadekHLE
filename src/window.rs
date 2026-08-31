@@ -1045,6 +1045,40 @@ pub fn host_screen_size() -> Option<(u32, u32)> {
     }
 }
 
+/// Return the distinct physical display resolutions exposed by the host.
+/// Android normally exposes only the active mode, while desktop SDL drivers
+/// can expose several modes. The result is normalised to portrait order so it
+/// can be used directly by the app picker's custom-resolution controls.
+pub fn host_screen_resolutions() -> Vec<(u32, u32)> {
+    let Some(sdl_ctx) = sdl2::init().ok() else {
+        return Vec::new();
+    };
+    let Some(video_ctx) = sdl_ctx.video().ok() else {
+        return Vec::new();
+    };
+    let mode_count = video_ctx.num_display_modes(0).unwrap_or(0);
+    let mut resolutions = Vec::new();
+    for mode_index in 0..mode_count {
+        let Ok(mode) = video_ctx.display_mode(0, mode_index) else {
+            continue;
+        };
+        if mode.w <= 0 || mode.h <= 0 {
+            continue;
+        }
+        let resolution = normalize_portrait_size((mode.w as u32, mode.h as u32));
+        if !resolutions.contains(&resolution) {
+            resolutions.push(resolution);
+        }
+    }
+    if resolutions.is_empty() {
+        if let Some(size) = host_screen_size() {
+            resolutions.push(normalize_portrait_size(size));
+        }
+    }
+    resolutions.sort_unstable_by_key(|(width, height)| (*width as u64) * (*height as u64));
+    resolutions
+}
+
 /// Query the host display refresh rate. SDL receives this from Android's
 /// Display.getRefreshRate(), so high-refresh devices are not forced to 60 Hz.
 pub fn host_refresh_rate() -> Option<f64> {

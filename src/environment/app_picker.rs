@@ -238,6 +238,10 @@ struct AppPickerDelegateHostObject {
     scale_hack2: bool,
     scale_hack3: bool,
     scale_hack4: bool,
+    custom_resolution: bool,
+    custom_resolution_apply: bool,
+    custom_resolution_cancel: bool,
+    supported_resolution: Option<i32>,
     orientation_default: bool,
     orientation_landscape_left: bool,
     orientation_landscape_right: bool,
@@ -341,6 +345,19 @@ const CLASSES: ClassExports = objc_classes! {
 }
 - (())scaleHack4 {
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).scale_hack4 = true;
+}
+- (())customResolution {
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).custom_resolution = true;
+}
+- (())customResolutionApply {
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).custom_resolution_apply = true;
+}
+- (())customResolutionCancel {
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).custom_resolution_cancel = true;
+}
+- (())supportedResolution:(id)sender {
+    let tag: NSInteger = msg![env; sender tag];
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).supported_resolution = Some(tag as i32);
 }
 - (())orientationDefault {
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).orientation_default = true;
@@ -806,6 +823,8 @@ fn app_picker_inner(
 
     let quick_options_stuff = setup_quick_options(env, delegate, main_view, app_frame);
     let mut quick_options_scale_hack: Option<f32> = None;
+    let mut quick_options_custom_resolution: Option<(u32, u32)> = None;
+    let host_resolutions = crate::window::host_screen_resolutions();
     let mut quick_options_fullscreen: Option<()> = None;
     let mut quick_options_orientation: Option<DeviceOrientation> = None;
     let mut quick_options_analog_stick_tilt_controls = true;
@@ -1144,6 +1163,60 @@ fn app_picker_inner(
                 &quick_options_stuff.scale_hack_buttons,
                 quick_options_scale_hack,
             );
+        } else if std::mem::take(&mut host_obj.custom_resolution) {
+            let default_resolution = quick_options_custom_resolution
+                .or_else(|| host_resolutions.last().copied())
+                .unwrap_or((320, 480));
+            quick_options_custom_resolution = Some(default_resolution);
+            let title = ns_string::from_rust_string(
+                env,
+                format!("{}×{}", default_resolution.0, default_resolution.1),
+            );
+            () = msg![env; (quick_options_stuff.custom_resolution_button)
+                setTitle:title forState:UIControlStateNormal];
+            release(env, title);
+            let width_text = ns_string::from_rust_string(env, default_resolution.0.to_string());
+            let height_text = ns_string::from_rust_string(env, default_resolution.1.to_string());
+            () = msg![env; (quick_options_stuff.custom_resolution_width_field) setText:width_text];
+            () = msg![env; (quick_options_stuff.custom_resolution_height_field) setText:height_text];
+            release(env, width_text);
+            release(env, height_text);
+            () = msg![env; (quick_options_stuff.custom_resolution_error) setHidden:true];
+            () = msg![env; (quick_options_stuff.custom_resolution_editor) setHidden:false];
+        } else if std::mem::take(&mut host_obj.custom_resolution_apply) {
+            let mut parse_field = |field: id| -> Option<u32> {
+                let text: id = msg![env; field text];
+                let value = ns_string::to_rust_string(env, text).trim().parse::<u32>().ok()?;
+                (64..=16384).contains(&value).then_some(value)
+            };
+            if let (Some(width), Some(height)) = (
+                parse_field(quick_options_stuff.custom_resolution_width_field),
+                parse_field(quick_options_stuff.custom_resolution_height_field),
+            ) {
+                quick_options_custom_resolution = Some((width, height));
+                let title = ns_string::from_rust_string(env, format!("{}×{}", width, height));
+                () = msg![env; (quick_options_stuff.custom_resolution_button)
+                    setTitle:title forState:UIControlStateNormal];
+                release(env, title);
+                () = msg![env; (quick_options_stuff.custom_resolution_editor) setHidden:true];
+            } else {
+                let error = ns_string::get_static_str(env, "Enter width and height from 64 to 16384.");
+                () = msg![env; (quick_options_stuff.custom_resolution_error) setText:error];
+                () = msg![env; (quick_options_stuff.custom_resolution_error) setHidden:false];
+                release(env, error);
+            }
+        } else if std::mem::take(&mut host_obj.custom_resolution_cancel) {
+            () = msg![env; (quick_options_stuff.custom_resolution_editor) setHidden:true];
+        } else if let Some(index) = std::mem::take(&mut host_obj.supported_resolution) {
+            if index >= 0 {
+                if let Some(resolution) = host_resolutions.get(index as usize).copied() {
+                    quick_options_custom_resolution = Some(resolution);
+                    let title = ns_string::from_rust_string(env, format!("{}×{}", resolution.0, resolution.1));
+                    () = msg![env; (quick_options_stuff.custom_resolution_button)
+                        setTitle:title forState:UIControlStateNormal];
+                    release(env, title);
+                }
+            }
         } else if std::mem::take(&mut host_obj.orientation_default) {
             quick_options_orientation = None;
             update_orientation_buttons(
@@ -1294,6 +1367,9 @@ fn app_picker_inner(
     }
     if let Some(scale_hack) = quick_options_scale_hack {
         option_args.push(format!("--scale-hack={scale_hack}"));
+    }
+    if let Some((width, height)) = quick_options_custom_resolution {
+        option_args.push(format!("--custom-resolution={width}x{height}"));
     }
     if let Some(orientation) = quick_options_orientation {
         option_args.push(
@@ -2117,6 +2193,11 @@ struct QuickOptionsStuff {
     graphics_api_items: Vec<id>,
     quality_buttons: Vec<Vec<id>>,
     scale_hack_buttons: [id; 7],
+    custom_resolution_button: id,
+    custom_resolution_editor: id,
+    custom_resolution_width_field: id,
+    custom_resolution_height_field: id,
+    custom_resolution_error: id,
     orientation_buttons: [id; 4],
     frame_generation_switch: id,
     /// The button that toggles the "Device model" dropdown open/closed. Its
@@ -2355,6 +2436,8 @@ fn setup_quick_options(
             ("3×", "scaleHack3"),
             ("4×", "scaleHack4"),
         ]),
+        RowKind::Label("Custom Resolution"),
+        RowKind::Buttons(&[("Custom", "customResolution")]),
         RowKind::Label("Orientation"),
         RowKind::Buttons(&[
             ("Default", "orientationDefault"),
@@ -2396,6 +2479,11 @@ fn setup_quick_options(
     };
 
     let mut scale_hack_buttons: Option<[id; 7]> = None;
+    let mut custom_resolution_button: id = nil;
+    let mut custom_resolution_editor: id = nil;
+    let mut custom_resolution_width_field: id = nil;
+    let mut custom_resolution_height_field: id = nil;
+    let mut custom_resolution_error: id = nil;
     let mut orientation_buttons: Option<[id; 4]> = None;
     let mut frame_generation_switch: id = nil;
     let mut ios_version_btn: id = nil;
@@ -2470,6 +2558,9 @@ fn setup_quick_options(
                 match buttons.first().map(|button| button.1) {
                     Some("scaleHackDefault") => {
                         scale_hack_buttons = controls.try_into().ok();
+                    }
+                    Some("customResolution") => {
+                        custom_resolution_button = controls.first().copied().unwrap_or(nil);
                     }
                     Some("orientationDefault") => {
                         orientation_buttons = controls.try_into().ok();
@@ -2546,6 +2637,80 @@ fn setup_quick_options(
         }
     }
 
+    let ui_scale = picker_ui_scale(main_frame.size);
+    let width = (main_frame.size.width * 0.56).clamp(170.0, 720.0);
+    let field_height = 30.0 * ui_scale;
+    let editor_height = 112.0 * ui_scale;
+    let editor_frame = CGRect {
+        origin: CGPoint {
+            x: main_frame.size.width * 0.42,
+            y: divider + 11.0 * 78.0 * ui_scale,
+        },
+        size: CGSize { width, height: editor_height },
+    };
+    let editor: id = msg_class![env; UIView alloc];
+    let editor: id = msg![env; editor initWithFrame:editor_frame];
+    let dark_gray: id = msg_class![env; UIColor darkGrayColor];
+    let white: id = msg_class![env; UIColor whiteColor];
+    () = msg![env; editor setBackgroundColor:dark_gray];
+    () = msg![env; editor setHidden:true];
+    () = msg![env; main_view addSubview:editor];
+
+    let make_field = |env: &mut Environment, x: CGFloat, label: &str| -> id {
+        let field: id = msg_class![env; UITextField alloc];
+        let frame = CGRect {
+            origin: CGPoint { x, y: 6.0 * ui_scale },
+            size: CGSize { width: width * 0.40, height: field_height },
+        };
+        let field: id = msg![env; field initWithFrame:frame];
+        let text = ns_string::from_rust_string(env, label.to_owned());
+        () = msg![env; field setPlaceholder:text];
+        release(env, text);
+        () = msg![env; field setKeyboardType:4];
+        let black: id = msg_class![env; UIColor blackColor];
+        () = msg![env; field setTextColor:black];
+        () = msg![env; editor addSubview:field];
+        field
+    };
+    let width_field = make_field(env, 8.0 * ui_scale, "Width");
+    let height_field = make_field(env, width * 0.52, "Height");
+    let apply: id = msg_class![env; UIButton buttonWithType:UIButtonTypeCustom];
+    let apply_frame = CGRect {
+        origin: CGPoint { x: 8.0 * ui_scale, y: 44.0 * ui_scale },
+        size: CGSize { width: width * 0.42, height: field_height },
+    };
+    () = msg![env; apply setFrame:apply_frame];
+    let apply_text = ns_string::get_static_str(env, "Apply");
+    () = msg![env; apply setTitle:apply_text forState:UIControlStateNormal];
+    () = msg![env; apply setTitleColor:white forState:UIControlStateNormal];
+    let green: id = msg_class![env; UIColor greenColor];
+    () = msg![env; apply setBackgroundColor:green];
+    () = msg![env; apply addTarget:delegate action:(env.objc.lookup_selector("customResolutionApply").unwrap()) forControlEvents:UIControlEventTouchUpInside];
+    () = msg![env; editor addSubview:apply];
+    let cancel: id = msg_class![env; UIButton buttonWithType:UIButtonTypeCustom];
+    let cancel_frame = CGRect {
+        origin: CGPoint { x: width * 0.52, y: 44.0 * ui_scale },
+        size: CGSize { width: width * 0.40, height: field_height },
+    };
+    () = msg![env; cancel setFrame:cancel_frame];
+    let cancel_text = ns_string::get_static_str(env, "Cancel");
+    () = msg![env; cancel setTitle:cancel_text forState:UIControlStateNormal];
+    () = msg![env; cancel setTitleColor:white forState:UIControlStateNormal];
+    () = msg![env; cancel setBackgroundColor:dark_gray];
+    () = msg![env; cancel addTarget:delegate action:(env.objc.lookup_selector("customResolutionCancel").unwrap()) forControlEvents:UIControlEventTouchUpInside];
+    () = msg![env; editor addSubview:cancel];
+    let error: id = msg_class![env; UILabel alloc];
+    let error: id = msg![env; error initWithFrame:(CGRect { origin: CGPoint { x: 8.0 * ui_scale, y: 80.0 * ui_scale }, size: CGSize { width: width - 16.0 * ui_scale, height: 24.0 * ui_scale } })];
+    let error_text: id = msg_class![env; UIColor whiteColor];
+    () = msg![env; error setTextColor:error_text];
+    () = msg![env; error setHidden:true];
+    () = msg![env; editor addSubview:error];
+
+    custom_resolution_editor = editor;
+    custom_resolution_width_field = width_field;
+    custom_resolution_height_field = height_field;
+    custom_resolution_error = error;
+
     QuickOptionsStuff {
         main_view,
         ios_version_btn,
@@ -2556,6 +2721,11 @@ fn setup_quick_options(
         graphics_api_items,
         quality_buttons,
         scale_hack_buttons: scale_hack_buttons.unwrap_or([nil; 7]),
+        custom_resolution_button,
+        custom_resolution_editor,
+        custom_resolution_width_field,
+        custom_resolution_height_field,
+        custom_resolution_error,
         orientation_buttons: orientation_buttons.unwrap_or([nil; 4]),
         frame_generation_switch,
         device_model_btn,

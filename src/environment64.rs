@@ -793,7 +793,9 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     } else {
         let mut window_options = options.clone();
         window_options.device_family = Some(device_family);
-        window_options.host_screen_size = Some(device_family.portrait_size());
+        window_options.host_screen_size = options
+            .custom_screen_size
+            .or_else(|| Some(device_family.portrait_size()));
         window_options.initial_orientation = orientation;
         match graphics_backend {
             A64GraphicsBackend::OpenGLESCompatibility => {
