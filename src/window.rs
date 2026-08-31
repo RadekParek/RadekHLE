@@ -2437,9 +2437,13 @@ impl Window {
         self.frame_generation_state.height = height;
         self.frame_generation_state.last_frame_at = Some(now);
         let display_interval = Duration::from_secs_f64(1.0 / self.display_refresh_rate.max(1.0));
-        let display_slots = (elapsed.as_secs_f64() / display_interval.as_secs_f64())
-            .round()
-            .clamp(1.0, 8.0) as usize;
+        let display_slots = if elapsed <= Duration::from_millis(250) {
+            (elapsed.as_secs_f64() / display_interval.as_secs_f64())
+                .round()
+                .clamp(1.0, 8.0) as usize
+        } else {
+            1
+        };
         if let Some(previous) = previous {
             let mut generated = 0;
             for step in 1..display_slots {
@@ -2453,7 +2457,6 @@ impl Window {
                 }
                 self.present_software_pixels(interpolated, width, height, false);
                 generated += 1;
-                std::thread::sleep(display_interval);
             }
             log_dbg!(
                 "Frame generation: rendered frame interval {:.2}ms, displayed {} generated frame(s) at {:.2}Hz",
@@ -2473,35 +2476,37 @@ impl Window {
         height: u32,
         bottom_up: bool,
     ) {
-        if let Some(wgpu) = self.wgpu_presentation.as_mut() {
-            let expected_len = width as usize * height as usize * 4;
-            if pixels.len() < expected_len {
-                log!("WGPU presentation skipped short frame: {} bytes, need {}", pixels.len(), expected_len);
-                return;
-            }
-            if bottom_up {
-                let mut oriented = vec![0u8; expected_len];
-                for y in 0..height as usize {
-                    let source = (height as usize - 1 - y) * width as usize * 4;
-                    let destination = y * width as usize * 4;
-                    oriented[destination..destination + width as usize * 4]
-                        .copy_from_slice(&pixels[source..source + width as usize * 4]);
+        if self.frame_generation {
+            if let Some(mut wgpu) = self.wgpu_presentation.take() {
+                let result = wgpu.present_interpolated(
+                    &pixels,
+                    width,
+                    height,
+                    bottom_up,
+                    self.display_refresh_rate,
+                );
+                if let Err(error) = result {
+                    log!("WGPU frame generation failed; presenting the source frame: {error}");
+                    if let Err(fallback_error) = wgpu.present_pixels(&pixels, width, height, bottom_up) {
+                        log!("WGPU fallback presentation failed: {fallback_error}");
+                    }
                 }
-                if let Err(error) = wgpu.present(&oriented, width, height) {
-                    log!("WGPU presentation failed: {error}");
-                }
-            } else if let Err(error) = wgpu.present(&pixels, width, height) {
-                log!("WGPU presentation failed: {error}");
+                self.wgpu_presentation = Some(wgpu);
+            } else {
+                self.present_frame_with_generation(pixels, width, height, bottom_up);
             }
             return;
         }
-        if self.frame_generation {
-            self.present_frame_with_generation(pixels, width, height, bottom_up);
-        } else {
-            self.frame_generation_state.previous = None;
-            self.frame_generation_state.last_frame_at = None;
-            self.window.gl_swap_window();
+        if let Some(mut wgpu) = self.wgpu_presentation.take() {
+            if let Err(error) = wgpu.present_pixels(&pixels, width, height, bottom_up) {
+                log!("WGPU presentation failed: {error}");
+            }
+            self.wgpu_presentation = Some(wgpu);
+            return;
         }
+        self.frame_generation_state.previous = None;
+        self.frame_generation_state.last_frame_at = None;
+        self.window.gl_swap_window();
     }
 
     fn present_software_pixels(

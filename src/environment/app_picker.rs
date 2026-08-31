@@ -1855,7 +1855,7 @@ fn make_app_launcher_grid(
 ) {
     let ui_scale = picker_ui_scale(super_view_size);
     let short_side = super_view_size.width.min(super_view_size.height);
-    let icon_size = (66.0 * ui_scale).min(short_side * 0.23).max(50.0);
+    let icon_size = (58.0 * ui_scale).min(short_side * 0.23).max(48.0);
     let card_width = (super_view_size.width * 0.40).max(icon_size + 12.0 * ui_scale);
     let items = [
         ("Files", "openFileManager", "/res/picker_files_icon.jpg"),

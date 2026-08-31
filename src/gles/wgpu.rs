@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use wgpu::util::DeviceExt;
 
 const SHADER: &str = r#"
@@ -49,12 +50,19 @@ pub struct WgpuPresentation {
     vertex_buffer: wgpu::Buffer,
     width: u32,
     height: u32,
+    previous_width: u32,
+    previous_height: u32,
+    last_frame_at: Option<Instant>,
+    previous_frame: Option<Vec<u8>>,
 }
 
 impl WgpuPresentation {
     pub fn new(window: &sdl2::video::Window) -> Result<Self, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
+            backends: wgpu::Backends::VULKAN
+                | wgpu::Backends::METAL
+                | wgpu::Backends::DX12
+                | wgpu::Backends::GL,
             dx12_shader_compiler: Default::default(),
             gles_minor_version: wgpu::Gles3MinorVersion::Automatic,
             flags: wgpu::InstanceFlags::default(),
@@ -111,7 +119,11 @@ impl WgpuPresentation {
             width,
             height,
             present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: capabilities.alpha_modes[0],
+            alpha_mode: capabilities
+                .alpha_modes
+                .first()
+                .copied()
+                .unwrap_or(wgpu::CompositeAlphaMode::Auto),
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
@@ -224,6 +236,10 @@ impl WgpuPresentation {
             vertex_buffer,
             width,
             height,
+            previous_width: width,
+            previous_height: height,
+            last_frame_at: Some(Instant::now()),
+            previous_frame: None,
         })
     }
 
@@ -245,7 +261,13 @@ impl WgpuPresentation {
                     .get_current_texture()
                     .map_err(|error| format!("WGPU surface recovery failed: {error}"))?
             }
-            Err(error) => return Err(format!("WGPU surface acquisition failed: {error}")),
+            Err(wgpu::SurfaceError::Timeout) => {
+                log_dbg!("WGPU presentation skipped a timed-out surface frame");
+                return Ok(());
+            }
+            Err(wgpu::SurfaceError::OutOfMemory) => {
+                return Err("WGPU presentation device ran out of memory".to_string());
+            }
         };
         if self.width != output.texture.width() || self.height != output.texture.height() {
             self.width = output.texture.width();
@@ -308,6 +330,23 @@ impl WgpuPresentation {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+            let output_width = output.texture.width() as f32;
+            let output_height = output.texture.height() as f32;
+            let source_aspect = width as f32 / height as f32;
+            let output_aspect = output_width / output_height;
+            let (viewport_width, viewport_height) = if source_aspect > output_aspect {
+                (output_width, output_width / source_aspect)
+            } else {
+                (output_height * source_aspect, output_height)
+            };
+            pass.set_viewport(
+                (output_width - viewport_width) / 2.0,
+                (output_height - viewport_height) / 2.0,
+                viewport_width,
+                viewport_height,
+                0.0,
+                1.0,
+            );
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
@@ -315,6 +354,84 @@ impl WgpuPresentation {
         }
         self.queue.submit([encoder.finish()]);
         output.present();
+        Ok(())
+    }
+
+    pub fn present_pixels(
+        &mut self,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        bottom_up: bool,
+    ) -> Result<(), String> {
+        let expected_len = width as usize * height as usize * 4;
+        if pixels.len() < expected_len {
+            return Err(format!("invalid WGPU frame dimensions {}x{} with {} bytes", width, height, pixels.len()));
+        }
+        if bottom_up {
+            let mut oriented = vec![0u8; expected_len];
+            let row_bytes = width as usize * 4;
+            for y in 0..height as usize {
+                let source = (height as usize - y - 1) * row_bytes;
+                let destination = y * row_bytes;
+                oriented[destination..destination + row_bytes]
+                    .copy_from_slice(&pixels[source..source + row_bytes]);
+            }
+            self.present(&oriented, width, height)
+        } else {
+            self.present(pixels, width, height)
+        }
+    }
+
+    pub fn present_interpolated(
+        &mut self,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        bottom_up: bool,
+        refresh_rate: f64,
+    ) -> Result<(), String> {
+        let expected_len = width as usize * height as usize * 4;
+        if width == 0 || height == 0 || pixels.len() < expected_len {
+            return Err(format!("invalid WGPU frame dimensions {}x{} with {} bytes", width, height, pixels.len()));
+        }
+        let mut current = vec![0u8; expected_len];
+        let row_bytes = width as usize * 4;
+        for y in 0..height as usize {
+            let source_y = if bottom_up { height as usize - y - 1 } else { y };
+            let source = source_y * row_bytes;
+            let destination = y * row_bytes;
+            current[destination..destination + row_bytes]
+                .copy_from_slice(&pixels[source..source + row_bytes]);
+        }
+        let interval = Duration::from_secs_f64(1.0 / refresh_rate.max(1.0));
+        if let Some(previous) = self.previous_frame.take() {
+            if self.previous_width == width && self.previous_height == height {
+                let elapsed = self.last_frame_at.map_or(interval, |last| last.elapsed());
+                let slots = if elapsed <= Duration::from_millis(250) {
+                    (elapsed.as_secs_f64() / interval.as_secs_f64())
+                        .round()
+                        .clamp(1.0, 8.0) as usize
+                } else {
+                    1
+                };
+                for step in 1..slots {
+                    let blend = step as u32 * 256 / slots as u32;
+                    let inverse = 256 - blend;
+                    let mut generated = vec![0u8; expected_len];
+                    for index in 0..expected_len {
+                        generated[index] = ((previous[index] as u32 * inverse
+                            + current[index] as u32 * blend) >> 8) as u8;
+                    }
+                    self.present(&generated, width, height)?;
+                }
+            }
+        }
+        self.present(&current, width, height)?;
+        self.previous_width = width;
+        self.previous_height = height;
+        self.last_frame_at = Some(Instant::now());
+        self.previous_frame = Some(current);
         Ok(())
     }
 }
