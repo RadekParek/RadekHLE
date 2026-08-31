@@ -99,6 +99,17 @@ pub struct ObjC {
     /// Known selectors (interned method name strings).
     selectors: HashMap<String, SEL>,
 
+    /// Reverse index for selector names. Selectors are interned and immutable,
+    /// so this avoids scanning every registered selector on hot introspection
+    /// paths.
+    selector_names: HashMap<SEL, String>,
+
+    /// Reverse index for class and metaclass names.
+    class_names: HashMap<Class, String>,
+
+    /// Stable guest pointers returned by class_getName.
+    class_name_ptrs: HashMap<Class, crate::mem::ConstPtr<u8>>,
+
     /// Mapping of known (guest) object pointers to their host objects.
     ///
     /// If an object isn't in this map, we will consider it not to exist.
@@ -208,6 +219,9 @@ impl ObjC {
     pub fn new() -> ObjC {
         ObjC {
             selectors: HashMap::new(),
+            selector_names: HashMap::new(),
+            class_names: HashMap::new(),
+            class_name_ptrs: HashMap::new(),
             objects: HashMap::new(),
             classes: HashMap::new(),
             sync_mutexes: HashMap::new(),
@@ -224,11 +238,26 @@ impl ObjC {
 
     /// Returns the name of a selector, panicking if it is unknown.
     pub fn get_selector_name(&self, sel: SEL) -> &str {
-        self.selectors
-            .iter()
-            .find(|(_k, v)| **v == sel)
-            .map(|(k, _v)| k.as_str())
+        self.selector_names
+            .get(&sel)
+            .map(String::as_str)
             .expect("get_selector_name: unknown selector")
+    }
+
+    pub fn cache_class_name(&mut self, class: Class, name: String) {
+        self.class_names.insert(class, name);
+    }
+
+    pub fn get_cached_class_name(&self, class: Class) -> Option<&str> {
+        self.class_names.get(&class).map(String::as_str)
+    }
+
+    pub fn class_name_pointer(&self, class: Class) -> Option<crate::mem::ConstPtr<u8>> {
+        self.class_name_ptrs.get(&class).copied()
+    }
+
+    pub fn cache_class_name_pointer(&mut self, class: Class, pointer: crate::mem::ConstPtr<u8>) {
+        self.class_name_ptrs.insert(class, pointer);
     }
 }
 

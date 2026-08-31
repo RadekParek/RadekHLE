@@ -125,6 +125,7 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
     }
     let _perf_report_guard = PerfReportGuard;
     crate::perf::configure_from_environment();
+    crate::perf::reset();
     echo!(
         "RadekHLE 5.0 {}{}{} git_sha={}",
         branding(),

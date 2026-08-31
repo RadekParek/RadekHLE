@@ -8,8 +8,8 @@
 //! These are the names used to look up method implementations in
 //! Objective-C. In Apple's implementation, they are always
 //! null-terminated C strings, but they are meant to be treated as
-//! opaque values. Selector strings should be (TODO) interned so
-//! pointer comparison can be used instead of string comparison.
+//! opaque values. Selectors are interned by name so pointer comparison
+//! can be used instead of repeated string comparison.
 //!
 //! Resources:
 //! - Apple's [The Objective-C Programming Language](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjectiveC/Chapters/ocSelectors.html)
@@ -114,6 +114,7 @@ impl ObjC {
         }
 
         let sel = SEL(mem.alloc_and_write_cstr(name.as_bytes()).cast_const());
+        self.selector_names.insert(sel, name.clone());
         self.selectors.insert(name, sel);
         sel
     }
@@ -137,6 +138,7 @@ impl ObjC {
                         continue;
                     }
                     let sel = SEL(mem.alloc_and_write_cstr(name.as_bytes()).cast_const());
+                    self.selector_names.insert(sel, name.to_string());
                     self.selectors.insert(name.to_string(), sel);
                 }
             }
@@ -165,6 +167,7 @@ impl ObjC {
             Some(existing_sel)
         } else {
             let sel = SEL(sel_cstr);
+            self.selector_names.insert(sel, sel_str.to_string());
             self.selectors.insert(sel_str.to_string(), sel);
             Some(sel)
         }

@@ -73,20 +73,29 @@ pub fn report() {
     if !enabled() {
         return;
     }
-    report_one("ARM32 CPU", &ARM32_CPU_COUNT, &ARM32_CPU_TIME_NS, true);
-    report_one("Memory access", &MEMORY_COUNT, &MEMORY_TIME_NS, false);
-    report_one("ObjC dispatch", &OBJC_COUNT, &OBJC_TIME_NS, false);
-    report_one("GLES calls", &GLES_COUNT, &GLES_TIME_NS, false);
+    eprintln!("=== PERF REPORT ===");
+    report_one("ARM32 CPU", &ARM32_CPU_COUNT, &ARM32_CPU_TIME_NS);
+    report_one("Memory access", &MEMORY_COUNT, &MEMORY_TIME_NS);
+    report_one("ObjC dispatch", &OBJC_COUNT, &OBJC_TIME_NS);
+    report_one("GLES calls", &GLES_COUNT, &GLES_TIME_NS);
 }
 
-fn report_one(name: &str, count: &AtomicU64, time_ns: &AtomicU64, average: bool) {
+pub fn reset() {
+    for (count, time_ns) in [
+        (&ARM32_CPU_COUNT, &ARM32_CPU_TIME_NS),
+        (&MEMORY_COUNT, &MEMORY_TIME_NS),
+        (&OBJC_COUNT, &OBJC_TIME_NS),
+        (&GLES_COUNT, &GLES_TIME_NS),
+    ] {
+        count.store(0, Ordering::Relaxed);
+        time_ns.store(0, Ordering::Relaxed);
+    }
+}
+
+fn report_one(name: &str, count: &AtomicU64, time_ns: &AtomicU64) {
     let count = count.load(Ordering::Relaxed);
     let time_ns = time_ns.load(Ordering::Relaxed);
     let total_ms = time_ns as f64 / 1_000_000.0;
-    if average {
-        let per_call_us = total_ms * 1000.0 / count.max(1) as f64;
-        eprintln!("=== PERF REPORT ===\n{name}: {count} calls, {total_ms:.2}ms total, {per_call_us:.3}us/call");
-    } else {
-        eprintln!("{name}: {count} calls, {total_ms:.2}ms total");
-    }
+    let per_call_us = time_ns as f64 / 1_000.0 / count.max(1) as f64;
+    eprintln!("{name}: {count} calls, {total_ms:.2}ms total, {per_call_us:.3}us/call");
 }

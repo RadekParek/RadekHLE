@@ -745,6 +745,8 @@ impl ObjC {
         }
 
         self.classes.insert(name.to_string(), class);
+        self.cache_class_name(class, name.to_string());
+        self.cache_class_name(metaclass, name.to_string());
         if is_metaclass {
             metaclass
         } else {
@@ -819,6 +821,8 @@ impl ObjC {
             };
 
             self.classes.insert(name.to_string(), class);
+            self.cache_class_name(class, name.to_string());
+            self.cache_class_name(metaclass, name.to_string());
         }
 
         let mut queue = VecDeque::<Class>::new();
@@ -1149,6 +1153,9 @@ impl ObjC {
     }
 
     pub fn get_class_name(&self, class: Class) -> &str {
+        if let Some(name) = self.get_cached_class_name(class) {
+            return name;
+        }
         // Previously this `expect`-ed and panicked the whole emulator if the
         // class pointer didn't have a registered host object (e.g. when the
         // app sends a message to an object whose isa was clobbered, or when
@@ -2136,9 +2143,10 @@ pub fn objc_unsafeClaimAutoreleasedReturnValue(env: &mut crate::Environment, obj
 pub fn class_getName(env: &mut crate::Environment, cls: Class) -> ConstPtr<u8> {
     use crate::mem::Ptr;
     if cls.is_null() {
-        // Apple: returns "nil"; touchHLE returns the empty string
-        // pointer to keep the call safe.
         return Ptr::null();
+    }
+    if let Some(pointer) = env.objc.class_name_pointer(cls) {
+        return pointer;
     }
     let name = env.objc.get_class_name(cls).to_owned();
     let bytes = name.as_bytes();
@@ -2148,7 +2156,9 @@ pub fn class_getName(env: &mut crate::Environment, cls: Class) -> ConstPtr<u8> {
         env.mem.write(buf + i as u32, b);
     }
     env.mem.write(buf + bytes.len() as u32, 0);
-    buf.cast_const()
+    let pointer = buf.cast_const();
+    env.objc.cache_class_name_pointer(cls, pointer);
+    pointer
 }
 
 /// `Class objc_lookUpClass(const char *name)` — like `objc_getClass`
