@@ -116,6 +116,7 @@ impl GraphicsApi {
             "gles1.1" | "gles11" => Ok(Self::GLES11),
             "gles2.0" | "gles20" => Ok(Self::GLES20),
             "gles3.0" | "gles30" => Ok(Self::GLES30),
+            "wgpu" | "webgpu" => Ok(Self::Wgpu),
             "software" | "software-rendering" | "cpu" => Ok(Self::Software),
             "metal" => Ok(Self::Metal),
             _ => Err(()),

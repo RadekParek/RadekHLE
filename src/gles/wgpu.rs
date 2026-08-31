@@ -59,10 +59,7 @@ pub struct WgpuPresentation {
 impl WgpuPresentation {
     pub fn new(window: &sdl2::video::Window) -> Result<Self, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::VULKAN
-                | wgpu::Backends::METAL
-                | wgpu::Backends::DX12
-                | wgpu::Backends::GL,
+            backends: wgpu::Backends::GL,
             dx12_shader_compiler: Default::default(),
             gles_minor_version: wgpu::Gles3MinorVersion::Automatic,
             flags: wgpu::InstanceFlags::default(),
@@ -92,6 +89,7 @@ impl WgpuPresentation {
             adapter_info.device,
             adapter_info.driver
         );
+        log!("WGPU presentation path is active; frames will be uploaded through the selected WGPU adapter");
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("RadekHLE WGPU presentation device"),

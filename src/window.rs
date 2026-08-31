@@ -1225,6 +1225,7 @@ impl Window {
                         | crate::options::GraphicsApi::GLES20
                         | crate::options::GraphicsApi::GLES30
                         | crate::options::GraphicsApi::Metal
+                        | crate::options::GraphicsApi::Wgpu
                 ) || (matches!(options.graphics_api, crate::options::GraphicsApi::Default)
                     && (options.prefer_gles2_context || options.angle_driver || llvmpipe_active));
 

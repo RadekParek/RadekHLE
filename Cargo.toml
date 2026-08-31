@@ -75,7 +75,7 @@ encoding_rs = "0.8.35"
 sdl2 = { git = "https://github.com/touchHLE/rust-sdl2", tag = "touchHLE-3", features = ["hidapi", "raw-window-handle"] }
 sdl2-sys = { git = "https://github.com/touchHLE/rust-sdl2", tag = "touchHLE-3" }
 raw-window-handle = "0.6.2"
-wgpu = { version = "0.20.1", default-features = false, features = ["wgsl", "metal", "dx12", "glsl"] }
+wgpu = { version = "0.20.1", default-features = false, features = ["wgsl", "metal", "dx12", "glsl", "vulkan-portability"] }
 pollster = "0.3.0"
 bytemuck = { version = "1.16.3", features = ["derive"] }
 touchHLE_dynarmic_wrapper = { path = "src/cpu/dynarmic_wrapper" }
