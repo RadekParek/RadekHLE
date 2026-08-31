@@ -870,11 +870,7 @@ fn app_picker_inner(
             } else {
                 msg_class![env; UIColor whiteColor]
             };
-            let text_color: id = if selected {
-                msg_class![env; UIColor whiteColor]
-            } else {
-                msg_class![env; UIColor colorWithRed:0.11 green:0.11 blue:0.12 alpha:1.0]
-            };
+            let text_color: id = msg_class![env; UIColor whiteColor];
             () = msg![env; button setBackgroundColor:color];
             () = msg![env; button setTitleColor:text_color forState:UIControlStateNormal];
         }
@@ -1851,7 +1847,7 @@ fn make_app_launcher_grid(
 ) {
     let ui_scale = picker_ui_scale(super_view_size);
     let short_side = super_view_size.width.min(super_view_size.height);
-    let icon_size = (60.0 * ui_scale).min(short_side * 0.23).max(42.0);
+    let icon_size = (52.0 * ui_scale).min(short_side * 0.21).max(38.0);
     let card_width = (super_view_size.width * 0.40).max(icon_size + 12.0 * ui_scale);
     let items = [
         ("Files", "openFileManager", "/res/picker_files_icon.jpg"),
@@ -1992,10 +1988,10 @@ fn make_button_row(
         () = msg![env; label setAdjustsFontSizeToFitWidth:true];
         () = msg![env; label setMinimumFontSize:8.0];
         () = msg![env; label setTextAlignment:UITextAlignmentCenter];
-        let black: id = msg_class![env; UIColor blackColor];
-        () = msg![env; button setTitleColor:black forState:UIControlStateNormal];
         let white: id = msg_class![env; UIColor whiteColor];
-        let _: () = msg![env; button setBackgroundColor:white];
+        () = msg![env; button setTitleColor:white forState:UIControlStateNormal];
+        let button_background: id = msg_class![env; UIColor darkGrayColor];
+        let _: () = msg![env; button setBackgroundColor:button_background];
         let layer: id = msg![env; button layer];
         () = msg![env; layer setCornerRadius:(7.0 * ui_scale)];
         () = msg![env; button layoutSubviews];
@@ -2309,12 +2305,14 @@ fn setup_quick_options(
 
     let main_view: id = msg_class![env; UIScrollView alloc];
     let main_view: id = msg![env; main_view initWithFrame:visible_frame];
+    let main_background: id = msg_class![env; UIColor colorWithRed:0.72 green:0.72 blue:0.72 alpha:1.0];
+    () = msg![env; super_view setBackgroundColor:main_background];
     let content_size = main_frame.size;
     () = msg![env; main_view setContentSize:content_size];
     () = msg![env; main_view setScrollEnabled:true];
     () = msg![env; main_view setShowsVerticalScrollIndicator:true];
     () = msg![env; main_view setAlwaysBounceVertical:true];
-    let bg_color: id = msg_class![env; UIColor colorWithRed:0.86 green:0.87 blue:0.90 alpha:1.0];
+    let bg_color: id = msg_class![env; UIColor colorWithRed:0.72 green:0.72 blue:0.72 alpha:1.0];
     () = msg![env; main_view setBackgroundColor:bg_color];
     () = msg![env; main_view setOpaque:true];
     // This main_view is hidden until the copyright info button is tapped.
@@ -2341,8 +2339,10 @@ fn setup_quick_options(
     () = msg![env; header setTextAlignment:UITextAlignmentLeft];
     let header_font = picker_font(env, 21.0 * ui_scale);
     () = msg![env; header setFont:header_font];
-    let black: id = msg_class![env; UIColor blackColor];
-    () = msg![env; header setTextColor:black];
+    let white: id = msg_class![env; UIColor whiteColor];
+    () = msg![env; header setTextColor:white];
+    let clear: id = msg_class![env; UIColor clearColor];
+    () = msg![env; header setBackgroundColor:clear];
     () = msg![env; main_view addSubview:header];
 
     let subtitle_frame = CGRect {
@@ -2549,8 +2549,8 @@ fn setup_quick_options(
                 () = msg![env; label setTextAlignment:UITextAlignmentLeft];
                 let label_font = picker_font(env, 14.0 * ui_scale);
                 () = msg![env; label setFont:label_font];
-                let black: id = msg_class![env; UIColor colorWithRed:0.11 green:0.11 blue:0.12 alpha:1.0];
-                () = msg![env; label setTextColor:black];
+                let white: id = msg_class![env; UIColor whiteColor];
+                () = msg![env; label setTextColor:white];
                 let clear: id = msg_class![env; UIColor clearColor];
                 () = msg![env; label setBackgroundColor:clear];
                 () = msg![env; label setAdjustsFontSizeToFitWidth:true];
@@ -2687,12 +2687,12 @@ fn setup_quick_options(
     };
     let resolution_menu: id = msg_class![env; UIView alloc];
     let resolution_menu: id = msg![env; resolution_menu initWithFrame:resolution_menu_frame];
-    let resolution_menu_color: id = msg_class![env; UIColor colorWithRed:0.86 green:0.87 blue:0.90 alpha:1.0];
+    let resolution_menu_color: id = msg_class![env; UIColor darkGrayColor];
     () = msg![env; resolution_menu setBackgroundColor:resolution_menu_color];
     () = msg![env; resolution_menu setClipsToBounds:true];
     () = msg![env; resolution_menu setHidden:true];
     () = msg![env; main_view addSubview:resolution_menu];
-    let resolution_text: id = msg_class![env; UIColor colorWithRed:0.11 green:0.11 blue:0.12 alpha:1.0];
+    let resolution_text: id = msg_class![env; UIColor whiteColor];
     let resolution_selector = env.objc.lookup_selector("supportedResolution:").unwrap();
     for (index, (width_value, height_value)) in resolution_entries {
         let item: id = msg_class![env; UIButton buttonWithType:UIButtonTypeCustom];
@@ -2753,8 +2753,8 @@ fn setup_quick_options(
     };
     let editor: id = msg_class![env; UIView alloc];
     let editor: id = msg![env; editor initWithFrame:editor_frame];
-    let panel: id = msg_class![env; UIColor whiteColor];
-    let dark_text: id = msg_class![env; UIColor colorWithRed:0.11 green:0.11 blue:0.12 alpha:1.0];
+    let panel: id = msg_class![env; UIColor darkGrayColor];
+    let dark_text: id = msg_class![env; UIColor whiteColor];
     let white: id = msg_class![env; UIColor whiteColor];
     () = msg![env; editor setBackgroundColor:panel];
     () = msg![env; editor setHidden:true];
@@ -2802,8 +2802,8 @@ fn setup_quick_options(
     let apply_text = ns_string::get_static_str(env, "Apply");
     () = msg![env; apply setTitle:apply_text forState:UIControlStateNormal];
     () = msg![env; apply setTitleColor:white forState:UIControlStateNormal];
-    let blue: id = msg_class![env; UIColor blueColor];
-    () = msg![env; apply setBackgroundColor:blue];
+    let apply_background: id = msg_class![env; UIColor darkGrayColor];
+    () = msg![env; apply setBackgroundColor:apply_background];
     () = msg![env; apply layoutSubviews];
     () = msg![env; apply addTarget:delegate action:(env.objc.lookup_selector("customResolutionApply").unwrap()) forControlEvents:UIControlEventTouchUpInside];
     () = msg![env; editor addSubview:apply];
@@ -2815,7 +2815,7 @@ fn setup_quick_options(
     () = msg![env; cancel setFrame:cancel_frame];
     let cancel_text = ns_string::get_static_str(env, "Cancel");
     () = msg![env; cancel setTitle:cancel_text forState:UIControlStateNormal];
-    () = msg![env; cancel setTitleColor:dark_text forState:UIControlStateNormal];
+    () = msg![env; cancel setTitleColor:white forState:UIControlStateNormal];
     () = msg![env; cancel setBackgroundColor:panel];
     () = msg![env; cancel layoutSubviews];
     () = msg![env; cancel addTarget:delegate action:(env.objc.lookup_selector("customResolutionCancel").unwrap()) forControlEvents:UIControlEventTouchUpInside];
@@ -2901,6 +2901,8 @@ fn update_device_model_menu(
         } else {
             msg_class![env; UIColor darkGrayColor]
         };
+        let white: id = msg_class![env; UIColor whiteColor];
+        () = msg![env; item setTitleColor:white forState:UIControlStateNormal];
         () = msg![env; item setBackgroundColor:color];
     }
 
@@ -2950,6 +2952,8 @@ fn update_graphics_api_dropdown(
             msg_class![env; UIColor darkGrayColor]
         };
         () = msg![env; item setBackgroundColor:color];
+        let white: id = msg_class![env; UIColor whiteColor];
+        () = msg![env; item setTitleColor:white forState:UIControlStateNormal];
     }
     let title = ns_string::get_static_str(env, value.label());
     () = msg![env; button setTitle:title forState:UIControlStateNormal];
@@ -3155,9 +3159,9 @@ fn make_device_model_dropdown(
     let button_label: id = msg![env; button titleLabel];
     let button_font = picker_font(env, 13.0 * ui_scale);
     () = msg![env; button_label setFont:button_font];
-    let black: id = msg_class![env; UIColor blackColor];
-    () = msg![env; button setTitleColor:black forState:UIControlStateNormal];
-    let light_gray: id = msg_class![env; UIColor lightGrayColor];
+    let white: id = msg_class![env; UIColor whiteColor];
+    () = msg![env; button setTitleColor:white forState:UIControlStateNormal];
+    let light_gray: id = msg_class![env; UIColor darkGrayColor];
     () = msg![env; button setBackgroundColor:light_gray];
     () = msg![env; button setFrame:inner_frame];
     () = msg![env; button layoutSubviews];
