@@ -648,7 +648,7 @@ fn app_picker_inner(
     );
     let main_view: id = msg_class![env; UIView alloc];
     let main_view: id = msg![env; main_view initWithFrame:app_frame];
-    let picker_background: id = msg_class![env; UIColor colorWithWhite:0.72 alpha:1.0];
+    let picker_background: id = msg_class![env; UIColor colorWithRed:0.93 green:0.93 blue:0.95 alpha:1.0];
     () = msg![env; main_view setBackgroundColor:picker_background];
     () = msg![env; main_view setOpaque:true];
     () = msg![env; window setBackgroundColor:picker_background];
@@ -864,12 +864,19 @@ fn app_picker_inner(
 
     fn update_quick_option_buttons(env: &mut Environment, buttons: &[id], selected_idx: usize) {
         for (idx, &button) in buttons.iter().enumerate() {
-            let color: id = if idx == selected_idx {
-                msg_class![env; UIColor greenColor]
+            let selected = idx == selected_idx;
+            let color: id = if selected {
+                msg_class![env; UIColor blueColor]
             } else {
-                msg_class![env; UIColor grayColor]
+                msg_class![env; UIColor whiteColor]
+            };
+            let text_color: id = if selected {
+                msg_class![env; UIColor whiteColor]
+            } else {
+                msg_class![env; UIColor colorWithRed:0.11 green:0.11 blue:0.12 alpha:1.0]
             };
             () = msg![env; button setBackgroundColor:color];
+            () = msg![env; button setTitleColor:text_color forState:UIControlStateNormal];
         }
     }
     fn update_scale_hack_buttons(env: &mut Environment, buttons: &[id], value: Option<f32>) {
@@ -2287,7 +2294,7 @@ fn setup_quick_options(
         origin: CGPoint { x: 0.0, y: 0.0 },
         size: app_frame.size,
     };
-    let content_height = app_frame.size.height.max(1800.0);
+    let content_height = app_frame.size.height.max(2400.0);
     let main_frame = CGRect {
         origin: CGPoint { x: 0.0, y: 0.0 },
         size: CGSize {
@@ -2307,7 +2314,7 @@ fn setup_quick_options(
     () = msg![env; main_view setScrollEnabled:true];
     () = msg![env; main_view setShowsVerticalScrollIndicator:true];
     () = msg![env; main_view setAlwaysBounceVertical:true];
-    let bg_color: id = msg_class![env; UIColor colorWithWhite:0.72 alpha:1.0];
+    let bg_color: id = msg_class![env; UIColor colorWithRed:0.93 green:0.93 blue:0.95 alpha:1.0];
     () = msg![env; main_view setBackgroundColor:bg_color];
     () = msg![env; main_view setOpaque:true];
     // This main_view is hidden until the copyright info button is tapped.
@@ -2542,8 +2549,10 @@ fn setup_quick_options(
                 () = msg![env; label setTextAlignment:UITextAlignmentLeft];
                 let label_font = picker_font(env, 14.0 * ui_scale);
                 () = msg![env; label setFont:label_font];
-                let black: id = msg_class![env; UIColor blackColor];
+                let black: id = msg_class![env; UIColor colorWithRed:0.11 green:0.11 blue:0.12 alpha:1.0];
                 () = msg![env; label setTextColor:black];
+                let clear: id = msg_class![env; UIColor clearColor];
+                () = msg![env; label setBackgroundColor:clear];
                 () = msg![env; label setAdjustsFontSizeToFitWidth:true];
                 () = msg![env; label setMinimumFontSize:9.0];
                 () = msg![env; main_view addSubview:label];
@@ -2678,12 +2687,12 @@ fn setup_quick_options(
     };
     let resolution_menu: id = msg_class![env; UIView alloc];
     let resolution_menu: id = msg![env; resolution_menu initWithFrame:resolution_menu_frame];
-    let resolution_menu_color: id = msg_class![env; UIColor darkGrayColor];
+    let resolution_menu_color: id = msg_class![env; UIColor colorWithRed:0.86 green:0.87 blue:0.90 alpha:1.0];
     () = msg![env; resolution_menu setBackgroundColor:resolution_menu_color];
     () = msg![env; resolution_menu setClipsToBounds:true];
     () = msg![env; resolution_menu setHidden:true];
     () = msg![env; main_view addSubview:resolution_menu];
-    let resolution_white: id = msg_class![env; UIColor whiteColor];
+    let resolution_text: id = msg_class![env; UIColor colorWithRed:0.11 green:0.11 blue:0.12 alpha:1.0];
     let resolution_selector = env.objc.lookup_selector("supportedResolution:").unwrap();
     for (index, (width_value, height_value)) in resolution_entries {
         let item: id = msg_class![env; UIButton buttonWithType:UIButtonTypeCustom];
@@ -2693,12 +2702,17 @@ fn setup_quick_options(
         );
         () = msg![env; item setTitle:text forState:UIControlStateNormal];
         release(env, text);
-        () = msg![env; item setTitleColor:resolution_white forState:UIControlStateNormal];
+        let item_label: id = msg![env; item titleLabel];
+        let item_font = picker_font(env, 12.0 * ui_scale);
+        () = msg![env; item_label setFont:item_font];
+        () = msg![env; item_label setTextAlignment:UITextAlignmentCenter];
+        () = msg![env; item setTitleColor:resolution_text forState:UIControlStateNormal];
         () = msg![env; item setBackgroundColor:resolution_menu_color];
         () = msg![env; item setFrame:(CGRect {
             origin: CGPoint { x: 0.0, y: index as CGFloat * resolution_item_height },
             size: CGSize { width, height: resolution_item_height },
         })];
+        () = msg![env; item layoutSubviews];
         let item_tag: NSInteger = index as NSInteger;
         () = msg![env; item setTag:item_tag];
         () = msg![env; item addTarget:delegate
@@ -2709,7 +2723,11 @@ fn setup_quick_options(
     let custom_item: id = msg_class![env; UIButton buttonWithType:UIButtonTypeCustom];
     let custom_text = ns_string::get_static_str(env, "Custom");
     () = msg![env; custom_item setTitle:custom_text forState:UIControlStateNormal];
-    () = msg![env; custom_item setTitleColor:resolution_white forState:UIControlStateNormal];
+    let custom_label: id = msg![env; custom_item titleLabel];
+    let custom_font = picker_font(env, 12.0 * ui_scale);
+    () = msg![env; custom_label setFont:custom_font];
+    () = msg![env; custom_label setTextAlignment:UITextAlignmentCenter];
+    () = msg![env; custom_item setTitleColor:resolution_text forState:UIControlStateNormal];
     () = msg![env; custom_item setBackgroundColor:resolution_menu_color];
     () = msg![env; custom_item setFrame:(CGRect {
         origin: CGPoint {
@@ -2718,32 +2736,48 @@ fn setup_quick_options(
         },
         size: CGSize { width, height: resolution_item_height },
     })];
+    () = msg![env; custom_item layoutSubviews];
     () = msg![env; custom_item addTarget:delegate
                                   action:(env.objc.lookup_selector("customResolutionCustom").unwrap())
                         forControlEvents:UIControlEventTouchUpInside];
     () = msg![env; resolution_menu addSubview:custom_item];
     custom_resolution_menu = resolution_menu;
     let field_height = 30.0 * ui_scale;
-    let editor_height = 112.0 * ui_scale;
+    let editor_height = 148.0 * ui_scale;
     let editor_frame = CGRect {
         origin: CGPoint {
             x: main_frame.size.width * 0.42,
-            y: divider + 11.0 * 78.0 * ui_scale,
+            y: (custom_resolution_row_center - editor_height - 10.0 * ui_scale).max(8.0 * ui_scale),
         },
         size: CGSize { width, height: editor_height },
     };
     let editor: id = msg_class![env; UIView alloc];
     let editor: id = msg![env; editor initWithFrame:editor_frame];
-    let dark_gray: id = msg_class![env; UIColor darkGrayColor];
+    let panel: id = msg_class![env; UIColor whiteColor];
+    let dark_text: id = msg_class![env; UIColor colorWithRed:0.11 green:0.11 blue:0.12 alpha:1.0];
     let white: id = msg_class![env; UIColor whiteColor];
-    () = msg![env; editor setBackgroundColor:dark_gray];
+    () = msg![env; editor setBackgroundColor:panel];
     () = msg![env; editor setHidden:true];
     () = msg![env; main_view addSubview:editor];
+
+    let editor_title: id = msg_class![env; UILabel alloc];
+    let editor_title: id = msg![env; editor_title initWithFrame:(CGRect {
+        origin: CGPoint { x: 8.0 * ui_scale, y: 3.0 * ui_scale },
+        size: CGSize { width: width - 16.0 * ui_scale, height: 22.0 * ui_scale },
+    })];
+    let editor_title_text = ns_string::get_static_str(env, "Custom resolution");
+    () = msg![env; editor_title setText:editor_title_text];
+    () = msg![env; editor_title setTextColor:dark_text];
+    let editor_title_font = picker_font(env, 14.0 * ui_scale);
+    () = msg![env; editor_title setFont:editor_title_font];
+    let clear: id = msg_class![env; UIColor clearColor];
+    () = msg![env; editor_title setBackgroundColor:clear];
+    () = msg![env; editor addSubview:editor_title];
 
     let make_field = |env: &mut Environment, x: CGFloat, label: &str| -> id {
         let field: id = msg_class![env; UITextField alloc];
         let frame = CGRect {
-            origin: CGPoint { x, y: 6.0 * ui_scale },
+            origin: CGPoint { x, y: 30.0 * ui_scale },
             size: CGSize { width: width * 0.40, height: field_height },
         };
         let field: id = msg![env; field initWithFrame:frame];
@@ -2751,8 +2785,9 @@ fn setup_quick_options(
         () = msg![env; field setPlaceholder:text];
         release(env, text);
         () = msg![env; field setKeyboardType:4];
-        let black: id = msg_class![env; UIColor blackColor];
-        () = msg![env; field setTextColor:black];
+        () = msg![env; field setTextColor:dark_text];
+        let field_font = picker_font(env, 12.0 * ui_scale);
+        () = msg![env; field setFont:field_font];
         () = msg![env; editor addSubview:field];
         field
     };
@@ -2760,33 +2795,38 @@ fn setup_quick_options(
     let height_field = make_field(env, width * 0.52, "Height");
     let apply: id = msg_class![env; UIButton buttonWithType:UIButtonTypeCustom];
     let apply_frame = CGRect {
-        origin: CGPoint { x: 8.0 * ui_scale, y: 44.0 * ui_scale },
+        origin: CGPoint { x: 8.0 * ui_scale, y: 66.0 * ui_scale },
         size: CGSize { width: width * 0.42, height: field_height },
     };
     () = msg![env; apply setFrame:apply_frame];
     let apply_text = ns_string::get_static_str(env, "Apply");
     () = msg![env; apply setTitle:apply_text forState:UIControlStateNormal];
     () = msg![env; apply setTitleColor:white forState:UIControlStateNormal];
-    let green: id = msg_class![env; UIColor greenColor];
-    () = msg![env; apply setBackgroundColor:green];
+    let blue: id = msg_class![env; UIColor blueColor];
+    () = msg![env; apply setBackgroundColor:blue];
+    () = msg![env; apply layoutSubviews];
     () = msg![env; apply addTarget:delegate action:(env.objc.lookup_selector("customResolutionApply").unwrap()) forControlEvents:UIControlEventTouchUpInside];
     () = msg![env; editor addSubview:apply];
     let cancel: id = msg_class![env; UIButton buttonWithType:UIButtonTypeCustom];
     let cancel_frame = CGRect {
-        origin: CGPoint { x: width * 0.52, y: 44.0 * ui_scale },
+        origin: CGPoint { x: width * 0.52, y: 66.0 * ui_scale },
         size: CGSize { width: width * 0.40, height: field_height },
     };
     () = msg![env; cancel setFrame:cancel_frame];
     let cancel_text = ns_string::get_static_str(env, "Cancel");
     () = msg![env; cancel setTitle:cancel_text forState:UIControlStateNormal];
-    () = msg![env; cancel setTitleColor:white forState:UIControlStateNormal];
-    () = msg![env; cancel setBackgroundColor:dark_gray];
+    () = msg![env; cancel setTitleColor:dark_text forState:UIControlStateNormal];
+    () = msg![env; cancel setBackgroundColor:panel];
+    () = msg![env; cancel layoutSubviews];
     () = msg![env; cancel addTarget:delegate action:(env.objc.lookup_selector("customResolutionCancel").unwrap()) forControlEvents:UIControlEventTouchUpInside];
     () = msg![env; editor addSubview:cancel];
     let error: id = msg_class![env; UILabel alloc];
-    let error: id = msg![env; error initWithFrame:(CGRect { origin: CGPoint { x: 8.0 * ui_scale, y: 80.0 * ui_scale }, size: CGSize { width: width - 16.0 * ui_scale, height: 24.0 * ui_scale } })];
-    let error_text: id = msg_class![env; UIColor whiteColor];
+    let error: id = msg![env; error initWithFrame:(CGRect { origin: CGPoint { x: 8.0 * ui_scale, y: 104.0 * ui_scale }, size: CGSize { width: width - 16.0 * ui_scale, height: 30.0 * ui_scale } })];
+    let error_text: id = msg_class![env; UIColor colorWithRed:0.75 green:0.08 blue:0.08 alpha:1.0];
     () = msg![env; error setTextColor:error_text];
+    let error_font = picker_font(env, 10.0 * ui_scale);
+    () = msg![env; error setFont:error_font];
+    () = msg![env; error setAdjustsFontSizeToFitWidth:true];
     () = msg![env; error setHidden:true];
     () = msg![env; editor addSubview:error];
 
