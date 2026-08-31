@@ -95,6 +95,7 @@ pub enum GraphicsApi {
     GLES11,
     GLES20,
     GLES30,
+    Wgpu,
     Software,
     Metal,
 }
@@ -130,6 +131,7 @@ impl GraphicsApi {
             Self::GLES11 => "OpenGL ES 1.1",
             Self::GLES20 => "OpenGL ES 2.0",
             Self::GLES30 => "OpenGL ES 3.0",
+            Self::Wgpu => "WGPU",
             Self::Software => "Software rendering",
             Self::Metal => "Metal compatibility",
         }

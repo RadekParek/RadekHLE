@@ -88,6 +88,10 @@ fn effective_eagl_api(
         GraphicsApi::GLES10 | GraphicsApi::GLES11 => kEAGLRenderingAPIOpenGLES1,
         GraphicsApi::Translator => kEAGLRenderingAPIOpenGLES2,
         GraphicsApi::TranslatorGLES30 => kEAGLRenderingAPIOpenGLES3,
+        GraphicsApi::Wgpu => {
+            log!("EAGL: WGPU presentation uses the existing GLES2 guest compatibility path");
+            kEAGLRenderingAPIOpenGLES2
+        }
         GraphicsApi::Software => match requested {
             kEAGLRenderingAPIOpenGLES3 => kEAGLRenderingAPIOpenGLES3,
             _ => kEAGLRenderingAPIOpenGLES2,

@@ -13,6 +13,7 @@
 //! will be needed for the runtime of the app.
 
 use crate::gles::present::present_frame;
+use crate::gles::wgpu::WgpuPresentation;
 use crate::gles::{
     create_gles1_ctx_no_parent_stack, create_gles1_gles3_translator_ctx_no_parent_stack,
     create_gles1_translator_ctx_no_parent_stack, create_gles2_ctx_no_parent_stack, GLESContext,
@@ -1117,6 +1118,7 @@ pub struct Window {
     display_refresh_rate: f64,
     frame_generation: bool,
     frame_generation_state: FrameGenerationState,
+    wgpu_presentation: Option<WgpuPresentation>,
     internal_gl_ins: Option<Box<dyn GLESContext>>,
     splash_image: Option<Image>,
     /// Whether the selected image already targets the startup orientation.
@@ -1273,19 +1275,25 @@ impl Window {
             set_sdl2_orientation(device_orientation);
             let screen_size = video_ctx.display_bounds(0).unwrap().size();
             let (width, height) = rotate_fullscreen_size(device_orientation, screen_size);
-            let window = video_ctx
-                .window(title, width, height)
+            let mut builder = video_ctx.window(title, width, height);
+            if options.graphics_api != crate::options::GraphicsApi::Wgpu {
+                builder.opengl();
+            }
+            let window = builder
                 .fullscreen()
-                .opengl()
+                .vulkan()
                 .build()
                 .unwrap();
             window
         } else if fullscreen {
             let (width, height) = video_ctx.display_bounds(0).unwrap().size();
-            let window = video_ctx
-                .window(title, width, height)
+            let mut builder = video_ctx.window(title, width, height);
+            if options.graphics_api != crate::options::GraphicsApi::Wgpu {
+                builder.opengl();
+            }
+            let window = builder
                 .fullscreen_desktop()
-                .opengl()
+                .vulkan()
                 .build()
                 .unwrap();
             window
@@ -1295,11 +1303,14 @@ impl Window {
                 device_orientation,
                 scale_hack,
             );
-            let window = video_ctx
-                .window(title, width, height)
+            let mut builder = video_ctx.window(title, width, height);
+            if options.graphics_api != crate::options::GraphicsApi::Wgpu {
+                builder.opengl();
+            }
+            let window = builder
                 .position_centered()
                 .resizable()
-                .opengl()
+                .vulkan()
                 .build()
                 .unwrap();
             window
@@ -1364,6 +1375,7 @@ impl Window {
             display_refresh_rate,
             frame_generation,
             frame_generation_state: FrameGenerationState::default(),
+            wgpu_presentation: None,
             internal_gl_ins: None,
             splash_image,
             splash_image_is_orientation_specific,
@@ -1402,6 +1414,14 @@ impl Window {
             return window;
         }
 
+        if matches!(options.graphics_api, crate::options::GraphicsApi::Wgpu) {
+            log!("WGPU selected as the host presentation backend; guest EAGL remains on the existing GLES2 compatibility path");
+            window.wgpu_presentation = Some(
+                WgpuPresentation::new(&window.window)
+                    .expect("Could not create WGPU presentation backend"),
+            );
+        }
+
         let mut gl_ins = match options.graphics_api {
             crate::options::GraphicsApi::Translator => {
                 create_gles1_translator_ctx_no_parent_stack(&mut window)
@@ -1419,7 +1439,9 @@ impl Window {
                 SoftwareGLESContext::new(&mut window)
                     .expect("Could not create software GLES context"),
             ),
-            crate::options::GraphicsApi::Metal => create_gles2_ctx_no_parent_stack(&mut window),
+            crate::options::GraphicsApi::Metal | crate::options::GraphicsApi::Wgpu => {
+                create_gles2_ctx_no_parent_stack(&mut window)
+            }
             crate::options::GraphicsApi::Default => {
                 if llvmpipe_active {
                     create_gles1_translator_ctx_no_parent_stack(&mut window)
@@ -2466,6 +2488,28 @@ impl Window {
         height: u32,
         bottom_up: bool,
     ) {
+        if let Some(wgpu) = self.wgpu_presentation.as_mut() {
+            let expected_len = width as usize * height as usize * 4;
+            if pixels.len() < expected_len {
+                log!("WGPU presentation skipped short frame: {} bytes, need {}", pixels.len(), expected_len);
+                return;
+            }
+            if bottom_up {
+                let mut oriented = vec![0u8; expected_len];
+                for y in 0..height as usize {
+                    let source = (height as usize - 1 - y) * width as usize * 4;
+                    let destination = y * width as usize * 4;
+                    oriented[destination..destination + width as usize * 4]
+                        .copy_from_slice(&pixels[source..source + width as usize * 4]);
+                }
+                if let Err(error) = wgpu.present(&oriented, width, height) {
+                    log!("WGPU presentation failed: {error}");
+                }
+            } else if let Err(error) = wgpu.present(&pixels, width, height) {
+                log!("WGPU presentation failed: {error}");
+            }
+            return;
+        }
         if self.frame_generation {
             self.present_frame_with_generation(pixels, width, height, bottom_up);
         } else {

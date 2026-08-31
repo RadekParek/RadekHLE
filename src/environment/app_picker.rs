@@ -1457,6 +1457,7 @@ fn app_picker_inner(
             crate::options::GraphicsApi::GLES11 => "gles1.1",
             crate::options::GraphicsApi::GLES20 => "gles2.0",
             crate::options::GraphicsApi::GLES30 => "gles3.0",
+            crate::options::GraphicsApi::Wgpu => "wgpu",
             crate::options::GraphicsApi::Software => unreachable!("software rendering is standalone"),
             crate::options::GraphicsApi::Metal => "metal",
             crate::options::GraphicsApi::Default => unreachable!(),
@@ -2971,6 +2972,7 @@ const GRAPHICS_API_ENTRIES: &[(&str, crate::options::GraphicsApi)] = &[
         "OpenGL ES 1.1 → OpenGL ES 3.0 translator",
         crate::options::GraphicsApi::TranslatorGLES30,
     ),
+    ("WGPU presentation", crate::options::GraphicsApi::Wgpu),
 ];
 
 fn update_graphics_api_dropdown(

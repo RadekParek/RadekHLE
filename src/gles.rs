@@ -63,6 +63,7 @@
 //!   - [EXT_texture_filter_anisotropic](https://registry.khronos.org/OpenGL/extensions/EXT/EXT_texture_filter_anisotropic.txt)
 //!   - [EXT_texture_lod_bias](https://registry.khronos.org/OpenGL/extensions/EXT/EXT_texture_lod_bias.txt)
 
+pub mod wgpu;
 pub mod gles1_native;
 pub mod gles1_on_gl2;
 pub mod gles1_on_gles2;
@@ -90,9 +91,11 @@ use gles2_native::GLES2NativeContext;
 use gles2_on_gl3::GLES2OnGL3Context;
 use gles3_native::GLES3NativeContext;
 use gles3_on_gl3::GLES3OnGL3Context;
+
 pub use gles_generic::GLESContext;
 pub use gles_generic::GLES;
 pub use software::SoftwareGLESContext;
+
 use std::sync::atomic::{AtomicU32, Ordering};
 
 static TRANSLATOR_TRACE_EVENTS: AtomicU32 = AtomicU32::new(0);
