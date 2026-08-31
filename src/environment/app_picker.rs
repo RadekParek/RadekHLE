@@ -2313,6 +2313,11 @@ fn setup_quick_options(
     () = msg![env; main_view setAlwaysBounceVertical:true];
     () = msg![env; main_view setBackgroundColor:settings_background];
     () = msg![env; main_view setOpaque:true];
+    let settings_backdrop: id = msg_class![env; UIView alloc];
+    let settings_backdrop: id = msg![env; settings_backdrop initWithFrame:main_frame];
+    () = msg![env; settings_backdrop setBackgroundColor:settings_background];
+    () = msg![env; settings_backdrop setOpaque:true];
+    () = msg![env; main_view addSubview:settings_backdrop];
     // This main_view is hidden until the copyright info button is tapped.
     () = msg![env; main_view setHidden:true];
     () = msg![env; super_view addSubview:main_view];
