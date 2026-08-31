@@ -10,9 +10,22 @@ static OBJC_COUNT: AtomicU64 = AtomicU64::new(0);
 static OBJC_TIME_NS: AtomicU64 = AtomicU64::new(0);
 static GLES_COUNT: AtomicU64 = AtomicU64::new(0);
 static GLES_TIME_NS: AtomicU64 = AtomicU64::new(0);
+static ARM32_JIT_RUNS: AtomicU64 = AtomicU64::new(0);
+static ARM32_JIT_TIME_NS: AtomicU64 = AtomicU64::new(0);
+static ARM32_CODE_FETCHES: AtomicU64 = AtomicU64::new(0);
+static ARM32_INTERPRETER_FALLBACKS: AtomicU64 = AtomicU64::new(0);
 
 pub fn configure(enabled: bool) {
     ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+#[no_mangle]
+pub extern "C" fn touchHLE_perf_record_arm32_jit(
+    run_time_ns: u64,
+    code_fetches: u64,
+    interpreter_fallbacks: u64,
+) {
+    record_arm32_jit(run_time_ns, code_fetches, interpreter_fallbacks);
 }
 
 pub fn enabled() -> bool {
@@ -65,6 +78,16 @@ pub fn gles_scope() -> Option<Scope> {
     Scope::new(&GLES_COUNT, &GLES_TIME_NS)
 }
 
+pub fn record_arm32_jit(run_time_ns: u64, code_fetches: u64, interpreter_fallbacks: u64) {
+    if !enabled() {
+        return;
+    }
+    ARM32_JIT_RUNS.fetch_add(1, Ordering::Relaxed);
+    ARM32_JIT_TIME_NS.fetch_add(run_time_ns, Ordering::Relaxed);
+    ARM32_CODE_FETCHES.fetch_add(code_fetches, Ordering::Relaxed);
+    ARM32_INTERPRETER_FALLBACKS.fetch_add(interpreter_fallbacks, Ordering::Relaxed);
+}
+
 pub fn configure_from_environment() {
     configure(std::env::var_os("TOUCHHLE_PERF").is_some());
 }
@@ -78,6 +101,14 @@ pub fn report() {
     report_one("Memory access", &MEMORY_COUNT, &MEMORY_TIME_NS);
     report_one("ObjC dispatch", &OBJC_COUNT, &OBJC_TIME_NS);
     report_one("GLES calls", &GLES_COUNT, &GLES_TIME_NS);
+    let jit_runs = ARM32_JIT_RUNS.load(Ordering::Relaxed);
+    let jit_time_ns = ARM32_JIT_TIME_NS.load(Ordering::Relaxed);
+    let jit_fetches = ARM32_CODE_FETCHES.load(Ordering::Relaxed);
+    let jit_fallbacks = ARM32_INTERPRETER_FALLBACKS.load(Ordering::Relaxed);
+    eprintln!(
+        "ARM32 Dynarmic: {jit_runs} runs, {:.2}ms host time, {jit_fetches} translation fetches, {jit_fallbacks} interpreter fallbacks",
+        jit_time_ns as f64 / 1_000_000.0,
+    );
 }
 
 pub fn reset() {
@@ -90,6 +121,14 @@ pub fn reset() {
         count.store(0, Ordering::Relaxed);
         time_ns.store(0, Ordering::Relaxed);
     }
+    for counter in [
+        &ARM32_JIT_RUNS,
+        &ARM32_CODE_FETCHES,
+        &ARM32_INTERPRETER_FALLBACKS,
+    ] {
+        counter.store(0, Ordering::Relaxed);
+    }
+    ARM32_JIT_TIME_NS.store(0, Ordering::Relaxed);
 }
 
 fn report_one(name: &str, count: &AtomicU64, time_ns: &AtomicU64) {

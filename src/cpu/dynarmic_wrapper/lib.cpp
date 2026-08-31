@@ -3,8 +3,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 
 #include "dynarmic/interface/A32/a32.h"
 #include "dynarmic/interface/A32/config.h"
@@ -20,6 +22,9 @@ using VAddr = std::uint32_t;
 // Types and functions defined in Rust
 extern "C" {
 struct touchHLE_Mem;
+void touchHLE_perf_record_arm32_jit(std::uint64_t run_time_ns,
+                                    std::uint64_t code_fetches,
+                                    std::uint64_t interpreter_fallbacks);
 std::uint8_t touchHLE_cpu_read_u8(touchHLE_Mem *mem, VAddr addr, bool *error);
 std::uint16_t touchHLE_cpu_read_u16(touchHLE_Mem *mem, VAddr addr, bool *error);
 std::uint32_t touchHLE_cpu_read_u32(touchHLE_Mem *mem, VAddr addr, bool *error);
@@ -46,6 +51,10 @@ public:
   touchHLE_Mem *mem = nullptr;
   std::uint64_t ticks_remaining;
   uint32_t halting_svc;
+  std::uint64_t code_fetches = 0;
+  std::uint64_t interpreter_fallbacks = 0;
+  std::uint64_t run_time_ns = 0;
+  bool perf_enabled = false;
 
 private:
   std::uint8_t MemoryRead8(VAddr vaddr) override {
@@ -84,6 +93,9 @@ private:
   std::optional<std::uint32_t> MemoryReadCode(VAddr vaddr) override {
     bool error;
     auto value = touchHLE_cpu_read_u32(mem, vaddr, &error);
+    if (perf_enabled) {
+      ++code_fetches;
+    }
     if (error) {
       return std::nullopt;
     } else {
@@ -145,8 +157,12 @@ private:
     return true;
   }
 
-  void InterpreterFallback(std::uint32_t, size_t) override {
-    abort(); // TODO
+  void InterpreterFallback(std::uint32_t pc, size_t count) override {
+    if (perf_enabled) {
+      ++interpreter_fallbacks;
+    }
+    std::fprintf(stderr, "ARM32 Dynarmic interpreter fallback at pc=%#x count=%zu\n", pc, count);
+    cpu->HaltExecution(HaltReasonUndefinedInstruction);
   }
   void CallSVC(std::uint32_t svc) override {
     halting_svc = svc;
@@ -234,6 +250,7 @@ public:
   DynarmicWrapper(void *direct_memory_access_ptr, size_t null_page_count) {
     Dynarmic::A32::UserConfig user_config;
     user_config.optimizations = Dynarmic::all_safe_optimizations;
+    user_config.code_cache_size = 64 * 1024 * 1024;
     user_config.callbacks = &env;
     user_config.coprocessors[15] = std::make_shared<ArmDynarmicCP15>();
     mon = std::make_unique<Dynarmic::ExclusiveMonitor>(1);
@@ -288,6 +305,10 @@ public:
 
   std::int32_t run_or_step(touchHLE_Mem *mem, std::uint64_t *ticks) {
     env.mem = mem;
+    env.code_fetches = 0;
+    env.interpreter_fallbacks = 0;
+    env.perf_enabled = std::getenv("TOUCHHLE_PERF") != nullptr;
+    const auto run_started = env.perf_enabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     Dynarmic::HaltReason hr;
     if (ticks) {
       env.ticks_remaining = *ticks;
@@ -309,6 +330,10 @@ public:
     } else {
       printf("unhandled halt reason %u\n", unsigned(hr));
       abort();
+    }
+    if (env.perf_enabled) {
+      env.run_time_ns = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - run_started).count());
+      touchHLE_perf_record_arm32_jit(env.run_time_ns, env.code_fetches, env.interpreter_fallbacks);
     }
     env.mem = nullptr;
     if (ticks) {
