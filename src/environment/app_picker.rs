@@ -239,6 +239,7 @@ struct AppPickerDelegateHostObject {
     scale_hack3: bool,
     scale_hack4: bool,
     custom_resolution: bool,
+    custom_resolution_custom: bool,
     custom_resolution_apply: bool,
     custom_resolution_cancel: bool,
     supported_resolution: Option<i32>,
@@ -348,6 +349,9 @@ const CLASSES: ClassExports = objc_classes! {
 }
 - (())customResolution {
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).custom_resolution = true;
+}
+- (())customResolutionCustom {
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).custom_resolution_custom = true;
 }
 - (())customResolutionApply {
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).custom_resolution_apply = true;
@@ -821,10 +825,16 @@ fn app_picker_inner(
     let mut copyright_info_stuff = setup_copyright_info(env, delegate, main_view, app_frame);
     let mut copyright_info_page_idx = 0;
 
-    let quick_options_stuff = setup_quick_options(env, delegate, main_view, app_frame);
+    let host_resolutions = crate::window::host_screen_resolutions();
+    let quick_options_stuff = setup_quick_options(
+        env,
+        delegate,
+        main_view,
+        app_frame,
+        &host_resolutions,
+    );
     let mut quick_options_scale_hack: Option<f32> = None;
     let mut quick_options_custom_resolution: Option<(u32, u32)> = None;
-    let host_resolutions = crate::window::host_screen_resolutions();
     let mut quick_options_fullscreen: Option<()> = None;
     let mut quick_options_orientation: Option<DeviceOrientation> = None;
     let mut quick_options_analog_stick_tilt_controls = true;
@@ -1164,6 +1174,13 @@ fn app_picker_inner(
                 quick_options_scale_hack,
             );
         } else if std::mem::take(&mut host_obj.custom_resolution) {
+            let hidden: bool = msg![env; (quick_options_stuff.custom_resolution_menu) isHidden];
+            () = msg![env; (quick_options_stuff.custom_resolution_menu) setHidden:(!hidden)];
+            if hidden {
+                () = msg![env; (quick_options_stuff.main_view)
+                    bringSubviewToFront:(quick_options_stuff.custom_resolution_menu)];
+            }
+        } else if std::mem::take(&mut host_obj.custom_resolution_custom) {
             let default_resolution = quick_options_custom_resolution
                 .or_else(|| host_resolutions.last().copied())
                 .unwrap_or((320, 480));
@@ -1182,6 +1199,7 @@ fn app_picker_inner(
             release(env, width_text);
             release(env, height_text);
             () = msg![env; (quick_options_stuff.custom_resolution_error) setHidden:true];
+            () = msg![env; (quick_options_stuff.custom_resolution_menu) setHidden:true];
             () = msg![env; (quick_options_stuff.custom_resolution_editor) setHidden:false];
         } else if std::mem::take(&mut host_obj.custom_resolution_apply) {
             let mut parse_field = |field: id| -> Option<u32> {
@@ -2194,6 +2212,7 @@ struct QuickOptionsStuff {
     quality_buttons: Vec<Vec<id>>,
     scale_hack_buttons: [id; 7],
     custom_resolution_button: id,
+    custom_resolution_menu: id,
     custom_resolution_editor: id,
     custom_resolution_width_field: id,
     custom_resolution_height_field: id,
@@ -2261,6 +2280,7 @@ fn setup_quick_options(
     delegate: id,
     super_view: id,
     app_frame: CGRect,
+    host_resolutions: &[(u32, u32)],
 ) -> QuickOptionsStuff {
     // UIView*
     let visible_frame = CGRect {
@@ -2480,6 +2500,8 @@ fn setup_quick_options(
 
     let mut scale_hack_buttons: Option<[id; 7]> = None;
     let mut custom_resolution_button: id = nil;
+    let mut custom_resolution_row_center: CGFloat = 0.0;
+    let mut custom_resolution_menu: id = nil;
     let mut custom_resolution_editor: id = nil;
     let mut custom_resolution_width_field: id = nil;
     let mut custom_resolution_height_field: id = nil;
@@ -2561,6 +2583,7 @@ fn setup_quick_options(
                     }
                     Some("customResolution") => {
                         custom_resolution_button = controls.first().copied().unwrap_or(nil);
+                        custom_resolution_row_center = row_center;
                     }
                     Some("orientationDefault") => {
                         orientation_buttons = controls.try_into().ok();
@@ -2639,6 +2662,67 @@ fn setup_quick_options(
 
     let ui_scale = picker_ui_scale(main_frame.size);
     let width = (main_frame.size.width * 0.56).clamp(170.0, 720.0);
+    let resolution_item_height = 30.0 * ui_scale;
+    let resolution_entries = host_resolutions.iter().take(8).enumerate();
+    let resolution_count = host_resolutions.len().min(8) + 1;
+    let resolution_menu_height = resolution_count as CGFloat * resolution_item_height;
+    let resolution_menu_frame = CGRect {
+        origin: CGPoint {
+            x: main_frame.size.width * 0.42,
+            y: (custom_resolution_row_center - resolution_menu_height).max(0.0),
+        },
+        size: CGSize {
+            width,
+            height: resolution_menu_height,
+        },
+    };
+    let resolution_menu: id = msg_class![env; UIView alloc];
+    let resolution_menu: id = msg![env; resolution_menu initWithFrame:resolution_menu_frame];
+    let resolution_menu_color: id = msg_class![env; UIColor darkGrayColor];
+    () = msg![env; resolution_menu setBackgroundColor:resolution_menu_color];
+    () = msg![env; resolution_menu setClipsToBounds:true];
+    () = msg![env; resolution_menu setHidden:true];
+    () = msg![env; main_view addSubview:resolution_menu];
+    let resolution_white: id = msg_class![env; UIColor whiteColor];
+    let resolution_selector = env.objc.lookup_selector("supportedResolution:").unwrap();
+    for (index, (width_value, height_value)) in resolution_entries {
+        let item: id = msg_class![env; UIButton buttonWithType:UIButtonTypeCustom];
+        let text = ns_string::from_rust_string(
+            env,
+            format!("{}×{}", width_value, height_value),
+        );
+        () = msg![env; item setTitle:text forState:UIControlStateNormal];
+        release(env, text);
+        () = msg![env; item setTitleColor:resolution_white forState:UIControlStateNormal];
+        () = msg![env; item setBackgroundColor:resolution_menu_color];
+        () = msg![env; item setFrame:(CGRect {
+            origin: CGPoint { x: 0.0, y: index as CGFloat * resolution_item_height },
+            size: CGSize { width, height: resolution_item_height },
+        })];
+        let item_tag: NSInteger = index as NSInteger;
+        () = msg![env; item setTag:item_tag];
+        () = msg![env; item addTarget:delegate
+                               action:resolution_selector
+                     forControlEvents:UIControlEventTouchUpInside];
+        () = msg![env; resolution_menu addSubview:item];
+    }
+    let custom_item: id = msg_class![env; UIButton buttonWithType:UIButtonTypeCustom];
+    let custom_text = ns_string::get_static_str(env, "Custom");
+    () = msg![env; custom_item setTitle:custom_text forState:UIControlStateNormal];
+    () = msg![env; custom_item setTitleColor:resolution_white forState:UIControlStateNormal];
+    () = msg![env; custom_item setBackgroundColor:resolution_menu_color];
+    () = msg![env; custom_item setFrame:(CGRect {
+        origin: CGPoint {
+            x: 0.0,
+            y: host_resolutions.len().min(8) as CGFloat * resolution_item_height,
+        },
+        size: CGSize { width, height: resolution_item_height },
+    })];
+    () = msg![env; custom_item addTarget:delegate
+                                  action:(env.objc.lookup_selector("customResolutionCustom").unwrap())
+                        forControlEvents:UIControlEventTouchUpInside];
+    () = msg![env; resolution_menu addSubview:custom_item];
+    custom_resolution_menu = resolution_menu;
     let field_height = 30.0 * ui_scale;
     let editor_height = 112.0 * ui_scale;
     let editor_frame = CGRect {
@@ -2722,6 +2806,7 @@ fn setup_quick_options(
         quality_buttons,
         scale_hack_buttons: scale_hack_buttons.unwrap_or([nil; 7]),
         custom_resolution_button,
+        custom_resolution_menu,
         custom_resolution_editor,
         custom_resolution_width_field,
         custom_resolution_height_field,
