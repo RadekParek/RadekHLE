@@ -136,7 +136,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     let this: id = msg_super![env; this initWithFrame:frame];
 
     let _: () = msg![env; this setOpaque:true];
-    let bg_color: id = msg_class![env; UIColor whiteColor];
+    let bg_color: id = msg_class![env; UIColor colorWithRed:0.38 green:0.38 blue:0.40 alpha:1.0];
     let _: () = msg![env; this setBackgroundColor:bg_color];
 
     let text_label: id = msg_class![env; UILabel new];
@@ -146,7 +146,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     let _: () = msg![env; text_label setBackgroundColor:clear_color];
 
     let _: () = msg![env; text_label setTextAlignment:UITextAlignmentLeft];
-    let text_color: id = msg_class![env; UIColor blackColor];
+    let text_color: id = msg_class![env; UIColor whiteColor];
     let _: () = msg![env; text_label setTextColor:text_color];
 
     env.objc.borrow_mut::<UITextFieldHostObject>(this).text_label = text_label;
@@ -243,9 +243,9 @@ pub const CLASSES: ClassExports = objc_classes! {
     let _: () = msg![env; text_label setText:text];
     let text_length: NSUInteger = if text == nil { 0 } else { msg![env; text length] };
     let color: id = if text_length > 0 {
-        msg_class![env; UIColor blackColor]
+        msg_class![env; UIColor whiteColor]
     } else {
-        msg_class![env; UIColor grayColor]
+        msg_class![env; UIColor lightGrayColor]
     };
     let _: () = msg![env; text_label setTextColor:color];
     let center: id = msg_class![env; NSNotificationCenter defaultCenter];
