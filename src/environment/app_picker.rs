@@ -1070,8 +1070,6 @@ fn app_picker_inner(
         } else if std::mem::take(&mut host_obj.quick_options_show) {
             () = msg![env; (quick_options_stuff.settings_backdrop) setHidden:false];
             () = msg![env; (quick_options_stuff.main_view) setHidden:false];
-            () = msg![env; (quick_options_stuff.settings_backdrop) bringSubviewToFront:(quick_options_stuff.settings_backdrop)];
-            () = msg![env; (quick_options_stuff.main_view) bringSubviewToFront:(quick_options_stuff.main_view)];
         } else if std::mem::take(&mut host_obj.quick_options_hide) {
             () = msg![env; (quick_options_stuff.main_view) setHidden:true];
             () = msg![env; (quick_options_stuff.settings_backdrop) setHidden:true];
@@ -1194,7 +1192,7 @@ fn app_picker_inner(
             quick_options_custom_resolution = Some(default_resolution);
             let title = ns_string::from_rust_string(
                 env,
-                format!("{}×{}", default_resolution.0, default_resolution.1),
+                format!("{} x {}", default_resolution.0, default_resolution.1),
             );
             () = msg![env; (quick_options_stuff.custom_resolution_button)
                 setTitle:title forState:UIControlStateNormal];
@@ -1219,7 +1217,7 @@ fn app_picker_inner(
                 parse_field(quick_options_stuff.custom_resolution_height_field),
             ) {
                 quick_options_custom_resolution = Some((width, height));
-                let title = ns_string::from_rust_string(env, format!("{}×{}", width, height));
+                let title = ns_string::from_rust_string(env, format!("{} x {}", width, height));
                 () = msg![env; (quick_options_stuff.custom_resolution_button)
                     setTitle:title forState:UIControlStateNormal];
                 release(env, title);
@@ -1236,7 +1234,7 @@ fn app_picker_inner(
             if index >= 0 {
                 if let Some(resolution) = host_resolutions.get(index as usize).copied() {
                     quick_options_custom_resolution = Some(resolution);
-                    let title = ns_string::from_rust_string(env, format!("{}×{}", resolution.0, resolution.1));
+                    let title = ns_string::from_rust_string(env, format!("{} x {}", resolution.0, resolution.1));
                     () = msg![env; (quick_options_stuff.custom_resolution_button)
                         setTitle:title forState:UIControlStateNormal];
                     release(env, title);
@@ -2323,9 +2321,8 @@ fn setup_quick_options(
     () = msg![env; main_view setScrollEnabled:true];
     () = msg![env; main_view setShowsVerticalScrollIndicator:true];
     () = msg![env; main_view setAlwaysBounceVertical:true];
-    let clear: id = msg_class![env; UIColor clearColor];
-    () = msg![env; main_view setBackgroundColor:clear];
-    () = msg![env; main_view setOpaque:false];
+    () = msg![env; main_view setBackgroundColor:settings_background];
+    () = msg![env; main_view setOpaque:true];
     // This main_view is hidden until the settings button is tapped.
     () = msg![env; main_view setHidden:true];
     () = msg![env; super_view addSubview:main_view];
@@ -2348,10 +2345,10 @@ fn setup_quick_options(
     let header_text = ns_string::get_static_str(env, "Settings");
     () = msg![env; header setText:header_text];
     () = msg![env; header setTextAlignment:UITextAlignmentLeft];
-    let header_font = picker_font(env, 21.0 * ui_scale);
+    let header_font = picker_font(env, 24.0 * ui_scale);
     () = msg![env; header setFont:header_font];
-    let white: id = msg_class![env; UIColor whiteColor];
-    () = msg![env; header setTextColor:white];
+    let black: id = msg_class![env; UIColor blackColor];
+    () = msg![env; header setTextColor:black];
     let clear: id = msg_class![env; UIColor clearColor];
     () = msg![env; header setBackgroundColor:clear];
     () = msg![env; main_view addSubview:header];
@@ -2371,10 +2368,10 @@ fn setup_quick_options(
     let subtitle_text = ns_string::get_static_str(env, "Scroll for more options");
     () = msg![env; subtitle setText:subtitle_text];
     () = msg![env; subtitle setTextAlignment:UITextAlignmentLeft];
-    let subtitle_font = picker_font(env, 11.0 * ui_scale);
+    let subtitle_font = picker_font(env, 13.0 * ui_scale);
     () = msg![env; subtitle setFont:subtitle_font];
-    let muted: id = msg_class![env; UIColor darkGrayColor];
-    () = msg![env; subtitle setTextColor:muted];
+    let black: id = msg_class![env; UIColor blackColor];
+    () = msg![env; subtitle setTextColor:black];
     () = msg![env; main_view addSubview:subtitle];
 
     // Close button (×) in the upper right corner. It uses an explicit border
@@ -2558,10 +2555,10 @@ fn setup_quick_options(
                 let text = ns_string::get_static_str(env, text);
                 () = msg![env; label setText:text];
                 () = msg![env; label setTextAlignment:UITextAlignmentLeft];
-                let label_font = picker_font(env, 14.0 * ui_scale);
+                let label_font = picker_font(env, 16.0 * ui_scale);
                 () = msg![env; label setFont:label_font];
-                let white: id = msg_class![env; UIColor whiteColor];
-                () = msg![env; label setTextColor:white];
+                let black: id = msg_class![env; UIColor blackColor];
+                () = msg![env; label setTextColor:black];
                 let clear: id = msg_class![env; UIColor clearColor];
                 () = msg![env; label setBackgroundColor:clear];
                 () = msg![env; label setAdjustsFontSizeToFitWidth:true];
@@ -2683,8 +2680,13 @@ fn setup_quick_options(
     let ui_scale = picker_ui_scale(main_frame.size);
     let width = (main_frame.size.width * 0.56).clamp(170.0, 720.0);
     let resolution_item_height = 30.0 * ui_scale;
-    let resolution_entries = host_resolutions.iter().take(8).enumerate();
-    let resolution_count = host_resolutions.len().min(8) + 1;
+    let resolution_entries: Vec<(usize, (u32, u32))> = host_resolutions
+        .iter()
+        .copied()
+        .take(8)
+        .enumerate()
+        .collect();
+    let resolution_count = resolution_entries.len() + 1;
     let resolution_menu_height = resolution_count as CGFloat * resolution_item_height;
     let resolution_menu_frame = CGRect {
         origin: CGPoint {
@@ -2698,14 +2700,14 @@ fn setup_quick_options(
     };
     let resolution_menu: id = msg_class![env; UIView alloc];
     let resolution_menu: id = msg![env; resolution_menu initWithFrame:resolution_menu_frame];
-    let resolution_menu_color: id = msg_class![env; UIColor darkGrayColor];
+    let resolution_menu_color: id = msg_class![env; UIColor colorWithRed:0.86 green:0.86 blue:0.88 alpha:1.0];
     () = msg![env; resolution_menu setBackgroundColor:resolution_menu_color];
     () = msg![env; resolution_menu setClipsToBounds:true];
     () = msg![env; resolution_menu setHidden:true];
     () = msg![env; main_view addSubview:resolution_menu];
-    let resolution_text: id = msg_class![env; UIColor whiteColor];
+    let resolution_text: id = msg_class![env; UIColor blackColor];
     let resolution_selector = env.objc.lookup_selector("supportedResolution:").unwrap();
-    for (index, (width_value, height_value)) in resolution_entries {
+    for (index, (_entry_index, (width_value, height_value))) in resolution_entries.iter().copied().enumerate() {
         let item: id = msg_class![env; UIButton buttonWithType:UIButtonTypeCustom];
         let text = ns_string::from_rust_string(
             env,
@@ -2714,7 +2716,7 @@ fn setup_quick_options(
         () = msg![env; item setTitle:text forState:UIControlStateNormal];
         release(env, text);
         let item_label: id = msg![env; item titleLabel];
-        let item_font = picker_font(env, 12.0 * ui_scale);
+        let item_font = picker_font(env, 14.0 * ui_scale);
         () = msg![env; item_label setFont:item_font];
         () = msg![env; item_label setTextAlignment:UITextAlignmentCenter];
         () = msg![env; item setTitleColor:resolution_text forState:UIControlStateNormal];
@@ -2735,7 +2737,7 @@ fn setup_quick_options(
     let custom_text = ns_string::get_static_str(env, "Custom");
     () = msg![env; custom_item setTitle:custom_text forState:UIControlStateNormal];
     let custom_label: id = msg![env; custom_item titleLabel];
-    let custom_font = picker_font(env, 12.0 * ui_scale);
+    let custom_font = picker_font(env, 14.0 * ui_scale);
     () = msg![env; custom_label setFont:custom_font];
     () = msg![env; custom_label setTextAlignment:UITextAlignmentCenter];
     () = msg![env; custom_item setTitleColor:resolution_text forState:UIControlStateNormal];
@@ -2743,7 +2745,7 @@ fn setup_quick_options(
     () = msg![env; custom_item setFrame:(CGRect {
         origin: CGPoint {
             x: 0.0,
-            y: host_resolutions.len().min(8) as CGFloat * resolution_item_height,
+            y: resolution_entries.len() as CGFloat * resolution_item_height,
         },
         size: CGSize { width, height: resolution_item_height },
     })];
@@ -2764,8 +2766,9 @@ fn setup_quick_options(
     };
     let editor: id = msg_class![env; UIView alloc];
     let editor: id = msg![env; editor initWithFrame:editor_frame];
-    let panel: id = msg_class![env; UIColor darkGrayColor];
-    let dark_text: id = msg_class![env; UIColor whiteColor];
+    () = msg![env; editor setContentScaleFactor:4.0];
+    let panel: id = msg_class![env; UIColor colorWithRed:0.82 green:0.82 blue:0.84 alpha:1.0];
+    let dark_text: id = msg_class![env; UIColor blackColor];
     let white: id = msg_class![env; UIColor whiteColor];
     () = msg![env; editor setBackgroundColor:panel];
     () = msg![env; editor setHidden:true];
