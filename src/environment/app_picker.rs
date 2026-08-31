@@ -1068,9 +1068,13 @@ fn app_picker_inner(
                 copyright_info_page_idx,
             );
         } else if std::mem::take(&mut host_obj.quick_options_show) {
+            () = msg![env; (quick_options_stuff.settings_backdrop) setHidden:false];
             () = msg![env; (quick_options_stuff.main_view) setHidden:false];
+            () = msg![env; (quick_options_stuff.settings_backdrop) bringSubviewToFront:(quick_options_stuff.settings_backdrop)];
+            () = msg![env; (quick_options_stuff.main_view) bringSubviewToFront:(quick_options_stuff.main_view)];
         } else if std::mem::take(&mut host_obj.quick_options_hide) {
             () = msg![env; (quick_options_stuff.main_view) setHidden:true];
+            () = msg![env; (quick_options_stuff.settings_backdrop) setHidden:true];
         } else if std::mem::take(&mut host_obj.apps_refresh_requested) {
             let apps_dir = paths::user_data_base_path().join(paths::APPS_DIR);
             match enumerate_apps(&apps_dir) {
@@ -2206,6 +2210,7 @@ fn change_copyright_page(
 
 struct QuickOptionsStuff {
     main_view: id,
+    settings_backdrop: id,
     ios_version_btn: id,
     ios_version_menu: id,
     ios_version_items: Vec<id>,
@@ -2303,22 +2308,25 @@ fn setup_quick_options(
     // screen and is hosted in a real scroll view so every option keeps a
     // readable row instead of being compressed into overlapping controls.
 
+    let settings_background: id = msg_class![env; UIColor colorWithRed:0.72 green:0.72 blue:0.72 alpha:1.0];
+    let settings_backdrop: id = msg_class![env; UIView alloc];
+    let settings_backdrop: id = msg![env; settings_backdrop initWithFrame:visible_frame];
+    () = msg![env; settings_backdrop setBackgroundColor:settings_background];
+    () = msg![env; settings_backdrop setOpaque:true];
+    () = msg![env; settings_backdrop setHidden:true];
+    () = msg![env; super_view addSubview:settings_backdrop];
+
     let main_view: id = msg_class![env; UIScrollView alloc];
     let main_view: id = msg![env; main_view initWithFrame:visible_frame];
-    let settings_background: id = msg_class![env; UIColor colorWithRed:0.72 green:0.72 blue:0.72 alpha:1.0];
     let content_size = main_frame.size;
     () = msg![env; main_view setContentSize:content_size];
     () = msg![env; main_view setScrollEnabled:true];
     () = msg![env; main_view setShowsVerticalScrollIndicator:true];
     () = msg![env; main_view setAlwaysBounceVertical:true];
-    () = msg![env; main_view setBackgroundColor:settings_background];
-    () = msg![env; main_view setOpaque:true];
-    let settings_backdrop: id = msg_class![env; UIView alloc];
-    let settings_backdrop: id = msg![env; settings_backdrop initWithFrame:main_frame];
-    () = msg![env; settings_backdrop setBackgroundColor:settings_background];
-    () = msg![env; settings_backdrop setOpaque:true];
-    () = msg![env; main_view addSubview:settings_backdrop];
-    // This main_view is hidden until the copyright info button is tapped.
+    let clear: id = msg_class![env; UIColor clearColor];
+    () = msg![env; main_view setBackgroundColor:clear];
+    () = msg![env; main_view setOpaque:false];
+    // This main_view is hidden until the settings button is tapped.
     () = msg![env; main_view setHidden:true];
     () = msg![env; super_view addSubview:main_view];
 
@@ -2840,6 +2848,7 @@ fn setup_quick_options(
 
     QuickOptionsStuff {
         main_view,
+        settings_backdrop,
         ios_version_btn,
         ios_version_menu,
         ios_version_items,
