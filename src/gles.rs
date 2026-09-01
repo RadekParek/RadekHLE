@@ -147,6 +147,7 @@ pub fn configure_custom_driver(path: Option<&std::path::Path>) -> bool {
     } else {
         requested
     };
+    log!("Custom driver requested: {}", requested.display());
     let driver_dir = if requested.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("zip")) {
         match extract_custom_driver_archive(&requested) {
 

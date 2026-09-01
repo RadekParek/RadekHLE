@@ -1473,11 +1473,11 @@ fn app_picker_inner(
     if quick_options_software_rendering {
         option_args.push("--software-rendering".to_string());
     }
-    option_args.push(if quick_options_custom_driver {
-        "--custom-driver=touchHLE_custom_drivers".to_string()
+    if quick_options_custom_driver {
+        option_args.push("--custom-driver=touchHLE_custom_drivers".to_string());
     } else {
-        "--disable-custom-driver".to_string()
-    });
+        option_args.push("--disable-custom-driver".to_string());
+    }
     option_args.push(format!("--anisotropic-filtering={quick_options_anisotropic_filtering}"));
     option_args.push(format!("--texture-upscaler={quick_options_texture_upscaler}"));
     option_args.push(format!("--anti-aliasing={quick_options_anti_aliasing}"));
