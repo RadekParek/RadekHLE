@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::time::{Duration, Instant};
 use wgpu::util::DeviceExt;
 
@@ -56,10 +57,40 @@ pub struct WgpuPresentation {
     previous_frame: Option<Vec<u8>>,
 }
 
+fn configure_surface(
+    surface: &wgpu::Surface<'static>,
+    device: &wgpu::Device,
+    config: &wgpu::SurfaceConfiguration,
+) -> Result<(), String> {
+    catch_unwind(AssertUnwindSafe(|| surface.configure(device, config))).map_err(|payload| {
+        let message = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("unknown panic payload");
+        format!("WGPU surface configuration panicked: {message}")
+    })
+}
+
 impl WgpuPresentation {
     pub fn new(window: &sdl2::video::Window) -> Result<Self, String> {
+        #[cfg(target_os = "android")]
+        let backends = wgpu::Backends::VULKAN;
+        #[cfg(not(target_os = "android"))]
+        let backends = wgpu::Backends::VULKAN
+            | wgpu::Backends::METAL
+            | wgpu::Backends::DX12
+            | wgpu::Backends::GL;
+        log!("WGPU backend candidates: {:?}", backends);
+        Self::new_with_backends(window, backends)
+    }
+
+    fn new_with_backends(
+        window: &sdl2::video::Window,
+        backends: wgpu::Backends,
+    ) -> Result<Self, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::GL,
+            backends,
             dx12_shader_compiler: Default::default(),
             gles_minor_version: wgpu::Gles3MinorVersion::Automatic,
             flags: wgpu::InstanceFlags::default(),
@@ -83,11 +114,12 @@ impl WgpuPresentation {
         .ok_or_else(|| "WGPU could not find an adapter for the SDL window".to_string())?;
         let adapter_info = adapter.get_info();
         log!(
-            "WGPU presentation adapter: name={:?}, backend={:?}, device={:?}, driver={:?}",
+            "WGPU presentation adapter: name={:?}, backend={:?}, device={:?}, driver={:?}, driver_info={:?}",
             adapter_info.name,
             adapter_info.backend,
             adapter_info.device,
-            adapter_info.driver
+            adapter_info.driver,
+            adapter_info.driver_info
         );
         log!("WGPU presentation path is active; frames will be uploaded through the selected WGPU adapter");
         let adapter_limits = adapter.limits();
@@ -112,31 +144,76 @@ impl WgpuPresentation {
         .map_err(|error| format!("could not create WGPU device with adapter-compatible limits: {error}"))?;
 
         let capabilities = surface.get_capabilities(&adapter);
+        log!(
+            "WGPU surface capabilities: formats={:?}, present_modes={:?}, alpha_modes={:?}, usages={:?}",
+            capabilities.formats,
+            capabilities.present_modes,
+            capabilities.alpha_modes,
+            capabilities.usages
+        );
         let format = capabilities
             .formats
             .iter()
             .copied()
-            .find(|format| format.is_srgb())
+            .find(|format| *format == wgpu::TextureFormat::Rgba8Unorm)
             .or_else(|| capabilities.formats.first().copied())
             .ok_or_else(|| "WGPU surface reported no supported formats".to_string())?;
+        if !capabilities
+            .usages
+            .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+        {
+            return Err(format!(
+                "WGPU surface cannot be used as a render target; supported usages={:?}",
+                capabilities.usages
+            ));
+        }
         let (width, height) = window.drawable_size();
         let width = width.max(1);
         let height = height.max(1);
+        let present_mode = if capabilities
+            .present_modes
+            .contains(&wgpu::PresentMode::Fifo)
+        {
+            wgpu::PresentMode::Fifo
+        } else {
+            *capabilities
+                .present_modes
+                .first()
+                .ok_or_else(|| "WGPU surface reported no supported present modes".to_string())?
+        };
+        let alpha_mode = if capabilities
+            .alpha_modes
+            .contains(&wgpu::CompositeAlphaMode::Opaque)
+        {
+            wgpu::CompositeAlphaMode::Opaque
+        } else {
+            *capabilities
+                .alpha_modes
+                .first()
+                .ok_or_else(|| "WGPU surface reported no supported alpha modes".to_string())?
+        };
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
             width,
             height,
-            present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: capabilities
-                .alpha_modes
-                .first()
-                .copied()
-                .unwrap_or(wgpu::CompositeAlphaMode::Auto),
+            present_mode,
+            alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
-        surface.configure(&device, &config);
+        log!(
+            "WGPU configuring surface: backend={:?}, extent={}x{}, format={:?}, present_mode={:?}, alpha_mode={:?}, usage={:?}",
+            adapter_info.backend,
+            config.width,
+            config.height,
+            config.format,
+            config.present_mode,
+            config.alpha_mode,
+            config.usage
+        );
+        configure_surface(&surface, &device, &config)?;
+        log!("WGPU surface configured successfully");
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("RadekHLE WGPU frame presenter"),
@@ -265,10 +342,10 @@ impl WgpuPresentation {
         let output = match self.surface.get_current_texture() {
             Ok(output) => output,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                self.surface.configure(&self.device, &self.config);
+                configure_surface(&self.surface, &self.device, &self.config)?;
                 self.surface
                     .get_current_texture()
-                    .map_err(|error| format!("WGPU surface recovery failed: {error}"))?
+                    .map_err(|error| format!("WGPU surface recovery failed after reconfiguration: {error}"))?
             }
             Err(wgpu::SurfaceError::Timeout) => {
                 log_dbg!("WGPU presentation skipped a timed-out surface frame");
@@ -283,7 +360,14 @@ impl WgpuPresentation {
             self.height = output.texture.height();
             self.config.width = self.width.max(1);
             self.config.height = self.height.max(1);
-            self.surface.configure(&self.device, &self.config);
+            log!(
+                "WGPU surface extent changed while acquiring a frame; recreating surface configuration at {}x{}",
+                self.config.width,
+                self.config.height
+            );
+            output.present();
+            configure_surface(&self.surface, &self.device, &self.config)?;
+            return Err("WGPU surface extent changed; retrying on the next frame".to_string());
         }
 
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
