@@ -240,6 +240,8 @@ struct AppPickerDelegateHostObject {
     scale_hack4: bool,
     custom_resolution: bool,
     custom_resolution_custom: bool,
+    custom_driver: Option<bool>,
+    custom_driver_folder: bool,
     custom_resolution_apply: bool,
     custom_resolution_cancel: bool,
     supported_resolution: Option<i32>,
@@ -352,6 +354,13 @@ const CLASSES: ClassExports = objc_classes! {
 }
 - (())customResolutionCustom {
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).custom_resolution_custom = true;
+}
+- (())customDriver:(id)switch {
+    let switch_state: bool = msg![env; switch isOn];
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).custom_driver = Some(switch_state);
+}
+- (())openCustomDriverFolder {
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).custom_driver_folder = true;
 }
 - (())customResolutionApply {
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).custom_resolution_apply = true;
@@ -858,6 +867,7 @@ fn app_picker_inner(
     let mut quick_options_llvmpipe_fallback = true;
     let mut quick_options_metal_translator = true;
     let mut quick_options_software_rendering = false;
+    let mut quick_options_custom_driver = false;
     let mut quick_options_anisotropic_filtering = 1u8;
     let mut quick_options_texture_upscaler = 1u8;
     let mut quick_options_anti_aliasing = 1u8;
@@ -1377,6 +1387,23 @@ fn app_picker_inner(
             quick_options_metal_translator = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.software_rendering) {
             quick_options_software_rendering = enabled;
+        } else if let Some(enabled) = std::mem::take(&mut host_obj.custom_driver) {
+            quick_options_custom_driver = enabled;
+            if enabled {
+                let drivers_dir = paths::user_data_base_path().join("touchHLE_custom_drivers");
+                if let Err(error) = std::fs::create_dir_all(&drivers_dir) {
+                    echo!("Couldn't create custom-driver folder: {}", error);
+                }
+            }
+        } else if std::mem::take(&mut host_obj.custom_driver_folder) {
+            match paths::url_for_opening_user_data_dir() {
+                Ok(url) => {
+                    if let Err(error) = crate::window::open_url(env, &url) {
+                        echo!("Couldn't open custom-driver folder: {}", error);
+                    }
+                }
+                Err(error) => echo!("Couldn't open custom-driver folder: {}", error),
+            }
         } else if let Some(value) = std::mem::take(&mut host_obj.anisotropic_filtering) {
             quick_options_anisotropic_filtering = value;
             update_quality_button_group(env, &quick_options_stuff.quality_buttons, 0, &[1, 2, 4, 8, 16], value);
@@ -1446,6 +1473,11 @@ fn app_picker_inner(
     if quick_options_software_rendering {
         option_args.push("--software-rendering".to_string());
     }
+    option_args.push(if quick_options_custom_driver {
+        "--custom-driver=touchHLE_custom_drivers".to_string()
+    } else {
+        "--disable-custom-driver".to_string()
+    });
     option_args.push(format!("--anisotropic-filtering={quick_options_anisotropic_filtering}"));
     option_args.push(format!("--texture-upscaler={quick_options_texture_upscaler}"));
     option_args.push(format!("--anti-aliasing={quick_options_anti_aliasing}"));
@@ -2444,6 +2476,10 @@ fn setup_quick_options(
         RowKind::IosVersionDropdown,
         RowKind::Label("Graphics API"),
         RowKind::GraphicsApiDropdown,
+        RowKind::Label("Custom driver"),
+        RowKind::Switch("customDriver:", false),
+        RowKind::Label("Custom driver files"),
+        RowKind::Buttons(&[("Open folder", "openCustomDriverFolder")]),
         RowKind::Label("Software rendering (CPU only)"),
         RowKind::Switch("softwareRendering:", false),
         RowKind::Label("Frame generation"),
