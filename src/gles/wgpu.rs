@@ -41,10 +41,11 @@ struct Vertex {
 
 pub struct WgpuPresentation {
     _instance: wgpu::Instance,
-    surface: wgpu::Surface<'static>,
+    surface: Option<wgpu::Surface<'static>>,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
+    config: Option<wgpu::SurfaceConfiguration>,
+    target_format: wgpu::TextureFormat,
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
@@ -55,6 +56,8 @@ pub struct WgpuPresentation {
     previous_height: u32,
     last_frame_at: Option<Instant>,
     previous_frame: Option<Vec<u8>>,
+    offscreen_input: Option<wgpu::Texture>,
+    offscreen_target: Option<wgpu::Texture>,
 }
 
 fn configure_surface(
@@ -74,21 +77,26 @@ fn configure_surface(
 
 impl WgpuPresentation {
     pub fn new(window: &sdl2::video::Window) -> Result<Self, String> {
-        let backends = if cfg!(target_os = "android") {
-            wgpu::Backends::GL
+        let (backends, use_surface) = if cfg!(target_os = "android") {
+            log!("WGPU Android presentation uses an offscreen Vulkan/GL target; SDL retains ownership of the Android EGL window");
+            (wgpu::Backends::VULKAN | wgpu::Backends::GL, false)
         } else {
-            wgpu::Backends::VULKAN
-                | wgpu::Backends::METAL
-                | wgpu::Backends::DX12
-                | wgpu::Backends::GL
+            (
+                wgpu::Backends::VULKAN
+                    | wgpu::Backends::METAL
+                    | wgpu::Backends::DX12
+                    | wgpu::Backends::GL,
+                true,
+            )
         };
-        log!("WGPU backend candidates: {:?}", backends);
-        Self::new_with_backends(window, backends)
+        log!("WGPU backend candidates: {:?}, native surface: {}", backends, use_surface);
+        Self::new_with_backends(window, backends, use_surface)
     }
 
     fn new_with_backends(
         window: &sdl2::video::Window,
         backends: wgpu::Backends,
+        use_surface: bool,
     ) -> Result<Self, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends,
@@ -96,23 +104,28 @@ impl WgpuPresentation {
             gles_minor_version: wgpu::Gles3MinorVersion::Automatic,
             flags: wgpu::InstanceFlags::default(),
         });
-        let target = unsafe {
-            wgpu::SurfaceTargetUnsafe::from_window(window)
-                .map_err(|error| format!("could not obtain SDL window handles: {error}"))?
-        };
-        let surface = unsafe {
-            instance
-                .create_surface_unsafe(target)
-                .map_err(|error| format!("could not create WGPU surface: {error}"))?
+        let surface = if use_surface {
+            let target = unsafe {
+                wgpu::SurfaceTargetUnsafe::from_window(window)
+                    .map_err(|error| format!("could not obtain SDL window handles: {error}"))?
+            };
+            Some(unsafe {
+                instance
+                    .create_surface_unsafe(target)
+                    .map_err(|error| format!("could not create WGPU surface: {error}"))?
+            })
+        } else {
+            log!("WGPU Android path is offscreen to avoid competing with SDL's EGL window surface");
+            None
         };
         let adapter = pollster::block_on(instance.request_adapter(
             &wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 force_fallback_adapter: false,
-                compatible_surface: Some(&surface),
+                compatible_surface: surface.as_ref(),
             },
         ))
-        .ok_or_else(|| "WGPU could not find an adapter for the SDL window".to_string())?;
+        .ok_or_else(|| "WGPU could not find an adapter for the requested path".to_string())?;
         let adapter_info = adapter.get_info();
         log!(
             "WGPU presentation adapter: name={:?}, backend={:?}, device={:?}, driver={:?}, driver_info={:?}",
@@ -144,77 +157,88 @@ impl WgpuPresentation {
         ))
         .map_err(|error| format!("could not create WGPU device with adapter-compatible limits: {error}"))?;
 
-        let capabilities = surface.get_capabilities(&adapter);
-        log!(
-            "WGPU surface capabilities: formats={:?}, present_modes={:?}, alpha_modes={:?}, usages={:?}",
-            capabilities.formats,
-            capabilities.present_modes,
-            capabilities.alpha_modes,
-            capabilities.usages
-        );
-        let format = capabilities
-            .formats
-            .iter()
-            .copied()
-            .find(|format| *format == wgpu::TextureFormat::Rgba8Unorm)
-            .or_else(|| capabilities.formats.first().copied())
-            .ok_or_else(|| "WGPU surface reported no supported formats".to_string())?;
-        if !capabilities
-            .usages
-            .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
-        {
-            return Err(format!(
-                "WGPU surface cannot be used as a render target; supported usages={:?}",
+        let (format, present_mode, alpha_mode) = if let Some(surface) = surface.as_ref() {
+            let capabilities = surface.get_capabilities(&adapter);
+            log!(
+                "WGPU surface capabilities: formats={:?}, present_modes={:?}, alpha_modes={:?}, usages={:?}",
+                capabilities.formats,
+                capabilities.present_modes,
+                capabilities.alpha_modes,
                 capabilities.usages
-            ));
-        }
+            );
+            let format = capabilities
+                .formats
+                .iter()
+                .copied()
+                .find(|format| *format == wgpu::TextureFormat::Rgba8Unorm)
+                .or_else(|| capabilities.formats.first().copied())
+                .ok_or_else(|| "WGPU surface reported no supported formats".to_string())?;
+            if !capabilities
+                .usages
+                .contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+            {
+                return Err(format!(
+                    "WGPU surface cannot be used as a render target; supported usages={:?}",
+                    capabilities.usages
+                ));
+            }
+            let present_mode = if capabilities.present_modes.contains(&wgpu::PresentMode::Fifo) {
+                wgpu::PresentMode::Fifo
+            } else {
+                *capabilities
+                    .present_modes
+                    .first()
+                    .ok_or_else(|| "WGPU surface reported no supported present modes".to_string())?
+            };
+            let alpha_mode = if capabilities
+                .alpha_modes
+                .contains(&wgpu::CompositeAlphaMode::Opaque)
+            {
+                wgpu::CompositeAlphaMode::Opaque
+            } else {
+                *capabilities
+                    .alpha_modes
+                    .first()
+                    .ok_or_else(|| "WGPU surface reported no supported alpha modes".to_string())?
+            };
+            (format, Some(present_mode), Some(alpha_mode))
+        } else {
+            (
+                wgpu::TextureFormat::Rgba8Unorm,
+                None,
+                None,
+            )
+        };
         let (width, height) = window.drawable_size();
         let width = width.max(1);
         let height = height.max(1);
-        let present_mode = if capabilities
-            .present_modes
-            .contains(&wgpu::PresentMode::Fifo)
-        {
-            wgpu::PresentMode::Fifo
+        let config = if let (Some(present_mode), Some(alpha_mode)) = (present_mode, alpha_mode) {
+            let config = wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                format,
+                width,
+                height,
+                present_mode,
+                alpha_mode,
+                view_formats: vec![],
+                desired_maximum_frame_latency: 2,
+            };
+            log!(
+                "WGPU configuring surface: backend={:?}, extent={}x{}, format={:?}, present_mode={:?}, alpha_mode={:?}, usage={:?}",
+                adapter_info.backend,
+                config.width,
+                config.height,
+                config.format,
+                config.present_mode,
+                config.alpha_mode,
+                config.usage
+            );
+            configure_surface(surface.as_ref().unwrap(), &device, &config)?;
+            log!("WGPU surface configured successfully");
+            Some(config)
         } else {
-            *capabilities
-                .present_modes
-                .first()
-                .ok_or_else(|| "WGPU surface reported no supported present modes".to_string())?
+            None
         };
-        let alpha_mode = if capabilities
-            .alpha_modes
-            .contains(&wgpu::CompositeAlphaMode::Opaque)
-        {
-            wgpu::CompositeAlphaMode::Opaque
-        } else {
-            *capabilities
-                .alpha_modes
-                .first()
-                .ok_or_else(|| "WGPU surface reported no supported alpha modes".to_string())?
-        };
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            width,
-            height,
-            present_mode,
-            alpha_mode,
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-        };
-        log!(
-            "WGPU configuring surface: backend={:?}, extent={}x{}, format={:?}, present_mode={:?}, alpha_mode={:?}, usage={:?}",
-            adapter_info.backend,
-            config.width,
-            config.height,
-            config.format,
-            config.present_mode,
-            config.alpha_mode,
-            config.usage
-        );
-        configure_surface(&surface, &device, &config)?;
-        log!("WGPU surface configured successfully");
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("RadekHLE WGPU frame presenter"),
@@ -317,6 +341,7 @@ impl WgpuPresentation {
             device,
             queue,
             config,
+            target_format: format,
             pipeline,
             bind_group_layout,
             sampler,
@@ -327,6 +352,8 @@ impl WgpuPresentation {
             previous_height: height,
             last_frame_at: Some(Instant::now()),
             previous_frame: None,
+            offscreen_input: None,
+            offscreen_target: None,
         })
     }
 
@@ -340,11 +367,17 @@ impl WgpuPresentation {
                 pixels.len()
             ));
         }
-        let output = match self.surface.get_current_texture() {
+        let Some(surface) = self.surface.as_ref() else {
+            return self.present_offscreen(pixels, width, height);
+        };
+        let output = match surface.get_current_texture() {
             Ok(output) => output,
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                configure_surface(&self.surface, &self.device, &self.config)?;
-                self.surface
+                let Some(config) = self.config.as_ref() else {
+                    return self.present_offscreen(pixels, width, height);
+                };
+                configure_surface(surface, &self.device, config)?;
+                surface
                     .get_current_texture()
                     .map_err(|error| format!("WGPU surface recovery failed after reconfiguration: {error}"))?
             }
@@ -359,15 +392,18 @@ impl WgpuPresentation {
         if self.width != output.texture.width() || self.height != output.texture.height() {
             self.width = output.texture.width();
             self.height = output.texture.height();
-            self.config.width = self.width.max(1);
-            self.config.height = self.height.max(1);
+            let Some(config) = self.config.as_mut() else {
+                return self.present_offscreen(pixels, width, height);
+            };
+            config.width = self.width.max(1);
+            config.height = self.height.max(1);
             log!(
                 "WGPU surface extent changed while acquiring a frame; recreating surface configuration at {}x{}",
-                self.config.width,
-                self.config.height
+                config.width,
+                config.height
             );
             output.present();
-            configure_surface(&self.surface, &self.device, &self.config)?;
+            configure_surface(surface, &self.device, config)?;
             return Err("WGPU surface extent changed; retrying on the next frame".to_string());
         }
 
@@ -448,6 +484,78 @@ impl WgpuPresentation {
         }
         self.queue.submit([encoder.finish()]);
         output.present();
+        Ok(())
+    }
+
+    fn present_offscreen(&mut self, pixels: &[u8], width: u32, height: u32) -> Result<(), String> {
+        let expected_len = width as usize * height as usize * 4;
+        let target_changed = self
+            .offscreen_target
+            .as_ref()
+            .map(|target| target.width() != width || target.height() != height)
+            .unwrap_or(true);
+        if target_changed {
+            let texture_desc = wgpu::TextureDescriptor {
+                label: Some("RadekHLE WGPU offscreen frame target"),
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.target_format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            };
+            self.offscreen_input = Some(self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("RadekHLE WGPU offscreen frame input"),
+                size: texture_desc.size,
+                mip_level_count: texture_desc.mip_level_count,
+                sample_count: texture_desc.sample_count,
+                dimension: texture_desc.dimension,
+                format: texture_desc.format,
+                usage: texture_desc.usage,
+                view_formats: texture_desc.view_formats,
+            }));
+            self.offscreen_target = Some(self.device.create_texture(&texture_desc));
+        }
+        let input = self.offscreen_input.as_ref().unwrap();
+        let target = self.offscreen_target.as_ref().unwrap();
+        self.queue.write_texture(
+            wgpu::ImageCopyTexture { texture: input, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            &pixels[..expected_len],
+            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(width * 4), rows_per_image: Some(height) },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        let input_view = input.create_view(&wgpu::TextureViewDescriptor::default());
+        let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("RadekHLE WGPU offscreen frame bindings"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&input_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            ],
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("RadekHLE WGPU offscreen frame encoder") });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("RadekHLE WGPU offscreen frame pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            pass.draw(0..6, 0..1);
+        }
+        self.queue.submit([encoder.finish()]);
+        self.device.poll(wgpu::Maintain::Wait);
+        log_dbg!("WGPU offscreen presentation completed at {}x{} without a native surface", width, height);
         Ok(())
     }
 

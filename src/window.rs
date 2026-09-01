@@ -1059,6 +1059,12 @@ pub fn host_screen_resolutions() -> Vec<(u32, u32)> {
     };
     let mode_count = video_ctx.num_display_modes(0).unwrap_or(0);
     let mut resolutions = Vec::new();
+    let mut add_resolution = |resolution: (u32, u32)| {
+        let resolution = normalize_portrait_size(resolution);
+        if resolution.0 >= 64 && resolution.1 >= 64 && !resolutions.contains(&resolution) {
+            resolutions.push(resolution);
+        }
+    };
     for mode_index in 0..mode_count {
         let Ok(mode) = video_ctx.display_mode(0, mode_index) else {
             continue;
@@ -1066,14 +1072,16 @@ pub fn host_screen_resolutions() -> Vec<(u32, u32)> {
         if mode.w <= 0 || mode.h <= 0 {
             continue;
         }
-        let resolution = normalize_portrait_size((mode.w as u32, mode.h as u32));
-        if !resolutions.contains(&resolution) {
-            resolutions.push(resolution);
-        }
+        add_resolution((mode.w as u32, mode.h as u32));
     }
-    if resolutions.is_empty() {
-        if let Some(size) = host_screen_size() {
-            resolutions.push(normalize_portrait_size(size));
+    if let Some(size) = host_screen_size() {
+        add_resolution(size);
+        add_resolution((size.0 / 2, size.1 / 2));
+    }
+    if let Some((width, height)) = resolutions.first().copied() {
+        let half = normalize_portrait_size((width / 2, height / 2));
+        if half.0 >= 64 && half.1 >= 64 && !resolutions.contains(&half) {
+            resolutions.push(half);
         }
     }
     resolutions.sort_unstable_by_key(|(width, height)| (*width as u64) * (*height as u64));

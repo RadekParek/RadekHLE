@@ -47,6 +47,18 @@ fn trace_potatogold_render() -> bool {
     std::env::var_os("TOUCHHLE_TRACE_POTATOGOLD_RENDER").is_some()
 }
 
+fn gl_error_name(err: GLenum) -> &'static str {
+    match err {
+        gles11::INVALID_ENUM => "GL_INVALID_ENUM",
+        gles11::INVALID_VALUE => "GL_INVALID_VALUE",
+        gles11::INVALID_OPERATION => "GL_INVALID_OPERATION",
+        gles11::STACK_OVERFLOW => "GL_STACK_OVERFLOW",
+        gles11::STACK_UNDERFLOW => "GL_STACK_UNDERFLOW",
+        gles11::OUT_OF_MEMORY => "GL_OUT_OF_MEMORY",
+        _ => "unknown GL error",
+    }
+}
+
 fn trace_gl_error(trace: bool, err: GLenum, caller: &'static std::panic::Location<'static>) {
     if !trace || err == 0 {
         return;
@@ -60,8 +72,9 @@ fn trace_gl_error(trace: bool, err: GLenum, caller: &'static std::panic::Locatio
         .unwrap_or(true);
     if first {
         log!(
-            "[--trace-gl-errors] glGetError() = {:#x} after host GLES call dispatched from {}:{} [repeated errors suppressed]",
+            "[--trace-gl-errors] glGetError() = {:#x} ({}) after host GLES call dispatched from {}:{} [repeated errors suppressed]",
             err,
+            gl_error_name(err),
             caller.file(),
             caller.line()
         );
