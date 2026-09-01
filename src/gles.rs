@@ -136,7 +136,18 @@ pub fn configure_custom_driver(path: Option<&std::path::Path>) -> bool {
     } else {
         crate::paths::user_data_base_path().join(path)
     };
-    let driver_dir =     if requested.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("zip")) {
+    let requested = if requested.is_dir() {
+        if let Some(archive) = find_driver_archive(&requested) {
+            log!("Custom driver archive selected: {}", archive.display());
+            archive
+        } else {
+            log!("Custom driver directory contains no ZIP archive: {}", requested.display());
+            return false;
+        }
+    } else {
+        requested
+    };
+    let driver_dir = if requested.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("zip")) {
         match extract_custom_driver_archive(&requested) {
 
             Ok(directory) => directory,
@@ -176,6 +187,22 @@ pub fn configure_custom_driver(path: Option<&std::path::Path>) -> bool {
     sdl2::hint::set("SDL_OPENGL_ES_DRIVER", "1");
     log!("Custom driver active: EGL={}, GLES={}, source={}", egl.display(), gles.display(), requested.display());
     true
+}
+
+fn find_driver_archive(directory: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut archives: Vec<_> = std::fs::read_dir(directory)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("zip"))
+        })
+        .collect();
+    archives.sort();
+    archives.into_iter().next()
 }
 
 fn find_driver_library(directory: &std::path::Path, names: &[&str]) -> Option<std::path::PathBuf> {

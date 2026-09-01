@@ -1396,13 +1396,13 @@ fn app_picker_inner(
                 }
             }
         } else if std::mem::take(&mut host_obj.custom_driver_folder) {
-            match paths::url_for_opening_user_data_dir() {
+            match paths::url_for_opening_custom_driver() {
                 Ok(url) => {
                     if let Err(error) = crate::window::open_url(env, &url) {
-                        echo!("Couldn't open custom-driver folder: {}", error);
+                        echo!("Couldn't open custom-driver files: {}", error);
                     }
                 }
-                Err(error) => echo!("Couldn't open custom-driver folder: {}", error),
+                Err(error) => echo!("Couldn't open custom-driver files: {}", error),
             }
         } else if let Some(value) = std::mem::take(&mut host_obj.anisotropic_filtering) {
             quick_options_anisotropic_filtering = value;
@@ -2479,7 +2479,7 @@ fn setup_quick_options(
         RowKind::Label("Custom driver"),
         RowKind::Switch("customDriver:", false),
         RowKind::Label("Custom driver files"),
-        RowKind::Buttons(&[("Open folder", "openCustomDriverFolder")]),
+        RowKind::Buttons(&[("Select ZIP file", "openCustomDriverFolder")]),
         RowKind::Label("Software rendering (CPU only)"),
         RowKind::Switch("softwareRendering:", false),
         RowKind::Label("Frame generation"),

@@ -4,6 +4,7 @@ import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
 import android.provider.DocumentsContract;
+import android.provider.OpenableColumns;
 import android.util.Log;
 
 import org.libsdl.app.SDLActivity;
@@ -16,6 +17,7 @@ import java.io.OutputStream;
 public class MainActivity extends SDLActivity {
     private static final String TAG = "RadekHLE";
     private static final int GAME_FOLDER_REQUEST = 4711;
+    private static final int CUSTOM_DRIVER_REQUEST = 4712;
 
     @Override
     protected String[] getLibraries() {
@@ -27,6 +29,10 @@ public class MainActivity extends SDLActivity {
 
     private static File gameFolderTarget() {
         return new File(getContext().getExternalFilesDir(null), "touchHLE_apps");
+    }
+
+    private static File customDriverTarget() {
+        return new File(getContext().getExternalFilesDir(null), "touchHLE_custom_drivers");
     }
 
     private static void importSelectedFolder(Uri treeUri) {
@@ -118,10 +124,70 @@ public class MainActivity extends SDLActivity {
         }
     }
 
+    private static void importSelectedCustomDriver(Uri uri) {
+        new Thread(() -> {
+            File target = customDriverTarget();
+            if (!target.exists() && !target.mkdirs()) {
+                Log.e(TAG, "Couldn't create custom-driver folder: " + target);
+                return;
+            }
+            String name = selectedDocumentName(uri);
+            if (name == null || !name.toLowerCase().endsWith(".zip")) {
+                Log.e(TAG, "Selected custom driver is not a ZIP file: " + name);
+                return;
+            }
+            File destination = new File(target, name);
+            if (copyDocumentUri(uri, destination)) {
+                Log.i(TAG, "Imported custom driver ZIP: " + name);
+            }
+        }, "RadekHLE-custom-driver-import").start();
+    }
+
+    private static String selectedDocumentName(Uri uri) {
+        try (Cursor cursor = getContext().getContentResolver().query(uri,
+                new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) return cursor.getString(0);
+        } catch (Exception ex) {
+            Log.e(TAG, "Couldn't read selected custom driver name", ex);
+        }
+        return null;
+    }
+
+    private static boolean copyDocumentUri(Uri uri, File destination) {
+        File temporary = new File(destination.getPath() + ".radekhle-part");
+        try (InputStream input = getContext().getContentResolver().openInputStream(uri)) {
+            if (input == null) return false;
+            if (temporary.exists() && !temporary.delete()) return false;
+            try (OutputStream output = new FileOutputStream(temporary)) {
+                byte[] buffer = new byte[1024 * 1024];
+                int count;
+                while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+            }
+            if (destination.exists() && !destination.delete()) {
+                temporary.delete();
+                return false;
+            }
+            if (!temporary.renameTo(destination)) {
+                temporary.delete();
+                return false;
+            }
+            return true;
+        } catch (Exception ex) {
+            temporary.delete();
+            Log.e(TAG, "Couldn't copy selected custom driver: " + destination, ex);
+            return false;
+        }
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != GAME_FOLDER_REQUEST || resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        if (requestCode == CUSTOM_DRIVER_REQUEST) {
+            importSelectedCustomDriver(data.getData());
+            return;
+        }
+        if (requestCode != GAME_FOLDER_REQUEST) return;
         Uri treeUri = data.getData();
         try {
             getContentResolver().takePersistableUriPermission(treeUri,
@@ -141,6 +207,15 @@ public class MainActivity extends SDLActivity {
                     | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
                     | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
                 mSingleton.startActivityForResult(picker, GAME_FOLDER_REQUEST);
+                return 0;
+            }
+            if ("touchhle".equalsIgnoreCase(uri.getScheme()) && "custom-driver".equalsIgnoreCase(uri.getHost())) {
+                Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                picker.setType("application/zip");
+                picker.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/zip", "application/x-zip-compressed"});
+                picker.addCategory(Intent.CATEGORY_OPENABLE);
+                picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                mSingleton.startActivityForResult(picker, CUSTOM_DRIVER_REQUEST);
                 return 0;
             }
             return SDLActivity.openURL(url);

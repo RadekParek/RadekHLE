@@ -183,6 +183,21 @@ pub fn url_for_opening_user_data_dir() -> Result<String, String> {
     }
 }
 
+pub fn url_for_opening_custom_driver() -> Result<String, String> {
+    if std::env::consts::OS == "android" {
+        Ok("touchhle://custom-driver".to_string())
+    } else {
+        let path = user_data_base_path()
+            .join("touchHLE_custom_drivers")
+            .canonicalize()
+            .map_err(|e| format!("Can't canonicalize custom-driver directory: {e}"))?;
+        let path = path
+            .to_str()
+            .ok_or_else(|| "Custom-driver directory path is not UTF-8".to_string())?;
+        Ok(format!("file://{path}"))
+    }
+}
+
 pub fn url_for_opening_apps_dir() -> Result<String, String> {
     let apps_dir = user_data_base_path().join(APPS_DIR);
     if std::env::consts::OS == "android" {
