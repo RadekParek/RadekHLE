@@ -1404,6 +1404,7 @@ impl Window {
             log!("WGPU selected as the host presentation backend; guest EAGL remains on the existing GLES2 compatibility path");
             match WgpuPresentation::new(&window.window) {
                 Ok(presentation) => {
+                    log!("WGPU presentation initialized successfully");
                     window.wgpu_presentation = Some(presentation);
                 }
                 Err(error) => {

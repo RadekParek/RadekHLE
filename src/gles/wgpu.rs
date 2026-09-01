@@ -74,21 +74,16 @@ fn configure_surface(
 
 impl WgpuPresentation {
     pub fn new(window: &sdl2::video::Window) -> Result<Self, String> {
-        #[cfg(target_os = "android")]
-        {
-            let _ = window;
-            log!("WGPU presentation disabled on Android SDL GLES windows: Vulkan cannot take ownership of the native window while SDL's guest GLES context is active; using the GLES2 compatibility presenter instead");
-            return Err("WGPU presentation is incompatible with the Android SDL GLES window ownership model".to_string());
-        }
-        #[cfg(not(target_os = "android"))]
-        {
-            let backends = wgpu::Backends::VULKAN
+        let backends = if cfg!(target_os = "android") {
+            wgpu::Backends::GL
+        } else {
+            wgpu::Backends::VULKAN
                 | wgpu::Backends::METAL
                 | wgpu::Backends::DX12
-                | wgpu::Backends::GL;
-            log!("WGPU backend candidates: {:?}", backends);
-            Self::new_with_backends(window, backends)
-        }
+                | wgpu::Backends::GL
+        };
+        log!("WGPU backend candidates: {:?}", backends);
+        Self::new_with_backends(window, backends)
     }
 
     fn new_with_backends(
