@@ -90,15 +90,26 @@ impl WgpuPresentation {
             adapter_info.driver
         );
         log!("WGPU presentation path is active; frames will be uploaded through the selected WGPU adapter");
+        let adapter_limits = adapter.limits();
+        log!(
+            "WGPU adapter limits: max_storage_buffers_per_shader_stage={}, max_texture_dimension_2d={}, max_bind_groups={}, max_sampled_textures_per_shader_stage={}",
+            adapter_limits.max_storage_buffers_per_shader_stage,
+            adapter_limits.max_texture_dimension_2d,
+            adapter_limits.max_bind_groups,
+            adapter_limits.max_sampled_textures_per_shader_stage
+        );
+        let required_limits = wgpu::Limits::downlevel_defaults()
+            .using_resolution(adapter_limits)
+            .using_alignment(adapter_limits);
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("RadekHLE WGPU presentation device"),
                 required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::default(),
+                required_limits,
             },
             None,
         ))
-        .map_err(|error| format!("could not create WGPU device: {error}"))?;
+        .map_err(|error| format!("could not create WGPU device with adapter-compatible limits: {error}"))?;
 
         let capabilities = surface.get_capabilities(&adapter);
         let format = capabilities

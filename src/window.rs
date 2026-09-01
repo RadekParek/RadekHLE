@@ -1402,10 +1402,14 @@ impl Window {
 
         if matches!(options.graphics_api, crate::options::GraphicsApi::Wgpu) {
             log!("WGPU selected as the host presentation backend; guest EAGL remains on the existing GLES2 compatibility path");
-            window.wgpu_presentation = Some(
-                WgpuPresentation::new(&window.window)
-                    .expect("Could not create WGPU presentation backend"),
-            );
+            match WgpuPresentation::new(&window.window) {
+                Ok(presentation) => {
+                    window.wgpu_presentation = Some(presentation);
+                }
+                Err(error) => {
+                    log!("WGPU presentation unavailable; continuing with the GLES presentation path: {error}");
+                }
+            }
         }
 
         let mut gl_ins = match options.graphics_api {
