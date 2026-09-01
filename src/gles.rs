@@ -125,6 +125,100 @@ pub fn llvmpipe_fallback_available() -> bool {
 pub fn configure_llvmpipe_fallback(enabled: bool) -> bool {
     software::configure(enabled)
 }
+/// Configure a user-supplied EGL/GLES driver before SDL creates its window.
+/// ZIP files are extracted into the emulator data directory and reused there.
+pub fn configure_custom_driver(path: Option<&std::path::Path>) -> bool {
+    let Some(path) = path else {
+        return false;
+    };
+    let requested = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        crate::paths::user_data_base_path().join(path)
+    };
+    let driver_dir =     if requested.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("zip")) {
+        match extract_custom_driver_archive(&requested) {
+
+            Ok(directory) => directory,
+            Err(error) => {
+                log!("Custom driver archive could not be prepared: {}", error);
+                return false;
+            }
+        }
+    } else if requested.is_dir() {
+        requested.clone()
+    } else if requested.is_file() {
+        requested.parent().unwrap_or_else(|| std::path::Path::new(".")).to_path_buf()
+    } else {
+        log!("Custom driver path does not exist: {}", requested.display());
+        return false;
+    };
+    let (egl, gles) = if requested.is_file() && requested.extension().is_none() {
+        (requested.clone(), requested.clone())
+    } else if requested.is_file() && requested.extension().is_some_and(|extension| {
+        ["so", "dylib", "dll"].iter().any(|name| extension.eq_ignore_ascii_case(name))
+    }) {
+        log!("Custom driver file {} selected; SDL will use it as the GLES library and retain the directory for EGL lookup", requested.display());
+        (requested.clone(), requested.clone())
+    } else {
+        let egl = find_driver_library(&driver_dir, &["libEGL.so", "libEGL.so.1", "libEGL.dylib", "libEGL.dll"]);
+        let gles = find_driver_library(&driver_dir, &["libGLESv2.so", "libGLESv2.so.2", "libGLESv2.dylib", "libGLESv2.dll"]);
+        let (Some(egl), Some(gles)) = (egl, gles) else {
+            log!("Custom driver requested at {} but both EGL and GLESv2 libraries were not found under {}", requested.display(), driver_dir.display());
+            return false;
+        };
+        (egl, gles)
+    };
+    unsafe {
+        std::env::set_var("SDL_VIDEO_EGL_DRIVER", &egl);
+        std::env::set_var("SDL_VIDEO_GL_DRIVER", &gles);
+    }
+    sdl2::hint::set("SDL_OPENGL_ES_DRIVER", "1");
+    log!("Custom driver active: EGL={}, GLES={}, source={}", egl.display(), gles.display(), requested.display());
+    true
+}
+
+fn find_driver_library(directory: &std::path::Path, names: &[&str]) -> Option<std::path::PathBuf> {
+    let entries = std::fs::read_dir(directory).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() && path.file_name().and_then(|name| name.to_str()).is_some_and(|name| names.iter().any(|candidate| name.eq_ignore_ascii_case(candidate))) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn extract_custom_driver_archive(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    use std::io::Read;
+    if !path.is_file() {
+        return Err(format!("archive does not exist: {}", path.display()));
+    }
+    let archive_file = std::fs::File::open(path).map_err(|error| format!("could not open {}: {}", path.display(), error))?;
+    let mut archive = zip::ZipArchive::new(archive_file).map_err(|error| format!("invalid ZIP archive: {}", error))?;
+    let stem = path.file_stem().and_then(|name| name.to_str()).unwrap_or("custom-driver");
+    let safe_stem: String = stem.chars().map(|character| if character.is_ascii_alphanumeric() || character == '-' || character == '_' { character } else { '_' }).collect();
+    let output = crate::paths::user_data_base_path().join("touchHLE_custom_drivers").join(safe_stem);
+    std::fs::create_dir_all(&output).map_err(|error| format!("could not create {}: {}", output.display(), error))?;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|error| format!("could not read ZIP entry {}: {}", index, error))?;
+        let Some(enclosed) = entry.enclosed_name().map(|name| output.join(name)) else {
+            return Err(format!("unsafe ZIP entry at index {}", index));
+        };
+        if entry.is_dir() {
+            std::fs::create_dir_all(&enclosed).map_err(|error| format!("could not create {}: {}", enclosed.display(), error))?;
+            continue;
+        }
+        if let Some(parent) = enclosed.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| format!("could not create {}: {}", parent.display(), error))?;
+        }
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).map_err(|error| format!("could not extract {}: {}", entry.name(), error))?;
+        std::fs::write(&enclosed, bytes).map_err(|error| format!("could not write {}: {}", enclosed.display(), error))?;
+    }
+    log!("Custom driver archive extracted to {}", output.display());
+    Ok(output)
+}
 
 pub fn configure_angle_driver(enabled: bool) {
     if !enabled {

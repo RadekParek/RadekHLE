@@ -1196,8 +1196,9 @@ impl Window {
         launch_image: Option<(Image, bool)>,
         options: &Options,
     ) -> Window {
-        crate::gles::configure_angle_driver(options.angle_driver);
-        let llvmpipe_active = crate::gles::configure_llvmpipe_fallback(options.llvmpipe_fallback);
+        let custom_driver_active = crate::gles::configure_custom_driver(options.custom_driver.as_deref());
+        crate::gles::configure_angle_driver(options.angle_driver && !custom_driver_active);
+        let llvmpipe_active = crate::gles::configure_llvmpipe_fallback(options.llvmpipe_fallback && !custom_driver_active);
         let software_presentation = options.software_rendering || options.software_presentation;
         let frame_generation = options.frame_generation;
         if frame_generation && !software_presentation {

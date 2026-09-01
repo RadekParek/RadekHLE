@@ -109,11 +109,23 @@ impl WgpuPresentation {
                 wgpu::SurfaceTargetUnsafe::from_window(window)
                     .map_err(|error| format!("could not obtain SDL window handles: {error}"))?
             };
-            Some(unsafe {
-                instance
-                    .create_surface_unsafe(target)
-                    .map_err(|error| format!("could not create WGPU surface: {error}"))?
-            })
+            let result = catch_unwind(AssertUnwindSafe(|| unsafe {
+                instance.create_surface_unsafe(target)
+            }));
+            match result {
+                Ok(Ok(surface)) => Some(surface),
+                Ok(Err(error)) => {
+                    return Err(format!("could not create WGPU surface: {error}"));
+                }
+                Err(payload) => {
+                    let message = payload
+                        .downcast_ref::<&str>()
+                        .copied()
+                        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                        .unwrap_or("unknown panic payload");
+                    return Err(format!("WGPU surface creation panicked: {message}"));
+                }
+            }
         } else {
             log!("WGPU Android path is offscreen to avoid competing with SDL's EGL window surface");
             None
@@ -144,9 +156,7 @@ impl WgpuPresentation {
             adapter_limits.max_bind_groups,
             adapter_limits.max_sampled_textures_per_shader_stage
         );
-        let required_limits = wgpu::Limits::downlevel_defaults()
-            .using_resolution(adapter_limits.clone())
-            .using_alignment(adapter_limits);
+        let required_limits = wgpu::Limits::downlevel_defaults();
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("RadekHLE WGPU presentation device"),
@@ -233,8 +243,21 @@ impl WgpuPresentation {
                 config.alpha_mode,
                 config.usage
             );
-            configure_surface(surface.as_ref().unwrap(), &device, &config)?;
-            log!("WGPU surface configured successfully");
+            let configured = catch_unwind(AssertUnwindSafe(|| {
+                configure_surface(surface.as_ref().unwrap(), &device, &config)
+            }));
+            match configured {
+                Ok(Ok(())) => log!("WGPU surface configured successfully"),
+                Ok(Err(error)) => return Err(error),
+                Err(payload) => {
+                    let message = payload
+                        .downcast_ref::<&str>()
+                        .copied()
+                        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                        .unwrap_or("unknown panic payload");
+                    return Err(format!("WGPU surface configuration panicked: {message}"));
+                }
+            }
             Some(config)
         } else {
             None

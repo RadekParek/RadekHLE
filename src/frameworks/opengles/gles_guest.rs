@@ -288,6 +288,9 @@ fn glGetFloatv(env: &mut Environment, pname: GLenum, params: MutPtr<GLfloat>) {
     if params.is_null() {
         return;
     }
+    if pname == gles11::COLOR_CLEAR_VALUE || pname == gles11::CURRENT_COLOR {
+        log_dbg!("GL query glGetFloatv(pname={pname:#x}) is handled by the active backend");
+    }
     if env
         .framework_state
         .opengles

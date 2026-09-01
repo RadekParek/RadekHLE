@@ -240,6 +240,7 @@ pub struct Options {
     pub texture_upscaler: u8,
     pub anti_aliasing: u8,
     pub software_presentation: bool,
+    pub custom_driver: Option<PathBuf>,
     pub zero_stack_after_guest_to_host_call: Option<u32>,
 }
 
@@ -298,6 +299,7 @@ impl Default for Options {
             texture_upscaler: 1,
             anti_aliasing: 1,
             software_presentation: false,
+            custom_driver: None,
             zero_stack_after_guest_to_host_call: None,
         }
     }
@@ -498,6 +500,15 @@ impl Options {
         } else if arg == "--disable-software-rendering" {
             self.software_rendering = false;
             self.software_presentation = false;
+        } else if let Some(value) = arg.strip_prefix("--custom-driver=") {
+            let value = value.trim();
+            if value.is_empty() || value.eq_ignore_ascii_case("off") || value.eq_ignore_ascii_case("none") {
+                self.custom_driver = None;
+            } else {
+                self.custom_driver = Some(PathBuf::from(value));
+            }
+        } else if arg == "--disable-custom-driver" {
+            self.custom_driver = None;
         } else if let Some(value) = arg.strip_prefix("--anisotropic-filtering=") {
             self.anisotropic_filtering = parse_quality(value, "--anisotropic-filtering=", &[1, 2, 4, 8, 16])?;
         } else if let Some(value) = arg.strip_prefix("--texture-upscaler=") {
