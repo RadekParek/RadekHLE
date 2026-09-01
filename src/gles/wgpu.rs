@@ -99,7 +99,7 @@ impl WgpuPresentation {
             adapter_limits.max_sampled_textures_per_shader_stage
         );
         let required_limits = wgpu::Limits::downlevel_defaults()
-            .using_resolution(adapter_limits)
+            .using_resolution(adapter_limits.clone())
             .using_alignment(adapter_limits);
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
