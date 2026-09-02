@@ -12,6 +12,7 @@ use crate::gles::{gles11_raw as gles11, GLES};
 use crate::mem::{ConstPtr, ConstVoidPtr, GuestISize, GuestUSize, Mem, MutPtr, MutVoidPtr, Ptr};
 use crate::objc::nil;
 use crate::Environment;
+use std::fmt::Write as FmtWrite;
 use std::slice::from_raw_parts;
 use touchHLE_gl_bindings::gles11::{
     ARRAY_BUFFER, ELEMENT_ARRAY_BUFFER, ELEMENT_ARRAY_BUFFER_BINDING, WRITE_ONLY_OES,
@@ -62,17 +63,15 @@ fn gl_error_name(err: GLenum) -> &'static str {
 fn gl_enum_name(value: GLenum) -> &'static str {
     match value {
         gles11::NO_ERROR => "GL_NO_ERROR",
-        1 => "GL_TRUE",
+        gles11::INVALID_ENUM => "GL_INVALID_ENUM",
+        gles11::INVALID_VALUE => "GL_INVALID_VALUE",
+        gles11::INVALID_OPERATION => "GL_INVALID_OPERATION",
         gles11::TEXTURE_2D => "GL_TEXTURE_2D",
         0x8513 => "GL_TEXTURE_CUBE_MAP",
         gles11::TEXTURE_MIN_FILTER => "GL_TEXTURE_MIN_FILTER",
         gles11::TEXTURE_MAG_FILTER => "GL_TEXTURE_MAG_FILTER",
         gles11::NEAREST => "GL_NEAREST",
         gles11::LINEAR => "GL_LINEAR",
-        gles11::NEAREST_MIPMAP_NEAREST => "GL_NEAREST_MIPMAP_NEAREST",
-        gles11::NEAREST_MIPMAP_LINEAR => "GL_NEAREST_MIPMAP_LINEAR",
-        gles11::LINEAR_MIPMAP_NEAREST => "GL_LINEAR_MIPMAP_NEAREST",
-        gles11::LINEAR_MIPMAP_LINEAR => "GL_LINEAR_MIPMAP_LINEAR",
         gles11::RGBA => "GL_RGBA",
         gles11::RGB => "GL_RGB",
         gles11::UNSIGNED_BYTE => "GL_UNSIGNED_BYTE",
@@ -103,6 +102,45 @@ fn gl_enum_name(value: GLenum) -> &'static str {
         gles11::VERSION => "GL_VERSION",
         gles11::EXTENSIONS => "GL_EXTENSIONS",
         _ => "UNKNOWN_GL_ENUM",
+    }
+}
+
+fn format_gles_enum(value: GLenum) -> String {
+    format!("0x{value:x} ({})", gl_enum_name(value))
+}
+
+fn gl_call_parameters(parameters: &[(&str, String)]) -> String {
+    let mut result = String::new();
+    for (index, (name, value)) in parameters.iter().enumerate() {
+        if index > 0 {
+            result.push_str(", ");
+        }
+        let _ = write!(result, "{name}={value}");
+    }
+    result
+}
+
+fn log_gl_call(
+    name: &str,
+    parameters: String,
+    gles: &mut dyn GLES,
+    call: impl FnOnce(&mut dyn GLES),
+) {
+    if std::env::var_os("TOUCHHLE_TRACE_GL_CALLS").is_none() {
+        call(gles);
+        return;
+    }
+    log!("[GLES CALL] {name}({parameters})");
+    log_gpu_state(gles, "before-call");
+    call(gles);
+    let error = unsafe { gles.GetError() };
+    log!(
+        "[GLES RESULT] {name} error=0x{:x} ({})",
+        error,
+        gl_error_name(error)
+    );
+    if error != gles11::NO_ERROR {
+        log_gpu_state(gles, "after-call-error");
     }
 }
 
@@ -2852,10 +2890,27 @@ fn read_guest_cstring(mem: &Mem, ptr: ConstPtr<GLubyte>) -> std::ffi::CString {
 }
 
 fn glCreateProgram(env: &mut Environment) -> GLuint {
-    with_ctx_and_mem(env, |gles, _mem| unsafe { gles.CreateProgram() })
+    with_ctx_and_mem(env, |gles, _mem| {
+        let mut result = 0;
+        log_gl_call("glCreateProgram", String::new(), gles, |gles| unsafe {
+            result = gles.CreateProgram();
+        });
+        result
+    })
 }
 fn glCreateShader(env: &mut Environment, type_: GLenum) -> GLuint {
-    with_ctx_and_mem(env, |gles, _mem| unsafe { gles.CreateShader(type_) })
+    with_ctx_and_mem(env, |gles, _mem| {
+        let mut result = 0;
+        log_gl_call(
+            "glCreateShader",
+            gl_call_parameters(&[("type", format_gles_enum(type_))]),
+            gles,
+            |gles| unsafe {
+                result = gles.CreateShader(type_);
+            },
+        );
+        result
+    })
 }
 fn glBindAttribLocation(
     env: &mut Environment,
@@ -2920,7 +2975,14 @@ fn glUniformMatrix4fv(
     });
 }
 fn glUseProgram(env: &mut Environment, program: GLuint) {
-    with_ctx_and_mem(env, |gles, _mem| unsafe { gles.UseProgram(program) });
+    with_ctx_and_mem(env, |gles, _mem| {
+        log_gl_call(
+            "glUseProgram",
+            gl_call_parameters(&[("program", program.to_string())]),
+            gles,
+            |gles| unsafe { gles.UseProgram(program) },
+        );
+    });
 }
 fn glDeleteProgram(env: &mut Environment, program: GLuint) {
     with_ctx_and_mem(env, |gles, _mem| unsafe { gles.DeleteProgram(program) });
@@ -2930,7 +2992,12 @@ fn glDeleteShader(env: &mut Environment, shader: GLuint) {
 }
 fn glCompileShader(env: &mut Environment, shader: GLuint) {
     with_ctx_and_mem(env, |gles, _mem| unsafe {
-        gles.CompileShader(shader);
+        log_gl_call(
+            "glCompileShader",
+            gl_call_parameters(&[("shader", shader.to_string())]),
+            gles,
+            |gles| gles.CompileShader(shader),
+        );
         let mut ok: GLint = 0;
         gles.GetShaderiv(shader, 0x8B81 /* GL_COMPILE_STATUS */, &mut ok);
         if ok == 0 {
@@ -2988,7 +3055,12 @@ fn glDetachShader(env: &mut Environment, program: GLuint, shader: GLuint) {
 }
 fn glLinkProgram(env: &mut Environment, program: GLuint) {
     with_ctx_and_mem(env, |gles, _mem| unsafe {
-        gles.LinkProgram(program);
+        log_gl_call(
+            "glLinkProgram",
+            gl_call_parameters(&[("program", program.to_string())]),
+            gles,
+            |gles| gles.LinkProgram(program),
+        );
         let mut ok: GLint = 0;
         gles.GetProgramiv(program, 0x8B82 /* GL_LINK_STATUS */, &mut ok);
         if ok == 0 {
