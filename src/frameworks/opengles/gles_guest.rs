@@ -2117,6 +2117,7 @@ fn glTexImage2D(
     type_: GLenum,
     pixels: ConstVoidPtr,
 ) {
+    log!("[GLES] glTexImage2D called with format=0x{:x}, type=0x{:x}", format, type_);
     {
         use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
         static SEEN: AtomicBool = AtomicBool::new(false);
@@ -2897,6 +2898,7 @@ fn read_guest_cstring(mem: &Mem, ptr: ConstPtr<GLubyte>) -> std::ffi::CString {
 }
 
 fn glCreateProgram(env: &mut Environment) -> GLuint {
+    log!("[GLES] glCreateProgram called");
     with_ctx_and_mem(env, |gles, _mem| {
         let mut result = 0;
         log_gl_call("glCreateProgram", String::new(), gles, |gles| unsafe {
@@ -2906,6 +2908,7 @@ fn glCreateProgram(env: &mut Environment) -> GLuint {
     })
 }
 fn glCreateShader(env: &mut Environment, type_: GLenum) -> GLuint {
+    log!("[GLES] glCreateShader called with type=0x{:x}", type_);
     with_ctx_and_mem(env, |gles, _mem| {
         let mut result = 0;
         log_gl_call(
@@ -2982,6 +2985,7 @@ fn glUniformMatrix4fv(
     });
 }
 fn glUseProgram(env: &mut Environment, program: GLuint) {
+    log!("[GLES] glUseProgram called with program={}", program);
     with_ctx_and_mem(env, |gles, _mem| {
         log_gl_call(
             "glUseProgram",
@@ -2998,6 +3002,7 @@ fn glDeleteShader(env: &mut Environment, shader: GLuint) {
     with_ctx_and_mem(env, |gles, _mem| unsafe { gles.DeleteShader(shader) });
 }
 fn glCompileShader(env: &mut Environment, shader: GLuint) {
+    log!("[GLES] glCompileShader called with shader={}", shader);
     with_ctx_and_mem(env, |gles, _mem| unsafe {
         log_gl_call(
             "glCompileShader",
@@ -3051,6 +3056,7 @@ fn glGetShaderPrecisionFormat(
     });
 }
 fn glAttachShader(env: &mut Environment, program: GLuint, shader: GLuint) {
+    log!("[GLES] glAttachShader called with program={}, shader={}", program, shader);
     with_ctx_and_mem(env, |gles, _mem| unsafe {
         gles.AttachShader(program, shader)
     });
@@ -3061,6 +3067,7 @@ fn glDetachShader(env: &mut Environment, program: GLuint, shader: GLuint) {
     });
 }
 fn glLinkProgram(env: &mut Environment, program: GLuint) {
+    log!("[GLES] glLinkProgram called with program={}", program);
     with_ctx_and_mem(env, |gles, _mem| unsafe {
         log_gl_call(
             "glLinkProgram",
@@ -3093,6 +3100,7 @@ fn glIsProgram(env: &mut Environment, program: GLuint) -> GLboolean {
     with_ctx_and_mem(env, |gles, _mem| unsafe { gles.IsProgram(program) })
 }
 fn glGetShaderiv(env: &mut Environment, shader: GLuint, pname: GLenum, params: MutPtr<GLint>) {
+    log!("[GLES] glGetShaderiv called with shader={}, pname=0x{:x}", shader, pname);
     with_ctx_and_mem(env, |gles, mem| unsafe {
         let mut val: GLint = 0;
         gles.GetShaderiv(shader, pname, &mut val);
@@ -3167,6 +3175,7 @@ fn glGetShaderInfoLog(
     });
 }
 fn glGetProgramiv(env: &mut Environment, program: GLuint, pname: GLenum, params: MutPtr<GLint>) {
+    log!("[GLES] glGetProgramiv called with program={}, pname=0x{:x}", program, pname);
     with_ctx_and_mem(env, |gles, mem| unsafe {
         let mut val: GLint = 0;
         gles.GetProgramiv(program, pname, &mut val);
