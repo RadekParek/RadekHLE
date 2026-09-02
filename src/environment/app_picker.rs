@@ -278,6 +278,7 @@ struct AppPickerDelegateHostObject {
     software_rendering: Option<bool>,
     anisotropic_filtering: Option<u8>,
     texture_upscaler: Option<u8>,
+    no_texture_compression: Option<bool>,
     anti_aliasing: Option<u8>,
 }
 impl HostObject for AppPickerDelegateHostObject {}
@@ -498,6 +499,10 @@ const CLASSES: ClassExports = objc_classes! {
 - (())textureUpscaler:(id)sender {
     let tag: NSInteger = msg![env; sender tag];
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).texture_upscaler = Some(tag as u8);
+}
+- (())noTextureCompression:(id)switch {
+    let switch_state: bool = msg![env; switch isOn];
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).no_texture_compression = Some(switch_state);
 }
 - (())antiAliasing:(id)sender {
     let tag: NSInteger = msg![env; sender tag];
@@ -864,12 +869,13 @@ fn app_picker_inner(
     let mut quick_options_graphics_api = crate::options::GraphicsApi::Default;
     let mut quick_options_arm64_backend = crate::options::Arm64Backend::Interpreter;
     let mut quick_options_arm64_fallback = crate::options::Arm64Fallback::Interpreter;
-    let mut quick_options_llvmpipe_fallback = true;
+    let mut quick_options_llvmpipe_fallback = false;
     let mut quick_options_metal_translator = true;
     let mut quick_options_software_rendering = false;
     let mut quick_options_custom_driver = false;
     let mut quick_options_anisotropic_filtering = 1u8;
     let mut quick_options_texture_upscaler = 1u8;
+    let mut quick_options_no_texture_compression = false;
     let mut quick_options_anti_aliasing = 1u8;
 
     fn update_quick_option_buttons(env: &mut Environment, buttons: &[id], selected_idx: usize) {
@@ -980,6 +986,8 @@ fn app_picker_inner(
         &[1, 2, 3, 4],
         quick_options_texture_upscaler,
     );
+    () = msg![env; (quick_options_stuff.no_texture_compression_switch)
+        setOn:quick_options_no_texture_compression];
     update_quality_button_group(
         env,
         &quick_options_stuff.quality_buttons,
@@ -1410,6 +1418,9 @@ fn app_picker_inner(
         } else if let Some(value) = std::mem::take(&mut host_obj.texture_upscaler) {
             quick_options_texture_upscaler = value;
             update_quality_button_group(env, &quick_options_stuff.quality_buttons, 1, &[1, 2, 3, 4], value);
+        } else if let Some(enabled) = std::mem::take(&mut host_obj.no_texture_compression) {
+            quick_options_no_texture_compression = enabled;
+            () = msg![env; (quick_options_stuff.no_texture_compression_switch) setOn:enabled];
         } else if let Some(value) = std::mem::take(&mut host_obj.anti_aliasing) {
             quick_options_anti_aliasing = value;
             update_quality_button_group(env, &quick_options_stuff.quality_buttons, 2, &[1, 2, 4, 8], value);
@@ -1480,6 +1491,14 @@ fn app_picker_inner(
     }
     option_args.push(format!("--anisotropic-filtering={quick_options_anisotropic_filtering}"));
     option_args.push(format!("--texture-upscaler={quick_options_texture_upscaler}"));
+    option_args.push(
+        if quick_options_no_texture_compression {
+            "--no-texture-compression"
+        } else {
+            "--allow-texture-compression"
+        }
+        .to_string(),
+    );
     option_args.push(format!("--anti-aliasing={quick_options_anti_aliasing}"));
     if quick_options_graphics_api != crate::options::GraphicsApi::Default {
         let value = match quick_options_graphics_api {
@@ -2263,6 +2282,7 @@ struct QuickOptionsStuff {
     custom_resolution_error: id,
     orientation_buttons: [id; 4],
     frame_generation_switch: id,
+    no_texture_compression_switch: id,
     /// The button that toggles the "Device model" dropdown open/closed. Its
     /// title shows the currently-selected model plus an up/down arrow.
     device_model_btn: id,
@@ -2488,6 +2508,8 @@ fn setup_quick_options(
         RowKind::Buttons(&[("1×", "anisotropicFiltering1"), ("2×", "anisotropicFiltering2"), ("4×", "anisotropicFiltering4"), ("8×", "anisotropicFiltering8"), ("16×", "anisotropicFiltering16")]),
         RowKind::Label("Texture upscaler"),
         RowKind::Buttons(&[("1×", "textureUpscaler1"), ("2×", "textureUpscaler2"), ("3×", "textureUpscaler3"), ("4×", "textureUpscaler4")]),
+        RowKind::Label("No texture compression"),
+        RowKind::Switch("noTextureCompression:", false),
         RowKind::Label("Anti-aliasing"),
         RowKind::Buttons(&[("1×", "antiAliasing1"), ("2×", "antiAliasing2"), ("4×", "antiAliasing4"), ("8×", "antiAliasing8")]),
         RowKind::Label("Dynarmic JIT"),
@@ -2495,7 +2517,7 @@ fn setup_quick_options(
         RowKind::Label("Interpreter fallback"),
         RowKind::Switch("arm64Fallback:", false),
         RowKind::Label("LLVMPipe fallback"),
-        RowKind::Switch("llvmpipeFallback:", true),
+        RowKind::Switch("llvmpipeFallback:", false),
         RowKind::Label("Metal translator (ARM64)"),
         RowKind::Switch("metalTranslator:", true),
         RowKind::Label("Game folder"),
@@ -2565,6 +2587,7 @@ fn setup_quick_options(
     let mut custom_resolution_error: id = nil;
     let mut orientation_buttons: Option<[id; 4]> = None;
     let mut frame_generation_switch: id = nil;
+    let mut no_texture_compression_switch: id = nil;
     let mut ios_version_btn: id = nil;
     let mut ios_version_menu: id = nil;
     let mut ios_version_items: Vec<id> = Vec::new();
@@ -2715,6 +2738,9 @@ fn setup_quick_options(
                 () = msg![env; main_view addSubview:switch];
                 if selector_name == "frameGeneration:" {
                     frame_generation_switch = switch;
+                }
+                if selector_name == "noTextureCompression:" {
+                    no_texture_compression_switch = switch;
                 }
             }
         }
@@ -2924,6 +2950,7 @@ fn setup_quick_options(
         custom_resolution_error,
         orientation_buttons: orientation_buttons.unwrap_or([nil; 4]),
         frame_generation_switch,
+        no_texture_compression_switch,
         device_model_btn,
         device_model_menu,
         device_model_items,

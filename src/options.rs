@@ -238,6 +238,7 @@ pub struct Options {
     pub software_rendering: bool,
     pub anisotropic_filtering: u8,
     pub texture_upscaler: u8,
+    pub no_texture_compression: bool,
     pub anti_aliasing: u8,
     pub software_presentation: bool,
     pub custom_driver: Option<PathBuf>,
@@ -276,7 +277,7 @@ impl Default for Options {
             force_64_bit: false,
             arm64_backend: Arm64Backend::Interpreter,
             arm64_fallback: Arm64Fallback::Interpreter,
-            llvmpipe_fallback: true,
+            llvmpipe_fallback: false,
             metal_translator: true,
             gdb_listen_addrs: None,
             preferred_languages: None,
@@ -297,6 +298,7 @@ impl Default for Options {
             software_rendering: false,
             anisotropic_filtering: 1,
             texture_upscaler: 1,
+            no_texture_compression: false,
             anti_aliasing: 1,
             software_presentation: false,
             custom_driver: None,
@@ -513,6 +515,10 @@ impl Options {
             self.anisotropic_filtering = parse_quality(value, "--anisotropic-filtering=", &[1, 2, 4, 8, 16])?;
         } else if let Some(value) = arg.strip_prefix("--texture-upscaler=") {
             self.texture_upscaler = parse_quality(value, "--texture-upscaler=", &[1, 2, 3, 4])?;
+        } else if arg == "--no-texture-compression" {
+            self.no_texture_compression = true;
+        } else if arg == "--allow-texture-compression" {
+            self.no_texture_compression = false;
         } else if let Some(value) = arg.strip_prefix("--anti-aliasing=") {
             self.anti_aliasing = parse_quality(value, "--anti-aliasing=", &[1, 2, 4, 8])?;
         } else if let Some(value) = arg.strip_prefix("--graphics-api=") {

@@ -1111,7 +1111,7 @@ fn glCompressedTexSubImage2D(
     data: ConstVoidPtr,
 ) {
     with_ctx_and_mem(env, |gles, mem| unsafe {
-        let data = mem
+        let data: *const GLvoid = mem
             .ptr_at(data.cast::<u8>(), image_size.try_into().unwrap())
             .cast();
         gles.CompressedTexSubImage2D(
@@ -2266,7 +2266,43 @@ fn glCompressedTexImage2D(
         }
     }
     let fix_filter = env.options.fix_texture_min_filter && level == 0;
+    let no_texture_compression = env.options.no_texture_compression;
     with_ctx_and_mem(env, |gles, mem| unsafe {
+        let data: *const GLvoid = mem
+            .ptr_at(data.cast::<u8>(), image_size.try_into().unwrap())
+            .cast();
+        if no_texture_compression {
+            let payload = std::slice::from_raw_parts(data.cast::<u8>(), image_size as usize);
+            if crate::gles::util::try_decode_pvrtc(
+                gles,
+                target,
+                level,
+                internalformat,
+                width,
+                height,
+                border,
+                payload,
+            ) {
+                return;
+            }
+            if let Some(decoded) = crate::gles::util::PalettedTextureFormat::decode_rgba8(
+                internalformat, width, height, payload,
+            ) {
+                gles.TexImage2D(
+                    target,
+                    level,
+                    gles11::RGBA as GLint,
+                    width,
+                    height,
+                    border,
+                    gles11::RGBA,
+                    gles11::UNSIGNED_BYTE,
+                    decoded.as_ptr().cast(),
+                );
+                return;
+            }
+        }
+
         // Pre-flight: drain any sticky GL error left by the previous call
         // (e.g. an oversized RGBA8 glTexImage2D on a strict Mali driver),
         // so when we check post-upload below we can attribute a fresh error
@@ -2290,9 +2326,6 @@ fn glCompressedTexImage2D(
             }
         }
 
-        let data = mem
-            .ptr_at(data.cast::<u8>(), image_size.try_into().unwrap())
-            .cast();
         gles.CompressedTexImage2D(
             target,
             level,
@@ -3474,7 +3507,17 @@ fn glShaderSource(
     //    uniform `CC_PMatrix` declared as type `f16mat4` and type `mat4`.
     let src = String::from_utf8_lossy(&raw_source);
     let src = normalize_shader_preprocessor_whitespace(&src);
-    let bytes_vec = strip_captain_tomato_shader_precision(&src).into_bytes();
+    let src = strip_captain_tomato_shader_precision(&src);
+    if std::env::var_os("TOUCHHLE_TRACE_SHADER_SOURCE").is_some() {
+        log!("[GLES SHADER SOURCE] shader={} bytes={}", shader, src.len());
+        for (line_number, line) in src.lines().take(256).enumerate() {
+            log!("[GLES SHADER SOURCE] {:03}: {}", line_number + 1, line);
+        }
+        if src.lines().count() > 256 {
+            log!("[GLES SHADER SOURCE] further lines suppressed after 256");
+        }
+    }
+    let bytes_vec = src.into_bytes();
 
     let cs = std::ffi::CString::new(bytes_vec).unwrap_or_default();
     let ptr = cs.as_ptr();
