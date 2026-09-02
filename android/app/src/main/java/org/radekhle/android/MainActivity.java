@@ -210,14 +210,12 @@ public class MainActivity extends SDLActivity {
                 return 0;
             }
             if ("touchhle".equalsIgnoreCase(uri.getScheme()) && "custom-driver".equalsIgnoreCase(uri.getHost())) {
-                mSingleton.runOnUiThread(() -> {
-                    Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-                    picker.setType("application/zip");
-                    picker.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/zip", "application/x-zip-compressed"});
-                    picker.addCategory(Intent.CATEGORY_OPENABLE);
-                    picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-                    mSingleton.startActivityForResult(picker, CUSTOM_DRIVER_REQUEST);
-                });
+                Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                picker.setType("*/*");
+                picker.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/zip", "application/x-zip-compressed", "application/octet-stream"});
+                picker.addCategory(Intent.CATEGORY_OPENABLE);
+                picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                mSingleton.startActivityForResult(picker, CUSTOM_DRIVER_REQUEST);
                 return 0;
             }
             return SDLActivity.openURL(url);
