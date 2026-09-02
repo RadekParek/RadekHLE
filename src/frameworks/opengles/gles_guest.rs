@@ -169,14 +169,21 @@ fn log_gpu_state(gles: &mut dyn GLES, reason: &str) {
     );
 }
 
-fn trace_gl_error(trace: bool, err: GLenum, caller: &'static std::panic::Location<'static>) {
+fn trace_gl_error(
+    trace: bool,
+    err: GLenum,
+    function_name: Option<&String>,
+    caller: &'static std::panic::Location<'static>,
+) {
     if !trace || err == gles11::NO_ERROR {
         return;
     }
+    let function_name = function_name.map_or("unknown guest wrapper", String::as_str);
     log!(
-        "[GLES ERROR] code=0x{:x} name={} after guest wrapper {}:{}",
+        "[GLES ERROR] code=0x{:x} name={} function={} after guest wrapper {}:{}",
         err,
         gl_error_name(err),
+        function_name,
         caller.file(),
         caller.line()
     );
@@ -234,7 +241,7 @@ where
         ));
     }
     let err = unsafe { gles.GetError() };
-    trace_gl_error(trace, err, caller);
+    trace_gl_error(trace, err, env.active_host_function.as_ref(), caller);
     if trace && err != gles11::NO_ERROR {
         log_gpu_state(gles.as_mut(), "after-error");
     }
@@ -278,7 +285,7 @@ where
     }
     let res = f(gles.as_mut(), &mut env.mem);
     let err = unsafe { gles.GetError() };
-    trace_gl_error(trace, err, caller);
+    trace_gl_error(trace, err, env.active_host_function.as_ref(), caller);
     if trace && err != gles11::NO_ERROR {
         log_gpu_state(gles.as_mut(), "after-error");
     }

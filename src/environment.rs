@@ -114,6 +114,7 @@ pub struct Environment {
     /// Set to [true] when created using [Environment::new_without_app].
     pub dump_file: Option<std::fs::File>,
     pub is_app_picker: bool,
+    pub(crate) active_host_function: Option<String>,
     yielder: *const Yielder<Environment, Environment>,
     // The amount of ticks to run for Some(value), or single-stepping for None.
     // Sadly, setting ticks to 1 does not step properly, so Option is required.
@@ -763,6 +764,7 @@ impl Environment {
             env_vars: Default::default(),
             dump_file: None,
             is_app_picker: false,
+            active_host_function: None,
             yielder: std::ptr::null(),
             remaining_ticks: None,
             panic_cell: Rc::new(Cell::new(None)),
@@ -906,6 +908,7 @@ impl Environment {
             env_vars: Default::default(),
             dump_file: None,
             is_app_picker: true,
+            active_host_function: None,
             yielder: std::ptr::null(),
             remaining_ticks: None,
             panic_cell: Rc::new(Cell::new(None)),
@@ -967,6 +970,7 @@ impl Environment {
             env_vars: HashMap::new(),
             dump_file: None,
             is_app_picker: true,
+            active_host_function: None,
             yielder: std::ptr::null(),
             remaining_ticks: None,
             panic_cell: Rc::new(Cell::new(None)),
@@ -2022,14 +2026,17 @@ impl Environment {
                     dyld::Dyld::SVC_LAZY_LINK
                     | dyld::Dyld::SVC_LAZY_LINK_RET_FLAG
                     | dyld::Dyld::SVC_LINKED_FUNCTIONS_BASE.. => {
-                        if let Some(f) = self.dyld.get_svc_handler(
+                        if let Some((symbol, f)) = self.dyld.get_svc_handler(
                             &self.bins,
                             &mut self.mem,
                             &mut self.cpu,
                             svc_pc,
                             svc,
                         ) {
+                            let previous_host_function = self.active_host_function.take();
+                            self.active_host_function = Some(symbol.clone());
                             f.call_from_guest(self);
+                            self.active_host_function = previous_host_function;
 
                             // ORIGINAL LOGIC MERGED: Stack zeroing
                             if svc & dyld::Dyld::SVC_LAZY_LINK_RET_FLAG == 0 {

@@ -1417,7 +1417,7 @@ impl Dyld {
         cpu: &mut Cpu,
         svc_pc: u32,
         svc: u32,
-    ) -> Option<HostFunction> {
+    ) -> Option<(String, HostFunction)> {
         match svc {
             Self::SVC_LAZY_LINK | Self::SVC_LAZY_LINK_RET_FLAG => {
                 self.do_lazy_link(bins, mem, cpu, svc_pc)
@@ -1444,7 +1444,7 @@ impl Dyld {
                     return None;
                 };
                 log_dbg!("Call to host function, already linked: {}", symbol);
-                Some(f)
+                Some((symbol.to_owned(), f))
             }
         }
     }
@@ -1455,7 +1455,7 @@ impl Dyld {
         mem: &mut Mem,
         cpu: &mut Cpu,
         svc_pc: u32,
-    ) -> Option<HostFunction> {
+    ) -> Option<(String, HostFunction)> {
         // Links by restoring the original stub function, then updating
         // __la_symbol_ptr to the appropriate function.
         fn link_by_restoring_stub(
@@ -1608,7 +1608,7 @@ impl Dyld {
             );
             // Return the host function so that we can call it now that we're
             // done.
-            return Some(f);
+            return Some((symbol.to_owned(), f));
         }
 
         // Fallback: the symbol isn't implemented by any host dylib and isn't
@@ -1640,7 +1640,7 @@ impl Dyld {
             assert!(mem.read(stub_function_ptr + 1) == encode_a32_ret());
         }
         cpu.invalidate_cache_range(stub_function_ptr.to_bits(), 4);
-        Some(f)
+        Some((leaked_symbol.to_owned(), f))
     }
 
     /// Creates a guest function that will call a host function with the name
