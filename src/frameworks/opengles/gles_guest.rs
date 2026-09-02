@@ -12,9 +12,7 @@ use crate::gles::{gles11_raw as gles11, GLES};
 use crate::mem::{ConstPtr, ConstVoidPtr, GuestISize, GuestUSize, Mem, MutPtr, MutVoidPtr, Ptr};
 use crate::objc::nil;
 use crate::Environment;
-use std::collections::HashSet;
 use std::slice::from_raw_parts;
-use std::sync::{Mutex, OnceLock};
 use touchHLE_gl_bindings::gles11::{
     ARRAY_BUFFER, ELEMENT_ARRAY_BUFFER, ELEMENT_ARRAY_BUFFER_BINDING, WRITE_ONLY_OES,
 };
@@ -49,36 +47,101 @@ fn trace_potatogold_render() -> bool {
 
 fn gl_error_name(err: GLenum) -> &'static str {
     match err {
+        gles11::NO_ERROR => "GL_NO_ERROR",
         gles11::INVALID_ENUM => "GL_INVALID_ENUM",
         gles11::INVALID_VALUE => "GL_INVALID_VALUE",
         gles11::INVALID_OPERATION => "GL_INVALID_OPERATION",
         gles11::STACK_OVERFLOW => "GL_STACK_OVERFLOW",
         gles11::STACK_UNDERFLOW => "GL_STACK_UNDERFLOW",
         gles11::OUT_OF_MEMORY => "GL_OUT_OF_MEMORY",
-        _ => "unknown GL error",
+        0x0506 => "GL_INVALID_FRAMEBUFFER_OPERATION",
+        _ => "UNKNOWN_GL_ERROR",
     }
 }
 
+fn gl_enum_name(value: GLenum) -> &'static str {
+    match value {
+        gles11::NO_ERROR => "GL_NO_ERROR",
+        1 => "GL_TRUE",
+        gles11::TEXTURE_2D => "GL_TEXTURE_2D",
+        0x8513 => "GL_TEXTURE_CUBE_MAP",
+        gles11::TEXTURE_MIN_FILTER => "GL_TEXTURE_MIN_FILTER",
+        gles11::TEXTURE_MAG_FILTER => "GL_TEXTURE_MAG_FILTER",
+        gles11::NEAREST => "GL_NEAREST",
+        gles11::LINEAR => "GL_LINEAR",
+        gles11::NEAREST_MIPMAP_NEAREST => "GL_NEAREST_MIPMAP_NEAREST",
+        gles11::NEAREST_MIPMAP_LINEAR => "GL_NEAREST_MIPMAP_LINEAR",
+        gles11::LINEAR_MIPMAP_NEAREST => "GL_LINEAR_MIPMAP_NEAREST",
+        gles11::LINEAR_MIPMAP_LINEAR => "GL_LINEAR_MIPMAP_LINEAR",
+        gles11::RGBA => "GL_RGBA",
+        gles11::RGB => "GL_RGB",
+        gles11::UNSIGNED_BYTE => "GL_UNSIGNED_BYTE",
+        gles11::UNSIGNED_SHORT_5_6_5 => "GL_UNSIGNED_SHORT_5_6_5",
+        gles11::UNSIGNED_SHORT_4_4_4_4 => "GL_UNSIGNED_SHORT_4_4_4_4",
+        gles11::UNSIGNED_SHORT_5_5_5_1 => "GL_UNSIGNED_SHORT_5_5_5_1",
+        gles11::FLOAT => "GL_FLOAT",
+        gles11::DEPTH_TEST => "GL_DEPTH_TEST",
+        gles11::CULL_FACE => "GL_CULL_FACE",
+        gles11::BLEND => "GL_BLEND",
+        gles11::SCISSOR_TEST => "GL_SCISSOR_TEST",
+        gles11::ARRAY_BUFFER => "GL_ARRAY_BUFFER",
+        gles11::ELEMENT_ARRAY_BUFFER => "GL_ELEMENT_ARRAY_BUFFER",
+        gles11::TRIANGLES => "GL_TRIANGLES",
+        gles11::TRIANGLE_STRIP => "GL_TRIANGLE_STRIP",
+        gles11::TRIANGLE_FAN => "GL_TRIANGLE_FAN",
+        0x8B31 => "GL_VERTEX_SHADER",
+        0x8B30 => "GL_FRAGMENT_SHADER",
+        0x8B81 => "GL_COMPILE_STATUS",
+        0x8B82 => "GL_LINK_STATUS",
+        gles11::ACTIVE_TEXTURE => "GL_ACTIVE_TEXTURE",
+        gles11::TEXTURE_BINDING_2D => "GL_TEXTURE_BINDING_2D",
+        0x8B8D => "GL_CURRENT_PROGRAM",
+        gles11::VIEWPORT => "GL_VIEWPORT",
+        gles11::UNPACK_ALIGNMENT => "GL_UNPACK_ALIGNMENT",
+        gles11::VENDOR => "GL_VENDOR",
+        gles11::RENDERER => "GL_RENDERER",
+        gles11::VERSION => "GL_VERSION",
+        gles11::EXTENSIONS => "GL_EXTENSIONS",
+        _ => "UNKNOWN_GL_ENUM",
+    }
+}
+
+fn log_gpu_state(gles: &mut dyn GLES, reason: &str) {
+    let mut active_texture = 0;
+    let mut bound_texture_2d = 0;
+    let mut current_program = 0;
+    let mut viewport = [0; 4];
+    unsafe {
+        gles.GetIntegerv(gles11::ACTIVE_TEXTURE, &mut active_texture);
+        gles.GetIntegerv(gles11::TEXTURE_BINDING_2D, &mut bound_texture_2d);
+        gles.GetIntegerv(0x8B8D, &mut current_program);
+        gles.GetIntegerv(gles11::VIEWPORT, viewport.as_mut_ptr());
+    }
+    log!(
+        "[GLES GPU STATE] reason={} active_texture=0x{:x} ({}) bound_texture_2d={} current_program={} viewport=[{}, {}, {}, {}]",
+        reason,
+        active_texture,
+        gl_enum_name(active_texture as GLenum),
+        bound_texture_2d,
+        current_program,
+        viewport[0],
+        viewport[1],
+        viewport[2],
+        viewport[3]
+    );
+}
+
 fn trace_gl_error(trace: bool, err: GLenum, caller: &'static std::panic::Location<'static>) {
-    if !trace || err == 0 {
+    if !trace || err == gles11::NO_ERROR {
         return;
     }
-    static REPORTED: OnceLock<Mutex<HashSet<(&'static str, u32, GLenum)>>> = OnceLock::new();
-    let key = (caller.file(), caller.line(), err);
-    let first = REPORTED
-        .get_or_init(|| Mutex::new(HashSet::new()))
-        .lock()
-        .map(|mut reported| reported.insert(key))
-        .unwrap_or(true);
-    if first {
-        log!(
-            "[--trace-gl-errors] glGetError() = {:#x} ({}) after host GLES call dispatched from {}:{} [repeated errors suppressed]",
-            err,
-            gl_error_name(err),
-            caller.file(),
-            caller.line()
-        );
-    }
+    log!(
+        "[GLES ERROR] code=0x{:x} name={} after guest wrapper {}:{}",
+        err,
+        gl_error_name(err),
+        caller.file(),
+        caller.line()
+    );
 }
 
 #[track_caller]
@@ -121,6 +184,9 @@ where
         );
         return U::default();
     };
+    if trace {
+        log_gpu_state(gles.as_mut(), "before");
+    }
     let res = f(gles.as_mut(), &mut env.mem);
     if crate::gles::translator_tracing_enabled() && gles.is_translator() {
         crate::gles::trace_translator_event(format!(
@@ -129,7 +195,11 @@ where
             caller.line()
         ));
     }
-    trace_gl_error(trace, unsafe { gles.GetError() }, caller);
+    let err = unsafe { gles.GetError() };
+    trace_gl_error(trace, err, caller);
+    if trace && err != gles11::NO_ERROR {
+        log_gpu_state(gles.as_mut(), "after-error");
+    }
     #[allow(clippy::let_and_return)]
     res
 }
@@ -165,8 +235,15 @@ where
         );
         return U::default();
     };
+    if trace {
+        log_gpu_state(gles.as_mut(), "before");
+    }
     let res = f(gles.as_mut(), &mut env.mem);
-    trace_gl_error(trace, unsafe { gles.GetError() }, caller);
+    let err = unsafe { gles.GetError() };
+    trace_gl_error(trace, err, caller);
+    if trace && err != gles11::NO_ERROR {
+        log_gpu_state(gles.as_mut(), "after-error");
+    }
     #[allow(clippy::let_and_return)]
     res
 }
@@ -179,68 +256,11 @@ fn glGetError(env: &mut Environment) -> GLenum {
             if ignore_gl_errors {
                 return 0;
             }
-            // Many engines (Unity, Cocos2d, Mono Game) call glGetError
-            // every frame as an instrumentation hook. Once an error is
-            // sticky in the host GL state machine (e.g. a strict Mali
-            // driver returns GL_INVALID_ENUM for a call that the
-            // emulator tolerated), every subsequent app-side
-            // glGetError gets the same code, flooding the log. We
-            // remember which error codes we've already reported and
-            // demote repeats of the same code to log_dbg so the
-            // diagnostic information is preserved (developers can
-            // still use `--trace-gl-errors` to find the originating
-            // call) but the console isn't drowning in identical lines.
-            //
-            // The set is per-process (no thread synchronisation
-            // needed because GL contexts are accessed serialised
-            // through `with_ctx_and_mem`); we cap it at 16 distinct
-            // codes which is more than the entire OpenGL ES error
-            // enum space.
-            use std::sync::atomic::{AtomicU32, Ordering};
-            const MAX_REPORTED: usize = 16;
-            static REPORTED: [AtomicU32; MAX_REPORTED] = [
-                AtomicU32::new(0),
-                AtomicU32::new(0),
-                AtomicU32::new(0),
-                AtomicU32::new(0),
-                AtomicU32::new(0),
-                AtomicU32::new(0),
-                AtomicU32::new(0),
-                AtomicU32::new(0),
-                AtomicU32::new(0),
-                AtomicU32::new(0),
-                AtomicU32::new(0),
-                AtomicU32::new(0),
-                AtomicU32::new(0),
-                AtomicU32::new(0),
-                AtomicU32::new(0),
-                AtomicU32::new(0),
-            ];
-            let mut already_seen = false;
-            for slot in &REPORTED {
-                let cur = slot.load(Ordering::Relaxed);
-                if cur == err {
-                    already_seen = true;
-                    break;
-                }
-                if cur == 0
-                    && slot
-                        .compare_exchange(0, err, Ordering::Relaxed, Ordering::Relaxed)
-                        .is_ok()
-                {
-                    break;
-                }
-            }
-            if already_seen {
-                log_dbg!("glGetError() returned {:#x} (already reported)", err);
-            } else {
-                log!(
-                    "Warning: glGetError() returned {:#x} (subsequent repeats \
-                     of the same code are silenced; rerun with \
-                     --trace-gl-errors to identify the originating GL call)",
-                    err
-                );
-            }
+            log!(
+                "[GLES APP ERROR] glGetError() returned {:#x} ({})",
+                err,
+                gl_error_name(err)
+            );
         }
         err
     })
