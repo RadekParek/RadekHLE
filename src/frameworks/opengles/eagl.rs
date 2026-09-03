@@ -1834,7 +1834,7 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
     // glEnableClientState / glVertexPointer. Use a small dedicated
     // shader-based presenter instead.
     if gles.is_es2() {
-        if frame_generation || gles.is_translator() {
+        if frame_generation {
             std::mem::drop(gles_boxed);
             present_renderbuffer_readback(env, drawable);
         } else {
