@@ -212,14 +212,6 @@ pub const CLASSES: ClassExports = objc_classes! {
     NSOperatingSystemVersion { major, minor, patch }
 }
 
-- (id)operatingSystemVersionString {
-    assert_process_info_singleton(env, this);
-    let (major, minor, patch) = os_version(env);
-    let s = format!("Version {major}.{minor}.{patch} (Build 16A366)");
-    let cstr = env.mem.alloc_and_write_cstr(s.as_bytes());
-    msg_class![env; NSString stringWithUTF8String:cstr]
-}
-
 // `- (BOOL)isOperatingSystemAtLeastVersion:(NSOperatingSystemVersion)version`
 // (iOS 8+).
 //
