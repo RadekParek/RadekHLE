@@ -177,17 +177,11 @@ fn trace_gl_error(
     gles: &mut dyn GLES,
 ) {
     use std::sync::atomic::{AtomicUsize, Ordering};
-    static ERROR_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static GENERAL_ERROR_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
     if !trace || err == gles11::NO_ERROR {
         return;
     }
-    let count = ERROR_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-    if count >= 100 {
-        if count == 100 {
-            log!("[GLES ERROR] further GL error reports suppressed after 100 entries");
-        }
-        return;
-    }
+    let count = GENERAL_ERROR_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
     let function_name = function_name.map_or("unknown guest wrapper", String::as_str);
     let driver = unsafe { gles.driver_description() };
     log!(
@@ -303,10 +297,21 @@ fn glGetError(env: &mut Environment) -> GLenum {
             if ignore_gl_errors {
                 return 0;
             }
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static APP_ERROR_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
+            let count = APP_ERROR_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+            let function_name = env
+                .active_host_function
+                .as_deref()
+                .unwrap_or("unknown guest wrapper");
+            let driver = unsafe { gles.driver_description() };
             log!(
-                "[GLES APP ERROR] glGetError() returned {:#x} ({})",
+                "[GLES APP ERROR #{:05}] code=0x{:x} name={} function={} driver={}",
+                count + 1,
                 err,
-                gl_error_name(err)
+                gl_error_name(err),
+                function_name,
+                driver
             );
         }
         err
