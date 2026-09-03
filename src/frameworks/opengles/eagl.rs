@@ -1270,26 +1270,13 @@ unsafe fn present_renderbuffer_es2(
     };
 
     let present_objects = ensure_present_objects(gles);
-    let source_framebuffer = if old_framebuffer != 0 {
-        old_framebuffer as GLuint
-    } else {
-        gles.BindFramebuffer(gles2::FRAMEBUFFER, present_objects.framebuffer);
-        gles.FramebufferRenderbuffer(
-            gles2::FRAMEBUFFER,
-            gles2::COLOR_ATTACHMENT0,
-            gles2::RENDERBUFFER,
-            renderbuffer as GLuint,
-        );
-        present_objects.framebuffer
-    };
-    let framebuffer_status = gles.CheckFramebufferStatus(gles2::FRAMEBUFFER);
-    if framebuffer_status != gles2::FRAMEBUFFER_COMPLETE {
-        log_once_fmt!(
-            "present_renderbuffer_es2: source framebuffer {} is incomplete ({:#x})",
-            source_framebuffer,
-            framebuffer_status
-        );
-    }
+    gles.BindFramebuffer(gles2::FRAMEBUFFER, present_objects.framebuffer);
+    gles.FramebufferRenderbuffer(
+        gles2::FRAMEBUFFER,
+        gles2::COLOR_ATTACHMENT0,
+        gles2::RENDERBUFFER,
+        renderbuffer as GLuint,
+    );
 
     gles.ActiveTexture(gles2::TEXTURE0);
     gles.BindTexture(gles2::TEXTURE_2D, present_objects.texture);
@@ -1310,11 +1297,7 @@ unsafe fn present_renderbuffer_es2(
         verts.as_ptr().cast(),
         gles2::STREAM_DRAW,
     );
-    gles.Finish();
-    if old_framebuffer == 0 {
-        gles.BindFramebuffer(gles2::FRAMEBUFFER, source_framebuffer);
-    }
-    gles.CopyTexImage2D(gles2::TEXTURE_2D, 0, gles2::RGBA, 0, 0, width, height, 0);
+    gles.CopyTexImage2D(gles2::TEXTURE_2D, 0, gles2::RGB, 0, 0, width, height, 0);
 
     gles.BindFramebuffer(gles2::FRAMEBUFFER, 0);
 
@@ -1384,7 +1367,7 @@ unsafe fn present_renderbuffer_es2(
     };
     gles.UseProgram(program.program);
     gles.Uniform1i(program.u_tex, 0);
-    let m = crate::gles::present::centered_texture_rotation(rotation_matrix);
+    let m = crate::matrix::Matrix::<4>::from(&rotation_matrix);
     let cols = m.columns();
     gles.UniformMatrix4fv(
         program.u_tex_mat,
