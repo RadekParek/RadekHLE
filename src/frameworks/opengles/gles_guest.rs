@@ -171,30 +171,37 @@ fn log_gpu_state(gles: &mut dyn GLES, reason: &str) {
 
 fn trace_gl_error(
     trace: bool,
-    err: GLenum,
+    first_error: GLenum,
     function_name: Option<&String>,
     caller: &'static std::panic::Location<'static>,
     gles: &mut dyn GLES,
 ) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static GENERAL_ERROR_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
-    if !trace || err == gles11::NO_ERROR {
+    if !trace || first_error == gles11::NO_ERROR {
         return;
     }
-    let count = GENERAL_ERROR_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
     let function_name = function_name.map_or("unknown guest wrapper", String::as_str);
     let driver = unsafe { gles.driver_description() };
-    log!(
-        "[GLES ERROR #{:03}] code=0x{:x} name={} function={} guest_wrapper={}:{} driver={}",
-        count + 1,
-        err,
-        gl_error_name(err),
-        function_name,
-        caller.file(),
-        caller.line(),
-        driver
-    );
-    log_gpu_state(gles, "after-error");
+    let mut error = first_error;
+    loop {
+        let count = GENERAL_ERROR_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+        log!(
+            "[GLES ERROR #{:05}] code=0x{:04x} name={} function={} guest_wrapper={}:{} driver={}",
+            count + 1,
+            error,
+            gl_error_name(error),
+            function_name,
+            caller.file(),
+            caller.line(),
+            driver
+        );
+        log_gpu_state(gles, "after-error");
+        error = unsafe { gles.GetError() };
+        if error == gles11::NO_ERROR {
+            break;
+        }
+    }
 }
 
 #[track_caller]
@@ -625,6 +632,9 @@ fn glShadeModel(env: &mut Environment, mode: GLenum) {
     with_ctx_and_mem(env, |gles, _mem| unsafe { gles.ShadeModel(mode) })
 }
 fn glScissor(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height: GLsizei) {
+    if crate::gles::translator_tracing_enabled() {
+        log!("[GLES GUEST STATE] glScissor requested x={} y={} width={} height={} scale_hack={}", x, y, width, height, env.options.scale_hack);
+    }
     {
         use std::sync::atomic::{AtomicBool, Ordering};
         static SEEN: AtomicBool = AtomicBool::new(false);
@@ -636,6 +646,9 @@ fn glScissor(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height: 
     let scale = |value: GLsizei| (value as f32 * factor).round() as GLsizei;
     let (x, y) = (scale(x), scale(y));
     let (width, height) = (scale(width), scale(height));
+    if crate::gles::translator_tracing_enabled() {
+        log!("[GLES GUEST STATE] glScissor scaled x={} y={} width={} height={}", x, y, width, height);
+    }
     with_ctx_and_mem(env, |gles, _mem| unsafe {
         gles.Scissor(x, y, width, height)
     })
