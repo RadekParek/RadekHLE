@@ -291,6 +291,7 @@ where
 
 fn glGetError(env: &mut Environment) -> GLenum {
     let ignore_gl_errors = env.options.ignore_gl_errors;
+    let function_name = env.active_host_function.clone();
     with_ctx_and_mem(env, |gles, _mem| {
         let err = unsafe { gles.GetError() };
         if err != 0 {
@@ -300,10 +301,7 @@ fn glGetError(env: &mut Environment) -> GLenum {
             use std::sync::atomic::{AtomicUsize, Ordering};
             static APP_ERROR_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
             let count = APP_ERROR_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-            let function_name = env
-                .active_host_function
-                .as_deref()
-                .unwrap_or("unknown guest wrapper");
+            let function_name = function_name.as_deref().unwrap_or("unknown guest wrapper");
             let driver = unsafe { gles.driver_description() };
             log!(
                 "[GLES APP ERROR #{:05}] code=0x{:x} name={} function={} driver={}",
