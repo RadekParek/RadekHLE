@@ -1031,8 +1031,6 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 - (())setTranslatesAutoresizingMaskIntoConstraints:(bool)_translates { }
 - (bool)translatesAutoresizingMaskIntoConstraints { true }
-- (())setNeedsLayout { }
-- (())layoutIfNeeded { }
 - (())addConstraint:(id)_constraint { }
 - (())addConstraints:(id)_constraints { }
 - (())removeConstraint:(id)_constraint { }
