@@ -139,6 +139,9 @@ public class MainActivity extends SDLActivity {
             File destination = new File(target, name);
             if (copyDocumentUri(uri, destination)) {
                 Log.i(TAG, "Imported custom driver ZIP: " + name);
+                if (mSingleton != null) {
+                    mSingleton.runOnUiThread(() -> mSingleton.recreate());
+                }
             }
         }, "RadekHLE-custom-driver-import").start();
     }
@@ -179,6 +182,20 @@ public class MainActivity extends SDLActivity {
         }
     }
 
+    private static void launchFilePicker(Intent picker, int requestCode) {
+        if (mSingleton == null) {
+            Log.e(TAG, "Couldn't open file picker because the SDL activity is not ready");
+            return;
+        }
+        mSingleton.runOnUiThread(() -> {
+            try {
+                mSingleton.startActivityForResult(picker, requestCode);
+            } catch (Exception ex) {
+                Log.e(TAG, "Couldn't open file picker", ex);
+            }
+        });
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
@@ -199,6 +216,10 @@ public class MainActivity extends SDLActivity {
 
     public static int openURL(String url) {
         try {
+            if (mSingleton == null) {
+                Log.e(TAG, "Couldn't open URL because the SDL activity is not ready: " + url);
+                return -1;
+            }
             Uri uri = Uri.parse(url);
             if ("touchhle".equalsIgnoreCase(uri.getScheme()) && "game-folder".equalsIgnoreCase(uri.getHost())) {
                 Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
@@ -206,18 +227,16 @@ public class MainActivity extends SDLActivity {
                     | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                     | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
                     | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
-                mSingleton.startActivityForResult(picker, GAME_FOLDER_REQUEST);
+                launchFilePicker(picker, GAME_FOLDER_REQUEST);
                 return 0;
             }
             if ("touchhle".equalsIgnoreCase(uri.getScheme()) && "custom-driver".equalsIgnoreCase(uri.getHost())) {
-                mSingleton.runOnUiThread(() -> {
-                    Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-                    picker.setType("application/zip");
-                    picker.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/zip", "application/x-zip-compressed", "application/octet-stream"});
-                    picker.addCategory(Intent.CATEGORY_OPENABLE);
-                    picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-                    mSingleton.startActivityForResult(picker, CUSTOM_DRIVER_REQUEST);
-                });
+                Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                picker.setType("application/zip");
+                picker.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/zip", "application/x-zip-compressed", "application/octet-stream"});
+                picker.addCategory(Intent.CATEGORY_OPENABLE);
+                picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                launchFilePicker(picker, CUSTOM_DRIVER_REQUEST);
                 return 0;
             }
             return SDLActivity.openURL(url);

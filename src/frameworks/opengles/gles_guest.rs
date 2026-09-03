@@ -174,19 +174,33 @@ fn trace_gl_error(
     err: GLenum,
     function_name: Option<&String>,
     caller: &'static std::panic::Location<'static>,
+    gles: &mut dyn GLES,
 ) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static ERROR_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
     if !trace || err == gles11::NO_ERROR {
         return;
     }
+    let count = ERROR_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+    if count >= 100 {
+        if count == 100 {
+            log!("[GLES ERROR] further GL error reports suppressed after 100 entries");
+        }
+        return;
+    }
     let function_name = function_name.map_or("unknown guest wrapper", String::as_str);
+    let driver = unsafe { gles.driver_description() };
     log!(
-        "[GLES ERROR] code=0x{:x} name={} function={} after guest wrapper {}:{}",
+        "[GLES ERROR #{:03}] code=0x{:x} name={} function={} guest_wrapper={}:{} driver={}",
+        count + 1,
         err,
         gl_error_name(err),
         function_name,
         caller.file(),
-        caller.line()
+        caller.line(),
+        driver
     );
+    log_gpu_state(gles, "after-error");
 }
 
 #[track_caller]
@@ -229,9 +243,6 @@ where
         );
         return U::default();
     };
-    if trace {
-        log_gpu_state(gles.as_mut(), "before");
-    }
     let res = f(gles.as_mut(), &mut env.mem);
     if crate::gles::translator_tracing_enabled() && gles.is_translator() {
         crate::gles::trace_translator_event(format!(
@@ -241,10 +252,7 @@ where
         ));
     }
     let err = unsafe { gles.GetError() };
-    trace_gl_error(trace, err, env.active_host_function.as_ref(), caller);
-    if trace && err != gles11::NO_ERROR {
-        log_gpu_state(gles.as_mut(), "after-error");
-    }
+    trace_gl_error(trace, err, env.active_host_function.as_ref(), caller, gles.as_mut());
     #[allow(clippy::let_and_return)]
     res
 }
@@ -280,15 +288,9 @@ where
         );
         return U::default();
     };
-    if trace {
-        log_gpu_state(gles.as_mut(), "before");
-    }
     let res = f(gles.as_mut(), &mut env.mem);
     let err = unsafe { gles.GetError() };
-    trace_gl_error(trace, err, env.active_host_function.as_ref(), caller);
-    if trace && err != gles11::NO_ERROR {
-        log_gpu_state(gles.as_mut(), "after-error");
-    }
+    trace_gl_error(trace, err, env.active_host_function.as_ref(), caller, gles.as_mut());
     #[allow(clippy::let_and_return)]
     res
 }
@@ -2117,7 +2119,6 @@ fn glTexImage2D(
     type_: GLenum,
     pixels: ConstVoidPtr,
 ) {
-    log!("[GLES] glTexImage2D called with format=0x{:x}, type=0x{:x}", format, type_);
     {
         use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
         static SEEN: AtomicBool = AtomicBool::new(false);
@@ -2931,7 +2932,6 @@ fn read_guest_cstring(mem: &Mem, ptr: ConstPtr<GLubyte>) -> std::ffi::CString {
 }
 
 fn glCreateProgram(env: &mut Environment) -> GLuint {
-    log!("[GLES] glCreateProgram called");
     with_ctx_and_mem(env, |gles, _mem| {
         let mut result = 0;
         log_gl_call("glCreateProgram", String::new(), gles, |gles| unsafe {
@@ -2941,7 +2941,6 @@ fn glCreateProgram(env: &mut Environment) -> GLuint {
     })
 }
 fn glCreateShader(env: &mut Environment, type_: GLenum) -> GLuint {
-    log!("[GLES] glCreateShader called with type=0x{:x}", type_);
     with_ctx_and_mem(env, |gles, _mem| {
         let mut result = 0;
         log_gl_call(
@@ -3018,7 +3017,6 @@ fn glUniformMatrix4fv(
     });
 }
 fn glUseProgram(env: &mut Environment, program: GLuint) {
-    log!("[GLES] glUseProgram called with program={}", program);
     with_ctx_and_mem(env, |gles, _mem| {
         log_gl_call(
             "glUseProgram",
@@ -3035,7 +3033,6 @@ fn glDeleteShader(env: &mut Environment, shader: GLuint) {
     with_ctx_and_mem(env, |gles, _mem| unsafe { gles.DeleteShader(shader) });
 }
 fn glCompileShader(env: &mut Environment, shader: GLuint) {
-    log!("[GLES] glCompileShader called with shader={}", shader);
     with_ctx_and_mem(env, |gles, _mem| unsafe {
         log_gl_call(
             "glCompileShader",
@@ -3089,7 +3086,6 @@ fn glGetShaderPrecisionFormat(
     });
 }
 fn glAttachShader(env: &mut Environment, program: GLuint, shader: GLuint) {
-    log!("[GLES] glAttachShader called with program={}, shader={}", program, shader);
     with_ctx_and_mem(env, |gles, _mem| unsafe {
         gles.AttachShader(program, shader)
     });
@@ -3100,7 +3096,6 @@ fn glDetachShader(env: &mut Environment, program: GLuint, shader: GLuint) {
     });
 }
 fn glLinkProgram(env: &mut Environment, program: GLuint) {
-    log!("[GLES] glLinkProgram called with program={}", program);
     with_ctx_and_mem(env, |gles, _mem| unsafe {
         log_gl_call(
             "glLinkProgram",

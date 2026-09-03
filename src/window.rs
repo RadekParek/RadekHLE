@@ -1474,7 +1474,7 @@ impl Window {
     /// was called too recently.
     pub fn poll_for_events(&mut self, options: &Options) {
         if !self.on_main_stack {
-            log!("Warning: poll_for_events called off main stack, skipping");
+            log_once!("Warning: poll_for_events called off main stack, skipping");
             return;
         }
         let now = Instant::now();
