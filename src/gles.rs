@@ -67,6 +67,7 @@ pub mod wgpu;
 pub mod gles1_native;
 pub mod gles1_on_gl2;
 pub mod gles1_on_gles2;
+pub mod gles1_on_gles3;
 pub mod gles2_glsl;
 pub mod gles2_native;
 pub mod gles2_on_gl3;
@@ -87,6 +88,7 @@ use crate::window::GLVersion;
 use gles1_native::GLES1NativeContext;
 use gles1_on_gl2::GLES1OnGL2Context;
 use gles1_on_gles2::GLES1OnGLES2Context;
+use gles1_on_gles3::GLES1OnGLES3Context;
 use gles2_native::GLES2NativeContext;
 use gles2_on_gl3::GLES2OnGL3Context;
 use gles3_native::GLES3NativeContext;
@@ -299,6 +301,8 @@ pub enum GLESImplementation {
     GLES1OnGL2,
     /// [gles1_on_gles2::GLES1OnGLES2].
     GLES1OnGLES2,
+    /// [gles1_on_gles3::GLES1OnGLES3].
+    GLES1OnGLES3,
     Software,
 }
 impl GLESImplementation {
@@ -310,6 +314,7 @@ impl GLESImplementation {
         match name {
             "gles1_on_gl2" => Ok(Self::GLES1OnGL2),
             "gles1_on_gles2" => Ok(Self::GLES1OnGLES2),
+            "gles1_on_gles3" => Ok(Self::GLES1OnGLES3),
             "gles1_native" => Ok(Self::GLES1Native),
             "software" | "software-rendering" | "cpu" => Ok(Self::Software),
             _ => Err(()),
@@ -321,6 +326,7 @@ impl GLESImplementation {
             Self::GLES1Native => GLES1NativeContext::description(),
             Self::GLES1OnGL2 => GLES1OnGL2Context::description(),
             Self::GLES1OnGLES2 => GLES1OnGLES2Context::description(),
+            Self::GLES1OnGLES3 => GLES1OnGLES3Context::description(),
             Self::Software => SoftwareGLESContext::description(),
         }
     }
@@ -336,6 +342,7 @@ impl GLESImplementation {
             Self::GLES1Native => GLES1NativeContext::new(window).map(boxer),
             Self::GLES1OnGL2 => GLES1OnGL2Context::new(window).map(boxer),
             Self::GLES1OnGLES2 => GLES1OnGLES2Context::new(window).map(boxer),
+            Self::GLES1OnGLES3 => GLES1OnGLES3Context::new(window).map(boxer),
             Self::Software => SoftwareGLESContext::new(window).map(boxer),
         }
     }
@@ -357,7 +364,7 @@ pub fn create_gles1_gles3_translator_ctx_no_parent_stack(
     assert!(window.on_main_stack());
     log!("Creating the OpenGL ES 1.1 to native OpenGL ES 3.0 translator");
     Box::new(
-        GLES1OnGLES2Context::new_with_gl_version(window, GLVersion::GLES30)
+        GLES1OnGLES3Context::new(window)
             .expect("Couldn't create OpenGL ES 1.1-on-GLES3 translator context!"),
     )
 }
