@@ -142,6 +142,7 @@ struct TranslatorState {
     point_fade_threshold: GLfloat,
     texture_crop_rect: [GLint; 4],
     viewport: [GLint; 4],
+    actual_window_size: (u32, u32),
     program: Option<GLuint>,
     program_creation_failed: bool,
     logic_op_enabled: bool,
@@ -214,6 +215,7 @@ impl TranslatorState {
             point_fade_threshold: 1.0,
             texture_crop_rect: [0, 0, 0, 0],
             viewport: [0, 0, 0, 0],
+            actual_window_size: (0, 0),
             program: None,
             program_creation_failed: false,
             logic_op_enabled: false,
@@ -232,6 +234,105 @@ impl TranslatorState {
 
     fn mvp(&self) -> [GLfloat; 16] {
         multiply(&self.projection.current, &self.modelview.current)
+    }
+}
+
+fn coordinate_trace_enabled() -> bool {
+    std::env::var_os("TOUCHHLE_TRACE_TRANSLATOR").is_some()
+}
+
+fn matrix_mode_name(mode: GLenum) -> &'static str {
+    match mode {
+        es1::MODELVIEW => "GL_MODELVIEW",
+        es1::PROJECTION => "GL_PROJECTION",
+        es1::TEXTURE => "GL_TEXTURE",
+        es1::MATRIX_PALETTE_OES => "GL_MATRIX_PALETTE_OES",
+        _ => "UNKNOWN",
+    }
+}
+
+fn log_matrix_operation(operation: &str, details: String) {
+    if coordinate_trace_enabled() {
+        log!("[GLES1→GLES2 MATRIX] {}: {}", operation, details);
+    }
+}
+
+fn log_matrix(label: &str, matrix: &[GLfloat; 16]) {
+    if !coordinate_trace_enabled() {
+        return;
+    }
+    log!("[GLES1→GLES2 MATRIX] {}:", label);
+    for row in 0..4 {
+        log!(
+            "[GLES1→GLES2 MATRIX]   [{:.6} {:.6} {:.6} {:.6}]",
+            matrix[row * 4],
+            matrix[row * 4 + 1],
+            matrix[row * 4 + 2],
+            matrix[row * 4 + 3]
+        );
+    }
+}
+
+fn log_viewport(actual_width: u32, actual_height: u32, x: GLint, y: GLint, width: GLsizei, height: GLsizei) {
+    if !coordinate_trace_enabled() {
+        return;
+    }
+    let aspect = if height > 0 { width as f32 / height as f32 } else { 0.0 };
+    log!(
+        "[GLES1→GLES2] glViewport called: x={}, y={}, width={}, height={}, aspect={:.3}, actual_window={}x{}",
+        x, y, width, height, aspect, actual_width, actual_height
+    );
+    if width != actual_width as GLsizei || height != actual_height as GLsizei {
+        log!(
+            "[GLES1→GLES2 VIEWPORT MISMATCH WARNING] game_requested={}x{}, actual_window={}x{}, aspect_mismatch=true",
+            width, height, actual_width, actual_height
+        );
+    }
+}
+
+fn diagnose_matrix_conversion(gles1_matrix: &[GLfloat; 16], gles2_matrix: &[GLfloat; 16]) {
+    if !coordinate_trace_enabled() {
+        return;
+    }
+    log!("[GLES1→GLES2 MATRIX CONVERSION DIAGNOSIS]");
+    log_matrix("GLES1 tracked matrix", gles1_matrix);
+    log_matrix("GLES2 upload matrix", gles2_matrix);
+    if gles1_matrix[0] < 0.0 && gles2_matrix[0] > 0.0 {
+        log!("[GLES1→GLES2 SIGN FLIP DETECTED] X-axis may be inverted");
+    }
+    if gles1_matrix[5] < 0.0 && gles2_matrix[5] > 0.0 {
+        log!("[GLES1→GLES2 SIGN FLIP DETECTED] Y-axis may be inverted");
+    }
+    if (gles1_matrix[0] - gles2_matrix[0]).abs() > 0.001 {
+        log!("[GLES1→GLES2 SCALE CHANGE] X-axis scaling changed");
+    }
+    if (gles1_matrix[5] - gles2_matrix[5]).abs() > 0.001 {
+        log!("[GLES1→GLES2 SCALE CHANGE] Y-axis scaling changed");
+    }
+}
+
+fn transform_vec4(matrix: &[GLfloat; 16], value: [GLfloat; 4]) -> [GLfloat; 4] {
+    [
+        matrix[0] * value[0] + matrix[4] * value[1] + matrix[8] * value[2] + matrix[12] * value[3],
+        matrix[1] * value[0] + matrix[5] * value[1] + matrix[9] * value[2] + matrix[13] * value[3],
+        matrix[2] * value[0] + matrix[6] * value[1] + matrix[10] * value[2] + matrix[14] * value[3],
+        matrix[3] * value[0] + matrix[7] * value[1] + matrix[11] * value[2] + matrix[15] * value[3],
+    ]
+}
+
+fn log_vertex_transformation(original: [GLfloat; 3], transformed: [GLfloat; 4]) {
+    if !coordinate_trace_enabled() {
+        return;
+    }
+    log!(
+        "[GLES1→GLES2 VERTEX TRANSFORM] original=({:.3}, {:.3}, {:.3}) clip=({:.3}, {:.3}, {:.3}, {:.3})",
+        original[0], original[1], original[2], transformed[0], transformed[1], transformed[2], transformed[3]
+    );
+    if transformed[3] != 0.0 {
+        log!(
+            "[GLES1→GLES2 VERTEX TRANSFORM] ndc=({:.3}, {:.3}, {:.3})",
+            transformed[0] / transformed[3], transformed[1] / transformed[3], transformed[2] / transformed[3]
+        );
     }
 }
 
@@ -264,6 +365,7 @@ impl GLESContext for GLES1OnGLES2Context {
             es1::load_with(|s| window.gl_get_proc_address(s));
             self.is_loaded = true;
         }
+        self.state.actual_window_size = window.framebuffer_size();
         Box::new(GLES1OnGLES2 {
             state: &mut self.state,
             _gl_lifetime: PhantomData,
@@ -1213,25 +1315,62 @@ impl GLES for GLES1OnGLES2<'_> {
     unsafe fn TexEnvxv(&mut self, target: GLenum, pname: GLenum, params: *const GLfixed) {
         if pname == es1::TEXTURE_ENV_COLOR { self.state.texture_env_color[self.state.active_texture] = std::slice::from_raw_parts(params, 4).iter().map(|v| fixed_to_float(*v)).collect::<Vec<_>>().try_into().unwrap(); } else { self.TexEnvi(target, pname, *params); }
     }
-    unsafe fn MatrixMode(&mut self, mode: GLenum) { self.state.matrix_mode = mode; }
-    unsafe fn LoadIdentity(&mut self) { self.state.matrix_mut().current = MATRIX_IDENTITY; }
-    unsafe fn LoadMatrixf(&mut self, m: *const GLfloat) { self.state.matrix_mut().current.copy_from_slice(std::slice::from_raw_parts(m, 16)); }
+    unsafe fn MatrixMode(&mut self, mode: GLenum) {
+        log_matrix_operation("glMatrixMode", format!("mode=0x{mode:x} ({})", matrix_mode_name(mode)));
+        self.state.matrix_mode = mode;
+    }
+    unsafe fn LoadIdentity(&mut self) {
+        log_matrix_operation("glLoadIdentity", format!("mode={}", matrix_mode_name(self.state.matrix_mode)));
+        self.state.matrix_mut().current = MATRIX_IDENTITY;
+    }
+    unsafe fn LoadMatrixf(&mut self, m: *const GLfloat) {
+        let values: [GLfloat; 16] = std::slice::from_raw_parts(m, 16).try_into().unwrap();
+        log_matrix_operation("glLoadMatrixf", format!("mode={}", matrix_mode_name(self.state.matrix_mode)));
+        self.state.matrix_mut().current = values;
+    }
     unsafe fn LoadMatrixx(&mut self, m: *const GLfixed) { let mut out = [0.0; 16]; for (d, s) in out.iter_mut().zip(std::slice::from_raw_parts(m, 16)) { *d = fixed_to_float(*s); } self.state.matrix_mut().current = out; }
-    unsafe fn MultMatrixf(&mut self, m: *const GLfloat) { let a = self.state.matrix_mut().current; let b = std::slice::from_raw_parts(m, 16).try_into().unwrap(); self.state.matrix_mut().current = multiply(&a, &b); }
-    unsafe fn MultMatrixx(&mut self, m: *const GLfixed) { let mut b = [0.0; 16]; for (d, s) in b.iter_mut().zip(std::slice::from_raw_parts(m, 16)) { *d = fixed_to_float(*s); } let a = self.state.matrix_mut().current; self.state.matrix_mut().current = multiply(&a, &b); }
+    unsafe fn MultMatrixf(&mut self, m: *const GLfloat) {
+        let b: [GLfloat; 16] = std::slice::from_raw_parts(m, 16).try_into().unwrap();
+        log_matrix_operation("glMultMatrixf", format!("mode={}", matrix_mode_name(self.state.matrix_mode)));
+        let a = self.state.matrix_mut().current;
+        self.state.matrix_mut().current = multiply(&a, &b);
+    }
+    unsafe fn MultMatrixx(&mut self, m: *const GLfixed) {
+        let mut b = [0.0; 16];
+        for (d, s) in b.iter_mut().zip(std::slice::from_raw_parts(m, 16)) { *d = fixed_to_float(*s); }
+        log_matrix_operation("glMultMatrixx", format!("mode={}", matrix_mode_name(self.state.matrix_mode)));
+        let a = self.state.matrix_mut().current;
+        self.state.matrix_mut().current = multiply(&a, &b);
+    }
     unsafe fn PushMatrix(&mut self) { let current = self.state.matrix_mut().current; self.state.matrix_mut().stack.push(current); }
     unsafe fn PopMatrix(&mut self) { if let Some(m) = self.state.matrix_mut().stack.pop() { self.state.matrix_mut().current = m; } }
-    unsafe fn Orthof(&mut self, l: GLfloat, r: GLfloat, b: GLfloat, t: GLfloat, n: GLfloat, f: GLfloat) { let a = self.state.matrix_mut().current; self.state.matrix_mut().current = multiply(&a, &ortho(l, r, b, t, n, f)); }
-    unsafe fn Orthox(&mut self, l: GLfixed, r: GLfixed, b: GLfixed, t: GLfixed, n: GLfixed, f: GLfixed) { self.Orthof(fixed_to_float(l), fixed_to_float(r), fixed_to_float(b), fixed_to_float(t), fixed_to_float(n), fixed_to_float(f)); }
-    unsafe fn Frustumf(&mut self, l: GLfloat, r: GLfloat, b: GLfloat, t: GLfloat, n: GLfloat, f: GLfloat) { let a = self.state.matrix_mut().current; self.state.matrix_mut().current = multiply(&a, &frustum(l, r, b, t, n, f)); }
-    unsafe fn Frustumx(&mut self, l: GLfixed, r: GLfixed, b: GLfixed, t: GLfixed, n: GLfixed, f: GLfixed) { self.Frustumf(fixed_to_float(l), fixed_to_float(r), fixed_to_float(b), fixed_to_float(t), fixed_to_float(n), fixed_to_float(f)); }
+    unsafe fn Orthof(&mut self, l: GLfloat, r: GLfloat, b: GLfloat, t: GLfloat, n: GLfloat, f: GLfloat) {
+        log_matrix_operation("glOrtho", format!("left={l}, right={r}, bottom={b}, top={t}, near={n}, far={f}"));
+        let a = self.state.matrix_mut().current;
+        self.state.matrix_mut().current = multiply(&a, &ortho(l, r, b, t, n, f));
+    }
+    unsafe fn Orthox(&mut self, l: GLfixed, r: GLfixed, b: GLfixed, t: GLfixed, n: GLfixed, f: GLfixed) {
+        self.Orthof(fixed_to_float(l), fixed_to_float(r), fixed_to_float(b), fixed_to_float(t), fixed_to_float(n), fixed_to_float(f));
+    }
+    unsafe fn Frustumf(&mut self, l: GLfloat, r: GLfloat, b: GLfloat, t: GLfloat, n: GLfloat, f: GLfloat) {
+        log_matrix_operation("glFrustum", format!("left={l}, right={r}, bottom={b}, top={t}, near={n}, far={f}"));
+        let a = self.state.matrix_mut().current;
+        self.state.matrix_mut().current = multiply(&a, &frustum(l, r, b, t, n, f));
+    }
+    unsafe fn Frustumx(&mut self, l: GLfixed, r: GLfixed, b: GLfixed, t: GLfixed, n: GLfixed, f: GLfixed) {
+        self.Frustumf(fixed_to_float(l), fixed_to_float(r), fixed_to_float(b), fixed_to_float(t), fixed_to_float(n), fixed_to_float(f));
+    }
     unsafe fn Translatef(&mut self, x: GLfloat, y: GLfloat, z: GLfloat) { let a = self.state.matrix_mut().current; self.state.matrix_mut().current = multiply(&a, &translation(x, y, z)); }
     unsafe fn Translatex(&mut self, x: GLfixed, y: GLfixed, z: GLfixed) { self.Translatef(fixed_to_float(x), fixed_to_float(y), fixed_to_float(z)); }
     unsafe fn Scalef(&mut self, x: GLfloat, y: GLfloat, z: GLfloat) { let a = self.state.matrix_mut().current; self.state.matrix_mut().current = multiply(&a, &scaling(x, y, z)); }
     unsafe fn Scalex(&mut self, x: GLfixed, y: GLfixed, z: GLfixed) { self.Scalef(fixed_to_float(x), fixed_to_float(y), fixed_to_float(z)); }
     unsafe fn Rotatef(&mut self, a: GLfloat, x: GLfloat, y: GLfloat, z: GLfloat) { let m = self.state.matrix_mut().current; self.state.matrix_mut().current = multiply(&m, &rotation(a, x, y, z)); }
     unsafe fn Rotatex(&mut self, a: GLfixed, x: GLfixed, y: GLfixed, z: GLfixed) { self.Rotatef(fixed_to_float(a), fixed_to_float(x), fixed_to_float(y), fixed_to_float(z)); }
-    unsafe fn Viewport(&mut self, x: GLint, y: GLint, w: GLsizei, h: GLsizei) { self.state.viewport = [x, y, w, h]; gl::Viewport(x, y, w, h); }
+    unsafe fn Viewport(&mut self, x: GLint, y: GLint, w: GLsizei, h: GLsizei) {
+        log_viewport(self.state.actual_window_size.0, self.state.actual_window_size.1, x, y, w, h);
+        self.state.viewport = [x, y, w, h];
+        gl::Viewport(x, y, w, h);
+    }
     unsafe fn Scissor(&mut self, x: GLint, y: GLint, w: GLsizei, h: GLsizei) { gl::Scissor(x, y, w, h); }
     unsafe fn Clear(&mut self, mask: GLbitfield) { gl::Clear(mask); }
     unsafe fn ClearColor(&mut self, r: GLclampf, g: GLclampf, b: GLclampf, a: GLclampf) { gl::ClearColor(r, g, b, a); }
@@ -1368,7 +1507,9 @@ impl GLES for GLES1OnGLES2<'_> {
             None => return,
         };
         gl::UseProgram(program);
-        let mvp = unsafe { self.state.mvp() };
+        let mvp = self.state.mvp();
+        log_matrix("Final GLES2 projection/MVP upload", &mvp);
+        diagnose_matrix_conversion(&self.state.projection.current, &mvp);
         let mvp_loc = gl::GetUniformLocation(program, b"u_mvp\0".as_ptr() as *const _);
         gl::UniformMatrix4fv(mvp_loc, 1, gl::FALSE, mvp.as_ptr());
         let modelview_loc = gl::GetUniformLocation(program, b"u_modelview\0".as_ptr() as *const _);
@@ -1447,6 +1588,13 @@ impl GLES for GLES1OnGLES2<'_> {
         self.bind_array_range(ATTR_MATRIX_INDEX, &palette_index, first, count);
         self.bind_array_range(ATTR_WEIGHT, &palette_weight, first, count);
         self.bind_array_range(ATTR_POINT_SIZE, &point_size_array, first, count);
+        if coordinate_trace_enabled() && position.enabled && position.buffer_binding == 0 && !position.pointer.is_null() {
+            let components = position.size.max(1) as usize;
+            let first_offset = (first.max(0) as usize).saturating_mul(if position.stride > 0 { position.stride as usize } else { components * std::mem::size_of::<GLfloat>() });
+            let raw = (position.pointer as *const u8).add(first_offset) as *const GLfloat;
+            let vertex = [raw.read_unaligned(), if components > 1 { raw.add(1).read_unaligned() } else { 0.0 }, if components > 2 { raw.add(2).read_unaligned() } else { 0.0 }];
+            log_vertex_transformation(vertex, transform_vec4(&mvp, [vertex[0], vertex[1], vertex[2], 1.0]));
+        }
         gl::DrawArrays(mode, first, count);
         gl::BindBuffer(gl::ARRAY_BUFFER, self.state.array_buffer_binding);
     }
@@ -1457,6 +1605,8 @@ impl GLES for GLES1OnGLES2<'_> {
         };
         gl::UseProgram(program);
         let mvp = self.state.mvp();
+        log_matrix("Final GLES2 projection/MVP upload", &mvp);
+        diagnose_matrix_conversion(&self.state.projection.current, &mvp);
         let mvp_loc = gl::GetUniformLocation(program, b"u_mvp\0".as_ptr() as *const _);
         gl::UniformMatrix4fv(mvp_loc, 1, gl::FALSE, mvp.as_ptr());
         let modelview_loc = gl::GetUniformLocation(program, b"u_modelview\0".as_ptr() as *const _);
@@ -1507,6 +1657,9 @@ impl GLES for GLES1OnGLES2<'_> {
         self.bind_array_range(ATTR_MATRIX_INDEX, &palette_index, 0, count);
         self.bind_array_range(ATTR_WEIGHT, &palette_weight, 0, count);
         self.bind_array_range(ATTR_POINT_SIZE, &point_size_array, 0, count);
+        if coordinate_trace_enabled() {
+            log_matrix("GLES2 indexed draw matrix", &mvp);
+        }
         let (draw_indices, restore_element_buffer) = self.stage_client_indices(type_, indices, count);
         gl::DrawElements(mode, count, type_, draw_indices);
         if restore_element_buffer {
