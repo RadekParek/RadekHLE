@@ -23,6 +23,7 @@ use crate::image::Image;
 use crate::matrix::Matrix;
 use crate::options::Options;
 use crate::Environment;
+use sdl2::event::WindowEvent;
 use sdl2::mouse::MouseButton;
 use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::surface::Surface;
@@ -1400,6 +1401,8 @@ impl Window {
             on_main_stack: true,
         };
 
+        window.refresh_display_metrics("startup");
+
         // Set up OpenGL ES context used for splash screen and app UI rendering
         // (see src/frameworks/core_animation/composition.rs). OpenGL ES is used
         // because SDL2 won't let us use more than one graphics API in the same
@@ -1463,6 +1466,38 @@ impl Window {
         }
 
         window
+    }
+
+    fn refresh_display_metrics(&mut self, reason: &str) {
+        let (drawable_width, drawable_height) = self.window.drawable_size();
+        if drawable_width == 0 || drawable_height == 0 {
+            return;
+        }
+        let (window_width, window_height) = self.window.size();
+        if Self::rotatable_fullscreen() && self.host_screen_size.is_some() {
+            let current_screen_size = normalize_portrait_size((drawable_width, drawable_height));
+            if self.host_screen_size != Some(current_screen_size) {
+                log!(
+                    "[DISPLAY] host screen size changed: {:?} -> {:?} ({})",
+                    self.host_screen_size,
+                    current_screen_size,
+                    reason
+                );
+                self.host_screen_size = Some(current_screen_size);
+            }
+        }
+        let (framebuffer_width, framebuffer_height) = self.framebuffer_size();
+        log!(
+            "[DISPLAY] {}: window={}x{}, drawable={}x{}, framebuffer={}x{}, orientation={:?}",
+            reason,
+            window_width,
+            window_height,
+            drawable_width,
+            drawable_height,
+            framebuffer_width,
+            framebuffer_height,
+            self.device_orientation
+        );
     }
 
     /// Poll for events from the OS. This needs to be done reasonably often
@@ -1614,8 +1649,16 @@ impl Window {
                 break;
             };
 
-            // Virtual accelerometer
             match event {
+                E::Window {
+                    win_event: WindowEvent::Resized(_, _),
+                    ..
+                }
+                | E::Window {
+                    win_event: WindowEvent::SizeChanged(_, _),
+                    ..
+                } => self.refresh_display_metrics("SDL rotation/resize event"),
+                // Virtual accelerometer
                 E::MouseButtonDown {
                     x,
                     y,
@@ -2810,6 +2853,7 @@ impl Window {
         }
 
         self.device_orientation = new_orientation;
+        self.refresh_display_metrics("orientation change");
 
         if self.splash_image.is_some() {
             self.display_splash();

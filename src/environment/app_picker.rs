@@ -983,8 +983,8 @@ fn app_picker_inner(
         env,
         &quick_options_stuff.quality_buttons,
         1,
-        &[1, 2, 3, 4],
-        quick_options_texture_upscaler,
+        &[1, 2, 4, 8],
+        quick_options_anti_aliasing,
     );
     () = msg![env; (quick_options_stuff.no_texture_compression_switch)
         setOn:quick_options_no_texture_compression];
@@ -992,8 +992,8 @@ fn app_picker_inner(
         env,
         &quick_options_stuff.quality_buttons,
         2,
-        &[1, 2, 4, 8],
-        quick_options_anti_aliasing,
+        &[1, 2, 3, 4],
+        quick_options_texture_upscaler,
     );
     update_scale_hack_buttons(
         env,
@@ -1417,13 +1417,13 @@ fn app_picker_inner(
             update_quality_button_group(env, &quick_options_stuff.quality_buttons, 0, &[1, 2, 4, 8, 16], value);
         } else if let Some(value) = std::mem::take(&mut host_obj.texture_upscaler) {
             quick_options_texture_upscaler = value;
-            update_quality_button_group(env, &quick_options_stuff.quality_buttons, 1, &[1, 2, 3, 4], value);
+            update_quality_button_group(env, &quick_options_stuff.quality_buttons, 2, &[1, 2, 3, 4], value);
         } else if let Some(enabled) = std::mem::take(&mut host_obj.no_texture_compression) {
             quick_options_no_texture_compression = enabled;
             () = msg![env; (quick_options_stuff.no_texture_compression_switch) setOn:enabled];
         } else if let Some(value) = std::mem::take(&mut host_obj.anti_aliasing) {
             quick_options_anti_aliasing = value;
-            update_quality_button_group(env, &quick_options_stuff.quality_buttons, 2, &[1, 2, 4, 8], value);
+            update_quality_button_group(env, &quick_options_stuff.quality_buttons, 1, &[1, 2, 4, 8], value);
         }
     };
 
@@ -2506,12 +2506,12 @@ fn setup_quick_options(
         RowKind::Switch("frameGeneration:", false),
         RowKind::Label("Anisotropic filtering"),
         RowKind::Buttons(&[("1×", "anisotropicFiltering1"), ("2×", "anisotropicFiltering2"), ("4×", "anisotropicFiltering4"), ("8×", "anisotropicFiltering8"), ("16×", "anisotropicFiltering16")]),
+        RowKind::Label("Anti-aliasing"),
+        RowKind::Buttons(&[("1×", "antiAliasing1"), ("2×", "antiAliasing2"), ("4×", "antiAliasing4"), ("8×", "antiAliasing8")]),
         RowKind::Label("Texture upscaler"),
         RowKind::Buttons(&[("1×", "textureUpscaler1"), ("2×", "textureUpscaler2"), ("3×", "textureUpscaler3"), ("4×", "textureUpscaler4")]),
         RowKind::Label("No texture compression"),
         RowKind::Switch("noTextureCompression:", false),
-        RowKind::Label("Anti-aliasing"),
-        RowKind::Buttons(&[("1×", "antiAliasing1"), ("2×", "antiAliasing2"), ("4×", "antiAliasing4"), ("8×", "antiAliasing8")]),
         RowKind::Label("Dynarmic JIT"),
         RowKind::Switch("arm64Backend:", false),
         RowKind::Label("Interpreter fallback"),

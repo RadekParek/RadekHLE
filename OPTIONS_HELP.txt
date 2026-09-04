@@ -293,7 +293,7 @@ Debugging options:
 
     --llvmpipe-fallback / --disable-llvmpipe-fallback
         Enable or disable the Mesa LLVMPipe CPU rasterizer fallback when
-        creating the ARM32 OpenGL ES compatibility context. Enabled by default.
+        creating the ARM32 OpenGL ES compatibility context. Disabled by default.
 
     --gdb=...
         Starts touchHLE in debugging mode, listening for GDB remote serial
