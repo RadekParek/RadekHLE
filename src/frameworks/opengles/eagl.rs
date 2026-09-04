@@ -718,7 +718,7 @@ pub const CLASSES: ClassExports = objc_classes! {
                 }
             })
         };
-        if matches!(presentation_mode, Some("native-es1-readback" | "translator-readback")) {
+        if matches!(presentation_mode, Some("native-es1-readback")) {
             log_once_fmt!(
                 "Layer {:?} uses {}; presenting renderbuffer {:?} through resolved RAM readback to preserve tile contents and alpha.",
                 drawable,

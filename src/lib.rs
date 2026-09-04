@@ -435,7 +435,7 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
         }
     }
     crate::log::set_file_logging(options.log_file);
-    crate::gles::configure_translator_tracing(options.trace_gl_errors);
+    crate::gles::configure_translator_tracing(false);
 
     let architecture = {
         let executable_bytes = fs

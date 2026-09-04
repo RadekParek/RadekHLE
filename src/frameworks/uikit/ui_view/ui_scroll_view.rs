@@ -145,11 +145,20 @@ pub const CLASSES: ClassExports = objc_classes! {
     env.objc.borrow::<UIScrollViewHostObject>(this).content_offset
 }
 - (())setContentOffset:(CGPoint)offset {
+    let old_offset = env.objc.borrow::<UIScrollViewHostObject>(this).content_offset;
     env.objc.borrow_mut::<UIScrollViewHostObject>(this).content_offset = offset;
 
-    let mut bounds: CGRect = msg![env; this bounds];
-    bounds.origin = offset;
-    () = msg![env; this setBounds:bounds];
+    let delta = CGPoint {
+        x: old_offset.x - offset.x,
+        y: old_offset.y - offset.y,
+    };
+    let subviews = env.objc.borrow::<super::UIViewHostObject>(this).subviews.clone();
+    for subview in subviews {
+        let mut frame: CGRect = msg![env; subview frame];
+        frame.origin.x += delta.x;
+        frame.origin.y += delta.y;
+        () = msg![env; subview setFrame:frame];
+    }
     () = msg![env; this setNeedsDisplay];
 }
 - (())setContentOffset:(CGPoint)offset animated:(bool)_animated {
