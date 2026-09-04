@@ -442,7 +442,7 @@ pub const CLASSES: ClassExports = objc_classes! {
             if env
                 .window
                 .as_ref()
-                .is_some_and(crate::window::Window::is_fullscreen_window)
+                .is_some_and(|window| window.is_fullscreen_window())
             {
                 let (display_width, display_height) = env.window.as_ref().unwrap().drawable_size();
                 if width > display_width || height > display_height {
