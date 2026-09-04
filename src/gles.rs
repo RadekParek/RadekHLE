@@ -98,10 +98,15 @@ pub use gles_generic::GLESContext;
 pub use gles_generic::GLES;
 pub use software::SoftwareGLESContext;
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 static TRANSLATOR_TRACE_EVENTS: AtomicU32 = AtomicU32::new(0);
 static TRANSLATOR_TRACING_ENABLED: AtomicBool = AtomicBool::new(false);
+static GL_CALL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn next_gl_call_id() -> u64 {
+    GL_CALL_SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1
+}
 
 pub(crate) fn configure_translator_tracing(enabled: bool) {
     TRANSLATOR_TRACING_ENABLED.store(enabled, Ordering::Relaxed);

@@ -1367,7 +1367,7 @@ unsafe fn present_renderbuffer_es2(
     };
     gles.UseProgram(program.program);
     gles.Uniform1i(program.u_tex, 0);
-    let m = crate::matrix::Matrix::<4>::from(&rotation_matrix);
+    let m = crate::gles::present::centered_texture_rotation(rotation_matrix);
     let cols = m.columns();
     gles.UniformMatrix4fv(
         program.u_tex_mat,
@@ -1691,37 +1691,14 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
     let viewport = env.window.as_mut().unwrap().viewport();
     let device_family = env.window.as_mut().unwrap().device_family();
     let device_orientation = env.window.as_mut().unwrap().current_rotation();
-    // For iPad apps in a non-portrait orientation, the UIKit auto-rotation
-    // path (`UIWindow addSubview:` in ui_window.rs) applies a rotation
-    // transform to the rootViewController's view so that the app, which
-    // typically draws content "upright" inside the EAGL layer's portrait
-    // bounds, ends up rotated for landscape display when Core Animation
-    // composites it. touchHLE bypasses CA composition for EAGL apps that
-    // call `presentRenderbuffer:` directly, so we have to replicate that
-    // additional rotation here. Without it, iPad landscape games (e.g.
-    // Plants vs. Zombies HD) render upside-down. iPhone-only landscape
-    // games (e.g. Plants vs. Zombies, the iPhone version) typically rotate
-    // their drawing themselves, so we must NOT apply the extra rotation
-    // for them.
-    // FIXME: A cleaner solution would be to read the actual transform from
-    //        the EAGL layer's view hierarchy and apply it here, instead of
-    //        using a device-family heuristic.
-    let needs_autorotation_compensation = device_family.is_ipad()
-        && !matches!(
-            device_orientation,
-            crate::window::DeviceOrientation::Portrait
-        );
+    // The fullscreen EAGL path bypasses UIKit/Core Animation composition,
+    // so apply the window's canonical device rotation exactly once here for
+    // every device family.
     let mut rotation_matrix = if std::env::var_os("TOUCHHLE_DISABLE_PRESENT_ROTATION").is_some() {
         log_once!(
             "TOUCHHLE_DISABLE_PRESENT_ROTATION=1: presenting EAGL renderbuffer without texture rotation"
         );
         crate::matrix::Matrix::<2>::identity()
-    } else if needs_autorotation_compensation {
-        env.window
-            .as_mut()
-            .unwrap()
-            .rotation_matrix()
-            .multiply(&crate::matrix::Matrix::z_rotation(std::f32::consts::PI))
     } else {
         env.window.as_mut().unwrap().rotation_matrix()
     };
@@ -1735,6 +1712,16 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
         rotation_matrix = crate::matrix::Matrix::<2>::identity();
     }
     let virtual_cursor_visible_at = env.window.as_mut().unwrap().virtual_cursor_visible_at();
+    if trace_gl_errors {
+        log_once_fmt!(
+            "[GLES PRESENT] family={:?} orientation={:?} viewport={:?} rotation={:?} frame_generation={}",
+            device_family,
+            device_orientation,
+            viewport,
+            rotation_matrix.columns(),
+            frame_generation
+        );
+    }
 
     let Some(gles_ctx) = super::get_thread_context(
         &mut env.framework_state.opengles,
@@ -1792,10 +1779,13 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
             return;
         }
         if !seen.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            let driver = unsafe { gles.driver_description() };
             log!(
-                "[--trace-gl-errors] present_renderbuffer: section {:?} produced GL error {:#x} [this log will only be shown once]",
+                "[--trace-gl-errors] present_renderbuffer: section {:?} produced {} ({:#x}); driver={} [this log will only be shown once]",
                 section,
-                err
+                crate::frameworks::opengles::gles_guest::gl_error_name_for_diagnostics(err),
+                err,
+                driver
             );
         }
         while gles.GetError() != 0 {}

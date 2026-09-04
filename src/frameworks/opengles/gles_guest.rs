@@ -46,6 +46,10 @@ fn trace_potatogold_render() -> bool {
     std::env::var_os("TOUCHHLE_TRACE_POTATOGOLD_RENDER").is_some()
 }
 
+pub(crate) fn gl_error_name_for_diagnostics(err: GLenum) -> &'static str {
+    gl_error_name(err)
+}
+
 fn gl_error_name(err: GLenum) -> &'static str {
     match err {
         gles11::NO_ERROR => "GL_NO_ERROR",
@@ -171,6 +175,7 @@ fn log_gpu_state(gles: &mut dyn GLES, reason: &str) {
 
 fn trace_gl_error(
     trace: bool,
+    call_id: u64,
     first_error: GLenum,
     function_name: Option<&String>,
     caller: &'static std::panic::Location<'static>,
@@ -187,13 +192,23 @@ fn trace_gl_error(
     loop {
         let count = GENERAL_ERROR_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
         log!(
-            "[GLES ERROR #{:05}] code=0x{:04x} name={} function={} guest_wrapper={}:{} driver={}",
+            "[GLES ERROR #{:05}] call_id={} code=0x{:04x} name={} function={} guest_wrapper={}:{} backend={} driver={}",
             count + 1,
+            call_id,
             error,
             gl_error_name(error),
             function_name,
             caller.file(),
             caller.line(),
+            if gles.is_translator() {
+                if gles.is_es2() { "gles1-on-gles2" } else { "gles1-on-gles3" }
+            } else if gles.is_native_es1() {
+                "gles1-native"
+            } else if gles.is_es2() {
+                "gles2"
+            } else {
+                "other"
+            },
             driver
         );
         log_gpu_state(gles, "after-error");
@@ -244,6 +259,7 @@ where
         );
         return U::default();
     };
+    let call_id = crate::gles::next_gl_call_id();
     let res = f(gles.as_mut(), &mut env.mem);
     if crate::gles::translator_tracing_enabled() && gles.is_translator() {
         crate::gles::trace_translator_event(format!(
@@ -253,7 +269,14 @@ where
         ));
     }
     let err = unsafe { gles.GetError() };
-    trace_gl_error(trace, err, env.active_host_function.as_ref(), caller, gles.as_mut());
+    trace_gl_error(
+        trace,
+        call_id,
+        err,
+        env.active_host_function.as_ref(),
+        caller,
+        gles.as_mut(),
+    );
     #[allow(clippy::let_and_return)]
     res
 }
@@ -289,9 +312,17 @@ where
         );
         return U::default();
     };
+    let call_id = crate::gles::next_gl_call_id();
     let res = f(gles.as_mut(), &mut env.mem);
     let err = unsafe { gles.GetError() };
-    trace_gl_error(trace, err, env.active_host_function.as_ref(), caller, gles.as_mut());
+    trace_gl_error(
+        trace,
+        call_id,
+        err,
+        env.active_host_function.as_ref(),
+        caller,
+        gles.as_mut(),
+    );
     #[allow(clippy::let_and_return)]
     res
 }
