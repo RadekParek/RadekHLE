@@ -244,6 +244,19 @@ where
         );
         return U::default();
     };
+    let traced_function = env
+        .active_host_function
+        .as_deref()
+        .unwrap_or("unknown guest wrapper");
+    if trace {
+        log!(
+            "[GLES TRACE CALL] function={} guest_wrapper={}:{} driver={}",
+            traced_function,
+            caller.file(),
+            caller.line(),
+            unsafe { gles.driver_description() }
+        );
+    }
     let res = f(gles.as_mut(), &mut env.mem);
     if crate::gles::translator_tracing_enabled() && gles.is_translator() {
         crate::gles::trace_translator_event(format!(
@@ -253,6 +266,14 @@ where
         ));
     }
     let err = unsafe { gles.GetError() };
+    if trace {
+        log!(
+            "[GLES TRACE RESULT] function={} error=0x{:04x} name={}",
+            traced_function,
+            err,
+            gl_error_name(err)
+        );
+    }
     trace_gl_error(trace, err, env.active_host_function.as_ref(), caller, gles.as_mut());
     #[allow(clippy::let_and_return)]
     res
@@ -289,8 +310,29 @@ where
         );
         return U::default();
     };
+    let traced_function = env
+        .active_host_function
+        .as_deref()
+        .unwrap_or("unknown guest wrapper");
+    if trace {
+        log!(
+            "[GLES TRACE CALL] function={} guest_wrapper={}:{} driver={}",
+            traced_function,
+            caller.file(),
+            caller.line(),
+            unsafe { gles.driver_description() }
+        );
+    }
     let res = f(gles.as_mut(), &mut env.mem);
     let err = unsafe { gles.GetError() };
+    if trace {
+        log!(
+            "[GLES TRACE RESULT] function={} error=0x{:04x} name={}",
+            traced_function,
+            err,
+            gl_error_name(err)
+        );
+    }
     trace_gl_error(trace, err, env.active_host_function.as_ref(), caller, gles.as_mut());
     #[allow(clippy::let_and_return)]
     res

@@ -27,8 +27,8 @@ View options:
         app with an increased internal resolution. This is a hack and there's
         no guarantee it will work correctly for all apps.
 
-        The default is no scale hack, which is equivalent to a value of 1 (i.e.
-        a scale of 1×).
+        The default is a 4× scale hack. Use --scale-hack=1 to disable it (i.e.
+        use the native internal resolution).
 
         Values below 1 are supported for lower internal resolution, including
         0.50 and 0.75. Values above 1 increase internal resolution.

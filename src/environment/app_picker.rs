@@ -847,7 +847,7 @@ fn app_picker_inner(
         app_frame,
         &host_resolutions,
     );
-    let mut quick_options_scale_hack: Option<f32> = None;
+    let mut quick_options_scale_hack: Option<f32> = Some(4.0);
     let mut quick_options_custom_resolution: Option<(u32, u32)> = None;
     let mut quick_options_fullscreen: Option<()> = None;
     let mut quick_options_orientation: Option<DeviceOrientation> = None;

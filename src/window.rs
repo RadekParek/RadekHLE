@@ -2580,6 +2580,11 @@ impl Window {
 
         let (mut source_pixels, source_width, source_height) =
             orient_software_pixels(source_pixels, width, height, self.device_orientation);
+        crate::gles::present::overlay_software_hud(
+            &mut source_pixels,
+            source_width,
+            source_height,
+        );
         let source = match Surface::from_data(
             &mut source_pixels,
             source_width,
@@ -2884,6 +2889,14 @@ impl Window {
             return self.window.drawable_size();
         }
         size_for_orientation_from_size(self.screen_size(), self.device_orientation, self.scale_hack)
+    }
+
+    pub fn is_fullscreen_window(&self) -> bool {
+        self.fullscreen || Self::rotatable_fullscreen()
+    }
+
+    pub fn drawable_size(&self) -> (u32, u32) {
+        self.window.drawable_size()
     }
 
     pub fn is_software_presentation(&self) -> bool {

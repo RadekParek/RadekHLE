@@ -438,6 +438,33 @@ pub const CLASSES: ClassExports = objc_classes! {
             let mut width = (width * scale_hack).round() as u32;
             let mut height = (height * scale_hack).round() as u32;
 
+            #[cfg(target_os = "android")]
+            if env
+                .window
+                .as_ref()
+                .is_some_and(crate::window::Window::is_fullscreen_window)
+            {
+                let (display_width, display_height) = env.window.as_ref().unwrap().drawable_size();
+                if width > display_width || height > display_height {
+                    let limit = (display_width as f32 / width as f32)
+                        .min(display_height as f32 / height as f32)
+                        .min(1.0);
+                    let old_size = (width, height);
+                    width = ((width as f32 * limit).round() as u32).max(1);
+                    height = ((height as f32 * limit).round() as u32).max(1);
+                    log!(
+                        "[DISPLAY] fullscreen renderbuffer capped to drawable size: requested={}x{}, capped={}x{}, drawable={}x{}, scale_hack={:.2}",
+                        old_size.0,
+                        old_size.1,
+                        width,
+                        height,
+                        display_width,
+                        display_height,
+                        scale_hack
+                    );
+                }
+            }
+
             // If even the fallback produced a degenerate size, clamp to a
             // minimum 1x1 so the GL call below cannot receive a zero extent.
             width = width.max(1);
@@ -712,7 +739,7 @@ pub const CLASSES: ClassExports = objc_classes! {
                 if gles.is_native_es1() {
                     "native-es1-readback"
                 } else if gles.is_translator() {
-                    "translator-readback"
+                    "translator-direct"
                 } else {
                     "shader-direct"
                 }
@@ -1182,6 +1209,7 @@ unsafe fn present_renderbuffer_es2_translator(
         8usize as *const _,
     );
     gles.DrawArrays(gles2::TRIANGLES, 0, 6);
+    crate::gles::present::draw_onscreen_hud_es2(gles, viewport);
 
     if old_attrib_6 == 0 {
         gles.DisableVertexAttribArray(6);
@@ -1367,7 +1395,7 @@ unsafe fn present_renderbuffer_es2(
     };
     gles.UseProgram(program.program);
     gles.Uniform1i(program.u_tex, 0);
-    let m = crate::matrix::Matrix::<4>::from(&rotation_matrix);
+    let m = crate::gles::present::centered_texture_rotation(rotation_matrix);
     let cols = m.columns();
     gles.UniformMatrix4fv(
         program.u_tex_mat,
@@ -1401,6 +1429,7 @@ unsafe fn present_renderbuffer_es2(
         8usize as *const _,
     );
     gles.DrawArrays(gles2::TRIANGLES, 0, 6);
+    crate::gles::present::draw_onscreen_hud_es2(gles, viewport);
 
     // Optional: virtual cursor.
     if let Some((cx, cy, pressed)) = virtual_cursor_visible_at {
@@ -1762,6 +1791,17 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
 
     let mut gles_boxed = gles_ctx.make_current(env.window.as_mut().unwrap());
     let gles = gles_boxed.as_mut();
+    if trace_gl_errors {
+        log!(
+            "[EAGL PRESENT TRACE] backend={} driver={} orientation={:?} viewport={:?} rotation_enabled={} frame_generation={}",
+            if gles.is_translator() { "translator" } else if gles.is_es2() { "es2" } else { "es1" },
+            unsafe { gles.driver_description() },
+            device_orientation,
+            viewport,
+            !std::env::var_os("TOUCHHLE_DISABLE_PRESENT_ROTATION").is_some(),
+            frame_generation
+        );
+    }
 
     // Per-section diagnostic checkpoint helper. When --trace-gl-errors is
     // on, this drains GL errors after each named section of
@@ -1821,7 +1861,16 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
             std::mem::drop(gles_boxed);
             present_renderbuffer_readback(env, drawable);
         } else {
-            present_renderbuffer_es2(gles, viewport, rotation_matrix, virtual_cursor_visible_at);
+            if gles.is_translator() {
+                present_renderbuffer_es2_translator(
+                    gles,
+                    viewport,
+                    rotation_matrix,
+                    virtual_cursor_visible_at,
+                );
+            } else {
+                present_renderbuffer_es2(gles, viewport, rotation_matrix, virtual_cursor_visible_at);
+            }
             std::mem::drop(gles_boxed);
             env.window.as_mut().unwrap().swap_window();
         }

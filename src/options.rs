@@ -255,7 +255,7 @@ impl Default for Options {
             custom_screen_size: None,
             initial_orientation: DeviceOrientation::Portrait,
             ios_version: None,
-            scale_hack: 1.0,
+            scale_hack: 4.0,
             analog_stick_tilt_controls: true,
             deadzone: 0.1,
             x_tilt_range: 60.0,
