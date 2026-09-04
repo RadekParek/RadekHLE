@@ -98,14 +98,21 @@ pub use gles_generic::GLESContext;
 pub use gles_generic::GLES;
 pub use software::SoftwareGLESContext;
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 static TRANSLATOR_TRACE_EVENTS: AtomicU32 = AtomicU32::new(0);
+static TRANSLATOR_TRACING_ENABLED: AtomicBool = AtomicBool::new(false);
 
-pub(crate) fn configure_translator_tracing(_enabled: bool) {}
+pub(crate) fn configure_translator_tracing(enabled: bool) {
+    TRANSLATOR_TRACING_ENABLED.store(enabled, Ordering::Relaxed);
+    if enabled {
+        log!("GLES translator tracing enabled; GLES1 matrix operations will be logged");
+    }
+}
 
 pub(crate) fn translator_tracing_enabled() -> bool {
-    std::env::var_os("TOUCHHLE_TRACE_TRANSLATOR").is_some()
+    TRANSLATOR_TRACING_ENABLED.load(Ordering::Relaxed)
+        || std::env::var_os("TOUCHHLE_TRACE_TRANSLATOR").is_some()
 }
 
 pub(crate) fn trace_translator_event(event: String) {

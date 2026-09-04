@@ -242,7 +242,7 @@ impl TranslatorState {
 }
 
 fn coordinate_trace_enabled() -> bool {
-    std::env::var_os("TOUCHHLE_TRACE_TRANSLATOR").is_some()
+    crate::gles::translator_tracing_enabled()
 }
 
 fn matrix_mode_name(mode: GLenum) -> &'static str {
@@ -275,6 +275,9 @@ fn log_matrix(label: &str, matrix: &[GLfloat; 16]) {
             matrix[row * 4 + 3]
         );
     }
+}
+fn log_matrix_result(operation: &str, matrix: &[GLfloat; 16]) {
+    log_matrix(&format!("after {operation}"), matrix);
 }
 
 fn log_viewport(actual_width: u32, actual_height: u32, x: GLint, y: GLint, width: GLsizei, height: GLsizei) {
@@ -1336,56 +1339,121 @@ impl GLES for GLES1OnGLES2<'_> {
         if pname == es1::TEXTURE_ENV_COLOR { self.state.texture_env_color[self.state.active_texture] = std::slice::from_raw_parts(params, 4).iter().map(|v| fixed_to_float(*v)).collect::<Vec<_>>().try_into().unwrap(); } else { self.TexEnvi(target, pname, *params); }
     }
     unsafe fn MatrixMode(&mut self, mode: GLenum) {
-        log_matrix_operation("glMatrixMode", format!("mode=0x{mode:x} ({})", matrix_mode_name(mode)));
         self.state.matrix_mode = mode;
+        log_matrix_operation("glMatrixMode", format!("mode=0x{mode:x} ({})", matrix_mode_name(mode)));
+        let current = self.state.matrix_mut().current;
+        log_matrix_result("glMatrixMode", &current);
     }
     unsafe fn LoadIdentity(&mut self) {
-        log_matrix_operation("glLoadIdentity", format!("mode={}", matrix_mode_name(self.state.matrix_mode)));
         self.state.matrix_mut().current = MATRIX_IDENTITY;
+        log_matrix_operation("glLoadIdentity", format!("mode={}", matrix_mode_name(self.state.matrix_mode)));
+        log_matrix_result("glLoadIdentity", &MATRIX_IDENTITY);
     }
     unsafe fn LoadMatrixf(&mut self, m: *const GLfloat) {
         let values: [GLfloat; 16] = std::slice::from_raw_parts(m, 16).try_into().unwrap();
-        log_matrix_operation("glLoadMatrixf", format!("mode={}", matrix_mode_name(self.state.matrix_mode)));
         self.state.matrix_mut().current = values;
+        log_matrix_operation("glLoadMatrixf", format!("mode={}", matrix_mode_name(self.state.matrix_mode)));
+        log_matrix_result("glLoadMatrixf", &values);
     }
-    unsafe fn LoadMatrixx(&mut self, m: *const GLfixed) { let mut out = [0.0; 16]; for (d, s) in out.iter_mut().zip(std::slice::from_raw_parts(m, 16)) { *d = fixed_to_float(*s); } self.state.matrix_mut().current = out; }
+    unsafe fn LoadMatrixx(&mut self, m: *const GLfixed) {
+        let mut out = [0.0; 16];
+        for (d, s) in out.iter_mut().zip(std::slice::from_raw_parts(m, 16)) {
+            *d = fixed_to_float(*s);
+        }
+        self.state.matrix_mut().current = out;
+        log_matrix_operation("glLoadMatrixx", format!("mode={}", matrix_mode_name(self.state.matrix_mode)));
+        log_matrix_result("glLoadMatrixx", &out);
+    }
     unsafe fn MultMatrixf(&mut self, m: *const GLfloat) {
         let b: [GLfloat; 16] = std::slice::from_raw_parts(m, 16).try_into().unwrap();
-        log_matrix_operation("glMultMatrixf", format!("mode={}", matrix_mode_name(self.state.matrix_mode)));
         let a = self.state.matrix_mut().current;
         self.state.matrix_mut().current = multiply(&a, &b);
+        log_matrix_operation("glMultMatrixf", format!("mode={}", matrix_mode_name(self.state.matrix_mode)));
+        log_matrix("glMultMatrixf input", &b);
+        let current = self.state.matrix_mut().current;
+        log_matrix_result("glMultMatrixf", &current);
     }
     unsafe fn MultMatrixx(&mut self, m: *const GLfixed) {
         let mut b = [0.0; 16];
-        for (d, s) in b.iter_mut().zip(std::slice::from_raw_parts(m, 16)) { *d = fixed_to_float(*s); }
-        log_matrix_operation("glMultMatrixx", format!("mode={}", matrix_mode_name(self.state.matrix_mode)));
+        for (d, s) in b.iter_mut().zip(std::slice::from_raw_parts(m, 16)) {
+            *d = fixed_to_float(*s);
+        }
         let a = self.state.matrix_mut().current;
         self.state.matrix_mut().current = multiply(&a, &b);
+        log_matrix_operation("glMultMatrixx", format!("mode={}", matrix_mode_name(self.state.matrix_mode)));
+        log_matrix("glMultMatrixx input", &b);
+        let current = self.state.matrix_mut().current;
+        log_matrix_result("glMultMatrixx", &current);
     }
-    unsafe fn PushMatrix(&mut self) { let current = self.state.matrix_mut().current; self.state.matrix_mut().stack.push(current); }
-    unsafe fn PopMatrix(&mut self) { if let Some(m) = self.state.matrix_mut().stack.pop() { self.state.matrix_mut().current = m; } }
+    unsafe fn PushMatrix(&mut self) {
+        let current = self.state.matrix_mut().current;
+        self.state.matrix_mut().stack.push(current);
+        log_matrix_operation("glPushMatrix", format!("mode={}", matrix_mode_name(self.state.matrix_mode)));
+        log_matrix_result("glPushMatrix", &current);
+    }
+    unsafe fn PopMatrix(&mut self) {
+        if let Some(m) = self.state.matrix_mut().stack.pop() {
+            self.state.matrix_mut().current = m;
+        }
+        log_matrix_operation("glPopMatrix", format!("mode={}", matrix_mode_name(self.state.matrix_mode)));
+        let current = self.state.matrix_mut().current;
+        log_matrix_result("glPopMatrix", &current);
+    }
     unsafe fn Orthof(&mut self, l: GLfloat, r: GLfloat, b: GLfloat, t: GLfloat, n: GLfloat, f: GLfloat) {
-        log_matrix_operation("glOrtho", format!("left={l}, right={r}, bottom={b}, top={t}, near={n}, far={f}"));
         let a = self.state.matrix_mut().current;
         self.state.matrix_mut().current = multiply(&a, &ortho(l, r, b, t, n, f));
+        log_matrix_operation("glOrthof", format!("left={l}, right={r}, bottom={b}, top={t}, near={n}, far={f}"));
+        let current = self.state.matrix_mut().current;
+        log_matrix_result("glOrthof", &current);
     }
     unsafe fn Orthox(&mut self, l: GLfixed, r: GLfixed, b: GLfixed, t: GLfixed, n: GLfixed, f: GLfixed) {
+        log_matrix_operation("glOrthox", format!("left={l}, right={r}, bottom={b}, top={t}, near={n}, far={f}"));
         self.Orthof(fixed_to_float(l), fixed_to_float(r), fixed_to_float(b), fixed_to_float(t), fixed_to_float(n), fixed_to_float(f));
     }
     unsafe fn Frustumf(&mut self, l: GLfloat, r: GLfloat, b: GLfloat, t: GLfloat, n: GLfloat, f: GLfloat) {
-        log_matrix_operation("glFrustum", format!("left={l}, right={r}, bottom={b}, top={t}, near={n}, far={f}"));
         let a = self.state.matrix_mut().current;
         self.state.matrix_mut().current = multiply(&a, &frustum(l, r, b, t, n, f));
+        log_matrix_operation("glFrustumf", format!("left={l}, right={r}, bottom={b}, top={t}, near={n}, far={f}"));
+        let current = self.state.matrix_mut().current;
+        log_matrix_result("glFrustumf", &current);
     }
     unsafe fn Frustumx(&mut self, l: GLfixed, r: GLfixed, b: GLfixed, t: GLfixed, n: GLfixed, f: GLfixed) {
+        log_matrix_operation("glFrustumx", format!("left={l}, right={r}, bottom={b}, top={t}, near={n}, far={f}"));
         self.Frustumf(fixed_to_float(l), fixed_to_float(r), fixed_to_float(b), fixed_to_float(t), fixed_to_float(n), fixed_to_float(f));
     }
-    unsafe fn Translatef(&mut self, x: GLfloat, y: GLfloat, z: GLfloat) { let a = self.state.matrix_mut().current; self.state.matrix_mut().current = multiply(&a, &translation(x, y, z)); }
-    unsafe fn Translatex(&mut self, x: GLfixed, y: GLfixed, z: GLfixed) { self.Translatef(fixed_to_float(x), fixed_to_float(y), fixed_to_float(z)); }
-    unsafe fn Scalef(&mut self, x: GLfloat, y: GLfloat, z: GLfloat) { let a = self.state.matrix_mut().current; self.state.matrix_mut().current = multiply(&a, &scaling(x, y, z)); }
-    unsafe fn Scalex(&mut self, x: GLfixed, y: GLfixed, z: GLfixed) { self.Scalef(fixed_to_float(x), fixed_to_float(y), fixed_to_float(z)); }
-    unsafe fn Rotatef(&mut self, a: GLfloat, x: GLfloat, y: GLfloat, z: GLfloat) { let m = self.state.matrix_mut().current; self.state.matrix_mut().current = multiply(&m, &rotation(a, x, y, z)); }
-    unsafe fn Rotatex(&mut self, a: GLfixed, x: GLfixed, y: GLfixed, z: GLfixed) { self.Rotatef(fixed_to_float(a), fixed_to_float(x), fixed_to_float(y), fixed_to_float(z)); }
+    unsafe fn Translatef(&mut self, x: GLfloat, y: GLfloat, z: GLfloat) {
+        let a = self.state.matrix_mut().current;
+        self.state.matrix_mut().current = multiply(&a, &translation(x, y, z));
+        log_matrix_operation("glTranslatef", format!("x={x}, y={y}, z={z}"));
+        let current = self.state.matrix_mut().current;
+        log_matrix_result("glTranslatef", &current);
+    }
+    unsafe fn Translatex(&mut self, x: GLfixed, y: GLfixed, z: GLfixed) {
+        log_matrix_operation("glTranslatex", format!("x={x}, y={y}, z={z}"));
+        self.Translatef(fixed_to_float(x), fixed_to_float(y), fixed_to_float(z));
+    }
+    unsafe fn Scalef(&mut self, x: GLfloat, y: GLfloat, z: GLfloat) {
+        let a = self.state.matrix_mut().current;
+        self.state.matrix_mut().current = multiply(&a, &scaling(x, y, z));
+        log_matrix_operation("glScalef", format!("x={x}, y={y}, z={z}"));
+        let current = self.state.matrix_mut().current;
+        log_matrix_result("glScalef", &current);
+    }
+    unsafe fn Scalex(&mut self, x: GLfixed, y: GLfixed, z: GLfixed) {
+        log_matrix_operation("glScalex", format!("x={x}, y={y}, z={z}"));
+        self.Scalef(fixed_to_float(x), fixed_to_float(y), fixed_to_float(z));
+    }
+    unsafe fn Rotatef(&mut self, a: GLfloat, x: GLfloat, y: GLfloat, z: GLfloat) {
+        let m = self.state.matrix_mut().current;
+        self.state.matrix_mut().current = multiply(&m, &rotation(a, x, y, z));
+        log_matrix_operation("glRotatef", format!("angle={a}, axis=({x}, {y}, {z})"));
+        let current = self.state.matrix_mut().current;
+        log_matrix_result("glRotatef", &current);
+    }
+    unsafe fn Rotatex(&mut self, a: GLfixed, x: GLfixed, y: GLfixed, z: GLfixed) {
+        log_matrix_operation("glRotatex", format!("angle={a}, axis=({x}, {y}, {z})"));
+        self.Rotatef(fixed_to_float(a), fixed_to_float(x), fixed_to_float(y), fixed_to_float(z));
+    }
     unsafe fn Viewport(&mut self, x: GLint, y: GLint, w: GLsizei, h: GLsizei) {
         let (requested_x, requested_y, requested_w, requested_h) = (x, y, w, h);
         let (x, y, w, h) = apply_viewport(x, y, w, h);
