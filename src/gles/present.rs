@@ -132,7 +132,6 @@ pub fn overlay_software_hud(pixels: &mut [u8], width: u32, height: u32) {
     };
     let scale = (width / 320).max(1) * 6;
     let glyph_width = GLYPH_W * scale;
-    let glyph_height = GLYPH_H * scale;
     let mut x = 8u32;
     let y = 8u32;
     for character in text.chars() {
@@ -173,7 +172,7 @@ unsafe fn ensure_es2_hud_program(gles: &mut dyn GLES) -> Option<Es2HudProgram> {
     }
     let vertex_source = b"attribute vec2 aPos; attribute vec2 aUV; varying vec2 vUV; void main(){gl_Position=vec4(aPos,0.0,1.0);vUV=aUV;}\0";
     let fragment_source = b"precision mediump float; varying vec2 vUV; uniform sampler2D uTex; void main(){gl_FragColor=texture2D(uTex,vUV);}\0";
-    let compile = |source: &[u8], kind| {
+    let mut compile = |source: &[u8], kind| {
         let shader = gles.CreateShader(kind);
         let pointer = source.as_ptr().cast();
         let length = (source.len() - 1) as GLint;
