@@ -444,6 +444,27 @@ pub const CLASSES: ClassExports = objc_classes! {
                 .as_ref()
                 .is_some_and(|window| window.is_fullscreen_window())
             {
+                let is_landscape = env
+                    .window
+                    .as_ref()
+                    .is_some_and(|window| {
+                        !matches!(
+                            window.current_rotation(),
+                            crate::window::DeviceOrientation::Portrait
+                        )
+                    });
+                if is_landscape && height > width {
+                    log!(
+                        "[DISPLAY] swapping fullscreen EAGL renderbuffer for landscape: {}x{} -> {}x{} (scale_hack={:.2})",
+                        width,
+                        height,
+                        height,
+                        width,
+                        scale_hack
+                    );
+                    std::mem::swap(&mut width, &mut height);
+                }
+
                 let (display_width, display_height) = env.window.as_ref().unwrap().drawable_size();
                 if width > display_width || height > display_height {
                     let limit = (display_width as f32 / width as f32)
@@ -469,37 +490,6 @@ pub const CLASSES: ClassExports = objc_classes! {
             // minimum 1x1 so the GL call below cannot receive a zero extent.
             width = width.max(1);
             height = height.max(1);
-
-            if std::env::var_os("TOUCHHLE_FORCE_LANDSCAPE_RENDERBUFFER").is_some() {
-                let is_landscape = env
-                    .window
-                    .as_ref()
-                    .map(|window| {
-                        !matches!(
-                            window.current_rotation(),
-                            crate::window::DeviceOrientation::Portrait
-                        )
-                    })
-                    .unwrap_or(false);
-
-                if is_landscape && height > width {
-                    log!(
-                        "TOUCHHLE_FORCE_LANDSCAPE_RENDERBUFFER=1: swapping EAGL renderbuffer storage from {}x{} to {}x{}",
-                        width,
-                        height,
-                        height,
-                        width
-                    );
-                    std::mem::swap(&mut width, &mut height);
-                } else {
-                    log!(
-                        "TOUCHHLE_FORCE_LANDSCAPE_RENDERBUFFER=1: keeping EAGL renderbuffer storage at {}x{} (is_landscape={})",
-                        width,
-                        height,
-                        is_landscape
-                    );
-                }
-            }
 
             (width, height)
         }
