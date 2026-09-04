@@ -21,6 +21,8 @@ use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::marker::PhantomData;
 
+const VIEWPORT_FIX_VERSION: u32 = 0;
+const PROJECTION_FIX_VERSION: u32 = 0;
 const ATTR_POSITION: GLuint = 0;
 const ATTR_COLOR: GLuint = 1;
 const ATTR_NORMAL: GLuint = 2;
@@ -143,6 +145,7 @@ struct TranslatorState {
     texture_crop_rect: [GLint; 4],
     viewport: [GLint; 4],
     actual_window_size: (u32, u32),
+    first_viewport_logged: bool,
     program: Option<GLuint>,
     program_creation_failed: bool,
     logic_op_enabled: bool,
@@ -216,6 +219,7 @@ impl TranslatorState {
             texture_crop_rect: [0, 0, 0, 0],
             viewport: [0, 0, 0, 0],
             actual_window_size: (0, 0),
+            first_viewport_logged: false,
             program: None,
             program_creation_failed: false,
             logic_op_enabled: false,
@@ -233,7 +237,7 @@ impl TranslatorState {
     }
 
     fn mvp(&self) -> [GLfloat; 16] {
-        multiply(&self.projection.current, &self.modelview.current)
+        apply_projection_fix(multiply(&self.projection.current, &self.modelview.current))
     }
 }
 
@@ -290,6 +294,15 @@ fn log_viewport(actual_width: u32, actual_height: u32, x: GLint, y: GLint, width
     }
 }
 
+fn apply_viewport(x: GLint, y: GLint, width: GLsizei, height: GLsizei) -> (GLint, GLint, GLsizei, GLsizei) {
+    match VIEWPORT_FIX_VERSION {
+        1 => (x, y, height, width),
+        2 => (x, -y, width, height),
+        3 => (x, -y, height, width),
+        _ => (x, y, width, height),
+    }
+}
+
 fn diagnose_matrix_conversion(gles1_matrix: &[GLfloat; 16], gles2_matrix: &[GLfloat; 16]) {
     if !coordinate_trace_enabled() {
         return;
@@ -309,6 +322,13 @@ fn diagnose_matrix_conversion(gles1_matrix: &[GLfloat; 16], gles2_matrix: &[GLfl
     if (gles1_matrix[5] - gles2_matrix[5]).abs() > 0.001 {
         log!("[GLES1→GLES2 SCALE CHANGE] Y-axis scaling changed");
     }
+}
+
+fn apply_projection_fix(mut matrix: [GLfloat; 16]) -> [GLfloat; 16] {
+    if PROJECTION_FIX_VERSION == 1 {
+        matrix[5] = -matrix[5];
+    }
+    matrix
 }
 
 fn transform_vec4(matrix: &[GLfloat; 16], value: [GLfloat; 4]) -> [GLfloat; 4] {
@@ -1367,6 +1387,25 @@ impl GLES for GLES1OnGLES2<'_> {
     unsafe fn Rotatef(&mut self, a: GLfloat, x: GLfloat, y: GLfloat, z: GLfloat) { let m = self.state.matrix_mut().current; self.state.matrix_mut().current = multiply(&m, &rotation(a, x, y, z)); }
     unsafe fn Rotatex(&mut self, a: GLfixed, x: GLfixed, y: GLfixed, z: GLfixed) { self.Rotatef(fixed_to_float(a), fixed_to_float(x), fixed_to_float(y), fixed_to_float(z)); }
     unsafe fn Viewport(&mut self, x: GLint, y: GLint, w: GLsizei, h: GLsizei) {
+        let (requested_x, requested_y, requested_w, requested_h) = (x, y, w, h);
+        let (x, y, w, h) = apply_viewport(x, y, w, h);
+        if !self.state.first_viewport_logged {
+            log!(
+                "[GLES1→GLES2 VIEWPORT FIX] version={} requested=({}, {}, {}, {}) applied=({}, {}, {}, {}) actual_window={}x{}",
+                VIEWPORT_FIX_VERSION,
+                requested_x,
+                requested_y,
+                requested_w,
+                requested_h,
+                x,
+                y,
+                w,
+                h,
+                self.state.actual_window_size.0,
+                self.state.actual_window_size.1,
+            );
+            self.state.first_viewport_logged = true;
+        }
         log_viewport(self.state.actual_window_size.0, self.state.actual_window_size.1, x, y, w, h);
         self.state.viewport = [x, y, w, h];
         gl::Viewport(x, y, w, h);
