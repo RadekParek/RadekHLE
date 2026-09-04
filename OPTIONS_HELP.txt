@@ -27,8 +27,8 @@ View options:
         app with an increased internal resolution. This is a hack and there's
         no guarantee it will work correctly for all apps.
 
-        The default is a 4× scale hack. Use --scale-hack=1 to disable it (i.e.
-        use the native internal resolution).
+        The default is no scale hack, which is equivalent to a value of 1 (i.e.
+        a scale of 1×).
 
         Values below 1 are supported for lower internal resolution, including
         0.50 and 0.75. Values above 1 increase internal resolution.
@@ -293,7 +293,7 @@ Debugging options:
 
     --llvmpipe-fallback / --disable-llvmpipe-fallback
         Enable or disable the Mesa LLVMPipe CPU rasterizer fallback when
-        creating the ARM32 OpenGL ES compatibility context. Disabled by default.
+        creating the ARM32 OpenGL ES compatibility context. Enabled by default.
 
     --gdb=...
         Starts touchHLE in debugging mode, listening for GDB remote serial

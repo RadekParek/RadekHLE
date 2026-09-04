@@ -31,17 +31,6 @@ use std::sync::atomic::AtomicBool;
 static ONSCREEN_FPS_ENABLED: OnceLock<AtomicBool> = OnceLock::new();
 static HUD_METRICS: OnceLock<Mutex<HudMetrics>> = OnceLock::new();
 static HUD_FPS_TENTHS: AtomicU64 = AtomicU64::new(0);
-#[derive(Copy, Clone)]
-struct Es2HudProgram {
-    program: u32,
-    position: i32,
-    tex_coord: i32,
-    texture: i32,
-    vbo: u32,
-}
-thread_local! {
-    static ES2_HUD_PROGRAM: std::cell::Cell<Option<Es2HudProgram>> = const { std::cell::Cell::new(None) };
-}
 
 #[derive(Clone, Default)]
 struct HudMetrics {
@@ -107,181 +96,6 @@ fn refresh_hud_metrics() {
         metrics.ram_mb = resident_memory_mb();
     }
     update_hud_text();
-}
-
-pub fn onscreen_hud_text() -> Option<String> {
-    let enabled = ONSCREEN_FPS_ENABLED
-        .get()
-        .map(|flag| flag.load(Ordering::SeqCst))
-        .unwrap_or(false)
-        || std::env::var_os("TOUCHHLE_ONSCREEN_FPS").is_some();
-    if !enabled {
-        return None;
-    }
-    let text = LAST_FPS_TEXT
-        .get_or_init(|| Mutex::new(String::new()))
-        .lock()
-        .ok()
-        .map(|value| value.clone())?;
-    (!text.is_empty()).then_some(text)
-}
-
-pub fn overlay_software_hud(pixels: &mut [u8], width: u32, height: u32) {
-    let Some(text) = onscreen_hud_text() else {
-        return;
-    };
-    let scale = (width / 320).max(1) * 6;
-    let glyph_width = GLYPH_W * scale;
-    let mut x = 8u32;
-    let y = 8u32;
-    for character in text.chars() {
-        if let Some(index) = glyph_index(character) {
-            let bitmap = GLYPH_BITMAPS[index];
-            for glyph_y in 0..GLYPH_H {
-                for glyph_x in 0..GLYPH_W {
-                    if bitmap[glyph_y as usize] & (1 << (7 - glyph_x)) == 0 {
-                        continue;
-                    }
-                    for py in 0..scale {
-                        for px in 0..scale {
-                            let out_x = x + glyph_x * scale + px;
-                            let out_y = y + glyph_y * scale + py;
-                            if out_x < width && out_y < height {
-                                let offset = ((out_y * width + out_x) * 4) as usize;
-                                pixels[offset..offset + 4].copy_from_slice(&[255, 255, 255, 255]);
-                            }
-                        }
-                    }
-                }
-            }
-            x = x.saturating_add(glyph_width + 2);
-        } else {
-            x = x.saturating_add(glyph_width / 2);
-        }
-        if x >= width {
-            break;
-        }
-    }
-}
-
-unsafe fn ensure_es2_hud_program(gles: &mut dyn GLES) -> Option<Es2HudProgram> {
-    use gles11::types::*;
-    use crate::gles::gles2_raw as gles2;
-    if let Some(program) = ES2_HUD_PROGRAM.with(|cell| cell.get()) {
-        return Some(program);
-    }
-    let vertex_source = b"attribute vec2 aPos; attribute vec2 aUV; varying vec2 vUV; void main(){gl_Position=vec4(aPos,0.0,1.0);vUV=aUV;}\0";
-    let fragment_source = b"precision mediump float; varying vec2 vUV; uniform sampler2D uTex; void main(){gl_FragColor=texture2D(uTex,vUV);}\0";
-    let mut compile = |source: &[u8], kind| {
-        let shader = gles.CreateShader(kind);
-        let pointer = source.as_ptr().cast();
-        let length = (source.len() - 1) as GLint;
-        gles.ShaderSource(shader, 1, &pointer, &length);
-        gles.CompileShader(shader);
-        let mut status = 0;
-        gles.GetShaderiv(shader, gles2::COMPILE_STATUS, &mut status);
-        (shader, status != 0)
-    };
-    let (vertex, vertex_ok) = compile(vertex_source, gles2::VERTEX_SHADER);
-    let (fragment, fragment_ok) = compile(fragment_source, gles2::FRAGMENT_SHADER);
-    if !vertex_ok || !fragment_ok {
-        log!("[HUD] ES2 HUD shader compilation failed: vertex={}, fragment={}", vertex_ok, fragment_ok);
-        gles.DeleteShader(vertex);
-        gles.DeleteShader(fragment);
-        return None;
-    }
-    let program = gles.CreateProgram();
-    gles.AttachShader(program, vertex);
-    gles.AttachShader(program, fragment);
-    gles.BindAttribLocation(program, 0, b"aPos\0".as_ptr().cast());
-    gles.BindAttribLocation(program, 1, b"aUV\0".as_ptr().cast());
-    gles.LinkProgram(program);
-    let mut linked = 0;
-    gles.GetProgramiv(program, gles2::LINK_STATUS, &mut linked);
-    gles.DeleteShader(vertex);
-    gles.DeleteShader(fragment);
-    if linked == 0 {
-        log!("[HUD] ES2 HUD shader link failed");
-        gles.DeleteProgram(program);
-        return None;
-    }
-    let mut vbo = 0;
-    gles.GenBuffers(1, &mut vbo);
-    let result = Es2HudProgram {
-        program,
-        position: gles.GetAttribLocation(program, b"aPos\0".as_ptr().cast()),
-        tex_coord: gles.GetAttribLocation(program, b"aUV\0".as_ptr().cast()),
-        texture: gles.GetUniformLocation(program, b"uTex\0".as_ptr().cast()),
-        vbo,
-    };
-    ES2_HUD_PROGRAM.with(|cell| cell.set(Some(result)));
-    Some(result)
-}
-
-pub unsafe fn draw_onscreen_hud_es2(gles: &mut dyn GLES, viewport: (u32, u32, u32, u32)) {
-    let Some(text) = onscreen_hud_text() else {
-        return;
-    };
-    let Some(program) = ensure_es2_hud_program(gles) else {
-        return;
-    };
-    let Some(textures) = ensure_glyph_textures(gles) else {
-        return;
-    };
-    use gles11::types::*;
-    use crate::gles::gles2_raw as gles2;
-    let (vx, vy, vw, vh) = viewport;
-    let scale = (vw / 320).max(1) * 6;
-    let glyph_width = GLYPH_W * scale;
-    let glyph_height = GLYPH_H * scale;
-    let mut old_program = 0;
-    let mut old_texture = 0;
-    let mut old_active = 0;
-    let mut old_buffer = 0;
-    gles.GetIntegerv(gles2::CURRENT_PROGRAM, &mut old_program);
-    gles.GetIntegerv(gles2::TEXTURE_BINDING_2D, &mut old_texture);
-    gles.GetIntegerv(gles2::ACTIVE_TEXTURE, &mut old_active);
-    gles.GetIntegerv(gles2::ARRAY_BUFFER_BINDING, &mut old_buffer);
-    let blend_enabled = gles.IsEnabled(gles2::BLEND) != 0;
-    gles.UseProgram(program.program);
-    gles.Uniform1i(program.texture, 0);
-    gles.ActiveTexture(gles2::TEXTURE0);
-    gles.BindBuffer(gles2::ARRAY_BUFFER, program.vbo);
-    gles.Enable(gles2::BLEND);
-    gles.BlendFunc(gles2::SRC_ALPHA, gles2::ONE_MINUS_SRC_ALPHA);
-    let mut x = vx + 8;
-    let y = vy + 8;
-    for character in text.chars() {
-        let Some(index) = glyph_index(character) else {
-            x = x.saturating_add(glyph_width / 2);
-            continue;
-        };
-        let x0 = (x as f32 / vw as f32) * 2.0 - 1.0;
-        let x1 = ((x + glyph_width) as f32 / vw as f32) * 2.0 - 1.0;
-        let y0 = 1.0 - (y as f32 / vh as f32) * 2.0;
-        let y1 = 1.0 - ((y + glyph_height) as f32 / vh as f32) * 2.0;
-        let vertices: [f32; 16] = [x0, y1, 0.0, 1.0, x1, y1, 1.0, 1.0, x0, y0, 0.0, 0.0, x1, y0, 1.0, 0.0];
-        gles.BufferData(gles2::ARRAY_BUFFER, std::mem::size_of_val(&vertices) as isize, vertices.as_ptr().cast(), gles2::STREAM_DRAW);
-        gles.BindTexture(gles2::TEXTURE_2D, textures[index]);
-        gles.EnableVertexAttribArray(program.position as GLuint);
-        gles.EnableVertexAttribArray(program.tex_coord as GLuint);
-        gles.VertexAttribPointer(program.position as GLuint, 2, gles2::FLOAT, gles2::FALSE, 16, std::ptr::null());
-        gles.VertexAttribPointer(program.tex_coord as GLuint, 2, gles2::FLOAT, gles2::FALSE, 16, 8usize as *const _);
-        gles.DrawArrays(gles2::TRIANGLE_STRIP, 0, 4);
-        x = x.saturating_add(glyph_width + 2);
-        if x >= vx + vw {
-            break;
-        }
-    }
-    gles.DisableVertexAttribArray(program.position as GLuint);
-    gles.DisableVertexAttribArray(program.tex_coord as GLuint);
-    if !blend_enabled {
-        gles.Disable(gles2::BLEND);
-    }
-    gles.BindBuffer(gles2::ARRAY_BUFFER, old_buffer as GLuint);
-    gles.BindTexture(gles2::TEXTURE_2D, old_texture as GLuint);
-    gles.ActiveTexture(old_active as GLenum);
-    gles.UseProgram(old_program as GLuint);
 }
 
 fn update_hud_text() {
@@ -564,10 +378,7 @@ fn glyph_index(ch: char) -> Option<usize> {
 
 unsafe fn ensure_glyph_textures(gles: &mut dyn GLES) -> Option<Vec<u32>> {
     use gles11::types::*;
-    let lock = GLYPH_TEXTURES
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .unwrap();
+    let lock = GLYPH_TEXTURES.get().unwrap().lock().unwrap();
     if lock.is_some() {
         return lock.clone();
     }

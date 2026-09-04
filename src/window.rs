@@ -23,7 +23,6 @@ use crate::image::Image;
 use crate::matrix::Matrix;
 use crate::options::Options;
 use crate::Environment;
-use sdl2::event::WindowEvent;
 use sdl2::mouse::MouseButton;
 use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::surface::Surface;
@@ -1401,8 +1400,6 @@ impl Window {
             on_main_stack: true,
         };
 
-        window.refresh_display_metrics("startup");
-
         // Set up OpenGL ES context used for splash screen and app UI rendering
         // (see src/frameworks/core_animation/composition.rs). OpenGL ES is used
         // because SDL2 won't let us use more than one graphics API in the same
@@ -1466,26 +1463,6 @@ impl Window {
         }
 
         window
-    }
-
-    fn refresh_display_metrics(&mut self, reason: &str) {
-        let (drawable_width, drawable_height) = self.window.drawable_size();
-        if drawable_width == 0 || drawable_height == 0 {
-            return;
-        }
-        let (window_width, window_height) = self.window.size();
-        let (framebuffer_width, framebuffer_height) = self.framebuffer_size();
-        log!(
-            "[DISPLAY] {}: window={}x{}, drawable={}x{}, framebuffer={}x{}, orientation={:?}",
-            reason,
-            window_width,
-            window_height,
-            drawable_width,
-            drawable_height,
-            framebuffer_width,
-            framebuffer_height,
-            self.device_orientation
-        );
     }
 
     /// Poll for events from the OS. This needs to be done reasonably often
@@ -1637,16 +1614,8 @@ impl Window {
                 break;
             };
 
+            // Virtual accelerometer
             match event {
-                E::Window {
-                    win_event: WindowEvent::Resized(_, _),
-                    ..
-                }
-                | E::Window {
-                    win_event: WindowEvent::SizeChanged(_, _),
-                    ..
-                } => self.refresh_display_metrics("SDL rotation/resize event"),
-                // Virtual accelerometer
                 E::MouseButtonDown {
                     x,
                     y,
@@ -2580,11 +2549,6 @@ impl Window {
 
         let (mut source_pixels, source_width, source_height) =
             orient_software_pixels(source_pixels, width, height, self.device_orientation);
-        crate::gles::present::overlay_software_hud(
-            &mut source_pixels,
-            source_width,
-            source_height,
-        );
         let source = match Surface::from_data(
             &mut source_pixels,
             source_width,
@@ -2846,7 +2810,6 @@ impl Window {
         }
 
         self.device_orientation = new_orientation;
-        self.refresh_display_metrics("orientation change");
 
         if self.splash_image.is_some() {
             self.display_splash();
@@ -2884,19 +2847,7 @@ impl Window {
     }
 
     pub fn framebuffer_size(&self) -> (u32, u32) {
-        #[cfg(target_os = "android")]
-        if self.fullscreen {
-            return self.window.drawable_size();
-        }
         size_for_orientation_from_size(self.screen_size(), self.device_orientation, self.scale_hack)
-    }
-
-    pub fn is_fullscreen_window(&self) -> bool {
-        self.fullscreen || Self::rotatable_fullscreen()
-    }
-
-    pub fn drawable_size(&self) -> (u32, u32) {
-        self.window.drawable_size()
     }
 
     pub fn is_software_presentation(&self) -> bool {

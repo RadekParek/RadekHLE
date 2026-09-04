@@ -232,8 +232,8 @@ public class MainActivity extends SDLActivity {
             }
             if ("touchhle".equalsIgnoreCase(uri.getScheme()) && "custom-driver".equalsIgnoreCase(uri.getHost())) {
                 Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-                picker.setType("application/zip");
-                picker.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/zip", "application/x-zip-compressed"});
+                picker.setType("*/*");
+                picker.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/zip", "application/x-zip-compressed", "application/octet-stream"});
                 picker.addCategory(Intent.CATEGORY_OPENABLE);
                 picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
                 launchFilePicker(picker, CUSTOM_DRIVER_REQUEST);

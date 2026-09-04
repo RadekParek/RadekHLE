@@ -608,9 +608,9 @@ fn show_app_picker_gui(
         })
         .unwrap_or((320, 568));
     options.host_screen_size = Some(picker_canvas_size);
-    options.scale_hack = 1.0;
+    options.scale_hack = 4.0;
     log!(
-        "App picker: using fixed {}x{} logical canvas with display-resolution framebuffer, preserving host aspect ratio.",
+        "App picker: using fixed {}x{} logical canvas at 4x internal resolution, preserving host aspect ratio.",
         picker_canvas_size.0,
         picker_canvas_size.1
     );
@@ -847,7 +847,7 @@ fn app_picker_inner(
         app_frame,
         &host_resolutions,
     );
-    let mut quick_options_scale_hack: Option<f32> = Some(3.0);
+    let mut quick_options_scale_hack: Option<f32> = None;
     let mut quick_options_custom_resolution: Option<(u32, u32)> = None;
     let mut quick_options_fullscreen: Option<()> = None;
     let mut quick_options_orientation: Option<DeviceOrientation> = None;
@@ -983,8 +983,8 @@ fn app_picker_inner(
         env,
         &quick_options_stuff.quality_buttons,
         1,
-        &[1, 2, 4, 8],
-        quick_options_anti_aliasing,
+        &[1, 2, 3, 4],
+        quick_options_texture_upscaler,
     );
     () = msg![env; (quick_options_stuff.no_texture_compression_switch)
         setOn:quick_options_no_texture_compression];
@@ -992,8 +992,8 @@ fn app_picker_inner(
         env,
         &quick_options_stuff.quality_buttons,
         2,
-        &[1, 2, 3, 4],
-        quick_options_texture_upscaler,
+        &[1, 2, 4, 8],
+        quick_options_anti_aliasing,
     );
     update_scale_hack_buttons(
         env,
@@ -1417,13 +1417,13 @@ fn app_picker_inner(
             update_quality_button_group(env, &quick_options_stuff.quality_buttons, 0, &[1, 2, 4, 8, 16], value);
         } else if let Some(value) = std::mem::take(&mut host_obj.texture_upscaler) {
             quick_options_texture_upscaler = value;
-            update_quality_button_group(env, &quick_options_stuff.quality_buttons, 2, &[1, 2, 3, 4], value);
+            update_quality_button_group(env, &quick_options_stuff.quality_buttons, 1, &[1, 2, 3, 4], value);
         } else if let Some(enabled) = std::mem::take(&mut host_obj.no_texture_compression) {
             quick_options_no_texture_compression = enabled;
             () = msg![env; (quick_options_stuff.no_texture_compression_switch) setOn:enabled];
         } else if let Some(value) = std::mem::take(&mut host_obj.anti_aliasing) {
             quick_options_anti_aliasing = value;
-            update_quality_button_group(env, &quick_options_stuff.quality_buttons, 1, &[1, 2, 4, 8], value);
+            update_quality_button_group(env, &quick_options_stuff.quality_buttons, 2, &[1, 2, 4, 8], value);
         }
     };
 
@@ -2351,7 +2351,7 @@ fn setup_quick_options(
         origin: CGPoint { x: 0.0, y: 0.0 },
         size: app_frame.size,
     };
-    let content_height = app_frame.size.height + 1200.0;
+    let content_height = app_frame.size.height.max(2400.0);
     let main_frame = CGRect {
         origin: CGPoint { x: 0.0, y: 0.0 },
         size: CGSize {
@@ -2506,12 +2506,12 @@ fn setup_quick_options(
         RowKind::Switch("frameGeneration:", false),
         RowKind::Label("Anisotropic filtering"),
         RowKind::Buttons(&[("1×", "anisotropicFiltering1"), ("2×", "anisotropicFiltering2"), ("4×", "anisotropicFiltering4"), ("8×", "anisotropicFiltering8"), ("16×", "anisotropicFiltering16")]),
-        RowKind::Label("Anti-aliasing"),
-        RowKind::Buttons(&[("1×", "antiAliasing1"), ("2×", "antiAliasing2"), ("4×", "antiAliasing4"), ("8×", "antiAliasing8")]),
         RowKind::Label("Texture upscaler"),
         RowKind::Buttons(&[("1×", "textureUpscaler1"), ("2×", "textureUpscaler2"), ("3×", "textureUpscaler3"), ("4×", "textureUpscaler4")]),
         RowKind::Label("No texture compression"),
         RowKind::Switch("noTextureCompression:", false),
+        RowKind::Label("Anti-aliasing"),
+        RowKind::Buttons(&[("1×", "antiAliasing1"), ("2×", "antiAliasing2"), ("4×", "antiAliasing4"), ("8×", "antiAliasing8")]),
         RowKind::Label("Dynarmic JIT"),
         RowKind::Switch("arm64Backend:", false),
         RowKind::Label("Interpreter fallback"),

@@ -748,17 +748,6 @@ fn handle_touches_move(env: &mut Environment, map: HashMap<FingerId, Coords>) {
         let _: () = msg![env;
             view touchesMoved:v_set withEvent:event];
         super::ui_gesture_recognizer::touches_moved(env, view, v_set);
-        let scroll_view_class = env.objc.get_known_class("UIScrollView", &mut env.mem);
-        let mut ancestor: id = msg![env; view superview];
-        while ancestor != nil {
-            let is_scroll_view: bool = msg![env; ancestor isKindOfClass:scroll_view_class];
-            if is_scroll_view {
-                let _: () = msg![env; ancestor touchesMoved:v_set withEvent:event];
-                break;
-            }
-            ancestor = msg![env; ancestor superview];
-        }
-
         touchhle_send_cocos_touch_aliases_to_chain(env, view, "moved", v_set, event);
     }
     release(env, pool);
