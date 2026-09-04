@@ -1474,18 +1474,6 @@ impl Window {
             return;
         }
         let (window_width, window_height) = self.window.size();
-        if Self::rotatable_fullscreen() && self.host_screen_size.is_some() {
-            let current_screen_size = normalize_portrait_size((drawable_width, drawable_height));
-            if self.host_screen_size != Some(current_screen_size) {
-                log!(
-                    "[DISPLAY] host screen size changed: {:?} -> {:?} ({})",
-                    self.host_screen_size,
-                    current_screen_size,
-                    reason
-                );
-                self.host_screen_size = Some(current_screen_size);
-            }
-        }
         let (framebuffer_width, framebuffer_height) = self.framebuffer_size();
         log!(
             "[DISPLAY] {}: window={}x{}, drawable={}x{}, framebuffer={}x{}, orientation={:?}",
@@ -2891,6 +2879,10 @@ impl Window {
     }
 
     pub fn framebuffer_size(&self) -> (u32, u32) {
+        #[cfg(target_os = "android")]
+        if self.fullscreen {
+            return self.window.drawable_size();
+        }
         size_for_orientation_from_size(self.screen_size(), self.device_orientation, self.scale_hack)
     }
 
