@@ -672,13 +672,18 @@ fn log_game_rect_mapping(env: &Environment, label: &str, x: GLint, y: GLint, wid
     let game_size = window.framebuffer_size();
     let drawable_size = window.drawable_size();
     let drawable_viewport = window.viewport();
+    let (fixed_width, fixed_height) = crate::window::fix_viewport_dimension_mismatch(
+        game_size,
+        (width, height),
+        drawable_size,
+    );
     let mapped = crate::window::map_game_rect_to_drawable(
-        (x, y, width.max(0) as u32, height.max(0) as u32),
+        (x, y, fixed_width.max(0) as u32, fixed_height.max(0) as u32),
         game_size,
         drawable_viewport,
     );
     log!(
-        "[{label} MAPPING] bundle={} game={}x{} rect=({}, {}, {}, {}) drawable={}x{} viewport=({}, {}, {}, {}) mapped=({}, {}, {}, {})",
+        "[{label} MAPPING] bundle={} game={}x{} rect=({}, {}, {}, {}) rect_fixed=({}, {}, {}, {}) drawable={}x{} viewport=({}, {}, {}, {}) mapped=({}, {}, {}, {})",
         env.bundle.bundle_identifier(),
         game_size.0,
         game_size.1,
@@ -686,6 +691,10 @@ fn log_game_rect_mapping(env: &Environment, label: &str, x: GLint, y: GLint, wid
         y,
         width,
         height,
+        x,
+        y,
+        fixed_width,
+        fixed_height,
         drawable_size.0,
         drawable_size.1,
         drawable_viewport.0,
@@ -705,11 +714,51 @@ fn log_game_rect_mapping(env: &Environment, label: &str, x: GLint, y: GLint, wid
             && mapped.0 as u32 + mapped.2 <= viewport_right
             && mapped.1 as u32 + mapped.3 <= viewport_bottom;
         log!(
+            "[VIEWPORT DIMENSION FIX] bundle={} requested={}x{} fixed={}x{}",
+            env.bundle.bundle_identifier(),
+            width,
+            height,
+            fixed_width,
+            fixed_height,
+        );
+        log!(
             "[VIEWPORT/SCISSOR VALIDATION] bundle={} scissor_within_viewport={}",
             env.bundle.bundle_identifier(),
             inside
         );
     }
+}
+
+fn fix_guest_rect_dimensions(
+    env: &Environment,
+    label: &str,
+    width: GLsizei,
+    height: GLsizei,
+) -> (GLsizei, GLsizei) {
+    let Some(window) = env.window.as_ref() else {
+        return (width, height);
+    };
+    let fixed = crate::window::fix_viewport_dimension_mismatch(
+        window.framebuffer_size(),
+        (width, height),
+        window.drawable_size(),
+    );
+    if fixed != (width, height) {
+        log!(
+            "[VIEWPORT DIMENSION MISMATCH] bundle={} kind={} game={}x{} requested={}x{} fixed={}x{} drawable={}x{}",
+            env.bundle.bundle_identifier(),
+            label,
+            window.framebuffer_size().0,
+            window.framebuffer_size().1,
+            width,
+            height,
+            fixed.0,
+            fixed.1,
+            window.drawable_size().0,
+            window.drawable_size().1,
+        );
+    }
+    (fixed.0 as GLsizei, fixed.1 as GLsizei)
 }
 
 fn glScissor(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height: GLsizei) {
@@ -724,6 +773,7 @@ fn glScissor(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height: 
             log_dbg!("First glScissor({}, {}, {}, {})", x, y, width, height);
         }
     }
+    let (width, height) = fix_guest_rect_dimensions(env, "scissor", width, height);
     let factor = env.options.scale_hack;
     let scale = |value: GLsizei| (value as f32 * factor).round() as GLsizei;
     let (x, y) = (scale(x), scale(y));
@@ -796,6 +846,7 @@ fn glViewport(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height:
             log_dbg!("First glViewport({}, {}, {}, {})", x, y, width, height);
         }
     }
+    let (width, height) = fix_guest_rect_dimensions(env, "viewport", width, height);
     let factor = env.options.scale_hack;
     let scale = |value: GLsizei| (value as f32 * factor).round() as GLsizei;
     let (x, y) = (scale(x), scale(y));

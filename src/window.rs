@@ -53,6 +53,27 @@ pub(crate) fn calculate_letterboxed_viewport(
     ((drawable_width - width) / 2, (drawable_height - height) / 2, width, height)
 }
 
+pub(crate) fn fix_viewport_dimension_mismatch(
+    game_size: (u32, u32),
+    requested: (i32, i32),
+    drawable_size: (u32, u32),
+) -> (i32, i32) {
+    let game_landscape = game_size.0 > game_size.1;
+    let requested_landscape = requested.0 > requested.1;
+    let drawable_landscape = drawable_size.0 > drawable_size.1;
+    if game_size.0 > 0
+        && game_size.1 > 0
+        && requested.0 > 0
+        && requested.1 > 0
+        && game_landscape == drawable_landscape
+        && game_landscape != requested_landscape
+    {
+        (requested.1, requested.0)
+    } else {
+        requested
+    }
+}
+
 pub(crate) fn map_game_rect_to_drawable(
     rect: (i32, i32, u32, u32),
     game_size: (u32, u32),
@@ -3217,6 +3238,18 @@ mod viewport_mapping_tests {
         assert_eq!(
             map_game_rect_to_drawable((-20, -10, 400, 520), (320, 480), viewport),
             (1064, 0, 960, 1440)
+        );
+    }
+
+    #[test]
+    fn landscape_game_swaps_portrait_requested_dimensions() {
+        assert_eq!(
+            super::fix_viewport_dimension_mismatch((480, 320), (320, 480), (3088, 1440)),
+            (480, 320)
+        );
+        assert_eq!(
+            super::fix_viewport_dimension_mismatch((320, 480), (320, 480), (1440, 3088)),
+            (320, 480)
         );
     }
 }
