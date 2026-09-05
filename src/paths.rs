@@ -184,11 +184,13 @@ pub fn url_for_opening_user_data_dir() -> Result<String, String> {
 }
 
 pub fn url_for_opening_custom_driver() -> Result<String, String> {
+    let drivers_dir = user_data_base_path().join("touchHLE_custom_drivers");
+    std::fs::create_dir_all(&drivers_dir)
+        .map_err(|e| format!("Can't create custom-driver directory: {e}"))?;
     if std::env::consts::OS == "android" {
         Ok("touchhle://custom-driver".to_string())
     } else {
-        let path = user_data_base_path()
-            .join("touchHLE_custom_drivers")
+        let path = drivers_dir
             .canonicalize()
             .map_err(|e| format!("Can't canonicalize custom-driver directory: {e}"))?;
         let path = path

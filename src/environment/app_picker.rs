@@ -912,11 +912,15 @@ fn app_picker_inner(
         for (idx, &button) in buttons.iter().enumerate() {
             let selected = idx == selected_idx;
             let color: id = if selected {
-                msg_class![env; UIColor greenColor]
+                msg_class![env; UIColor colorWithRed:0.20 green:0.42 blue:0.26 alpha:1.0]
             } else {
                 msg_class![env; UIColor colorWithRed:0.72 green:0.72 blue:0.74 alpha:1.0]
             };
-            let text_color: id = msg_class![env; UIColor blackColor];
+            let text_color: id = if selected {
+                msg_class![env; UIColor whiteColor]
+            } else {
+                msg_class![env; UIColor blackColor]
+            };
             () = msg![env; button setBackgroundColor:color];
             () = msg![env; button setTitleColor:text_color forState:UIControlStateNormal];
         }
@@ -1026,7 +1030,7 @@ fn app_picker_inner(
     update_quality_button_group(
         env,
         &quick_options_stuff.quality_buttons,
-        1,
+        2,
         &[1, 2, 3, 4],
         quick_options_texture_upscaler,
     );
@@ -1035,7 +1039,7 @@ fn app_picker_inner(
     update_quality_button_group(
         env,
         &quick_options_stuff.quality_buttons,
-        2,
+        1,
         &[1, 2, 4, 8],
         quick_options_anti_aliasing,
     );
@@ -1481,13 +1485,13 @@ fn app_picker_inner(
             update_quality_button_group(env, &quick_options_stuff.quality_buttons, 0, &[1, 2, 4, 8, 16], value);
         } else if let Some(value) = std::mem::take(&mut host_obj.texture_upscaler) {
             quick_options_texture_upscaler = value;
-            update_quality_button_group(env, &quick_options_stuff.quality_buttons, 1, &[1, 2, 3, 4], value);
+            update_quality_button_group(env, &quick_options_stuff.quality_buttons, 2, &[1, 2, 3, 4], value);
         } else if let Some(enabled) = std::mem::take(&mut host_obj.no_texture_compression) {
             quick_options_no_texture_compression = enabled;
             () = msg![env; (quick_options_stuff.no_texture_compression_switch) setOn:enabled];
         } else if let Some(value) = std::mem::take(&mut host_obj.anti_aliasing) {
             quick_options_anti_aliasing = value;
-            update_quality_button_group(env, &quick_options_stuff.quality_buttons, 2, &[1, 2, 4, 8], value);
+            update_quality_button_group(env, &quick_options_stuff.quality_buttons, 1, &[1, 2, 4, 8], value);
         }
     };
 

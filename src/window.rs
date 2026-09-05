@@ -34,6 +34,52 @@ use std::f32::consts::{FRAC_PI_2, PI};
 use std::ptr::null_mut;
 use std::time::{Duration, Instant};
 
+pub(crate) fn calculate_letterboxed_viewport(
+    game_width: u32,
+    game_height: u32,
+    drawable_width: u32,
+    drawable_height: u32,
+) -> (u32, u32, u32, u32) {
+    if game_width == 0 || game_height == 0 || drawable_width == 0 || drawable_height == 0 {
+        return (0, 0, drawable_width, drawable_height);
+    }
+    let game_aspect = game_width as f64 / game_height as f64;
+    let drawable_aspect = drawable_width as f64 / drawable_height as f64;
+    let (width, height) = if game_aspect < drawable_aspect {
+        ((drawable_height as f64 * game_aspect).round() as u32, drawable_height)
+    } else {
+        (drawable_width, (drawable_width as f64 / game_aspect).round() as u32)
+    };
+    ((drawable_width - width) / 2, (drawable_height - height) / 2, width, height)
+}
+
+pub(crate) fn map_game_rect_to_drawable(
+    rect: (i32, i32, u32, u32),
+    game_size: (u32, u32),
+    viewport: (u32, u32, u32, u32),
+) -> (i32, i32, u32, u32) {
+    let (game_width, game_height) = game_size;
+    if game_width == 0 || game_height == 0 || viewport.2 == 0 || viewport.3 == 0 {
+        return (viewport.0 as i32, viewport.1 as i32, 0, 0);
+    }
+    let scale_x = viewport.2 as f64 / game_width as f64;
+    let scale_y = viewport.3 as f64 / game_height as f64;
+    let left = (viewport.0 as f64 + rect.0 as f64 * scale_x)
+        .clamp(viewport.0 as f64, (viewport.0 + viewport.2) as f64);
+    let top = (viewport.1 as f64 + rect.1 as f64 * scale_y)
+        .clamp(viewport.1 as f64, (viewport.1 + viewport.3) as f64);
+    let right = (viewport.0 as f64 + (rect.0.max(0) as f64 + rect.2 as f64) * scale_x)
+        .clamp(left, (viewport.0 + viewport.2) as f64);
+    let bottom = (viewport.1 as f64 + (rect.1.max(0) as f64 + rect.3 as f64) * scale_y)
+        .clamp(top, (viewport.1 + viewport.3) as f64);
+    (
+        left.round() as i32,
+        top.round() as i32,
+        (right - left).round() as u32,
+        (bottom - top).round() as u32,
+    )
+}
+
 #[derive(Default)]
 struct FrameGenerationState {
     previous: Option<Vec<u8>>,
@@ -1208,9 +1254,11 @@ impl Window {
         crate::gles::configure_angle_driver(options.angle_driver && !custom_driver_active);
         let llvmpipe_active = crate::gles::configure_llvmpipe_fallback(options.llvmpipe_fallback && !custom_driver_active);
         let software_presentation = options.software_rendering || options.software_presentation;
-        let frame_generation = options.frame_generation;
-        if frame_generation && !software_presentation {
-            log!("Frame generation enabled for the GPU renderer; frames use a synchronized capture path before interpolation so every GLES backend remains compatible");
+        let frame_generation = options.frame_generation && !software_presentation;
+        if options.frame_generation && software_presentation {
+            log!("Frame generation disabled because software presentation cannot use the GPU interpolation path");
+        } else if frame_generation {
+            log!("Frame generation enabled for the GPU renderer; CPU interpolation is disabled");
         }
         let sdl_ctx = sdl2::init().unwrap();
         let video_ctx = sdl_ctx.video().unwrap();
@@ -1424,7 +1472,7 @@ impl Window {
             return window;
         }
 
-        if matches!(options.graphics_api, crate::options::GraphicsApi::Wgpu | crate::options::GraphicsApi::Vulkan) {
+        if matches!(options.graphics_api, crate::options::GraphicsApi::Wgpu | crate::options::GraphicsApi::Vulkan) || frame_generation {
             let presentation = if options.graphics_api == crate::options::GraphicsApi::Vulkan {
                 WgpuPresentation::new_vulkan(&window.window)
             } else {
@@ -2528,7 +2576,13 @@ impl Window {
                 }
                 self.wgpu_presentation = Some(wgpu);
             } else {
-                self.present_frame_with_generation(pixels, width, height, bottom_up);
+                log_once!("GPU frame generation unavailable; disabling interpolation and presenting source frames only");
+                self.frame_generation = false;
+                self.frame_generation_state.previous = None;
+                self.frame_generation_state.last_frame_at = None;
+            }
+            if !self.frame_generation {
+                self.present_native_frame(pixels, width, height, bottom_up);
             }
             return;
         }
@@ -2910,23 +2964,7 @@ impl Window {
         }
 
         let (screen_width, screen_height) = self.window.drawable_size();
-
-        let app_aspect = app_width as f32 / app_height as f32;
-        let screen_aspect = screen_width as f32 / screen_height as f32;
-        let (scaled_width, scaled_height) = if app_aspect < screen_aspect {
-            (
-                (screen_height as f32 * app_aspect).round() as u32,
-                screen_height,
-            )
-        } else {
-            (
-                screen_width,
-                (screen_width as f32 / app_aspect).round() as u32,
-            )
-        };
-        let x = (screen_width - scaled_width) / 2;
-        let y = (screen_height - scaled_height) / 2;
-        (x, y, scaled_width, scaled_height)
+        calculate_letterboxed_viewport(app_width, app_height, screen_width, screen_height)
     }
 
     /// Special offset to add to y co-ordinates, only when drawing to screen.
@@ -3154,4 +3192,31 @@ pub fn show_alert_dialog(
             _ => 0,
         }
     })
+}
+
+#[cfg(test)]
+mod viewport_mapping_tests {
+    use super::map_game_rect_to_drawable;
+
+    #[test]
+    fn portrait_game_is_letterboxed_inside_landscape_drawable() {
+        let viewport = (1064, 0, 960, 1440);
+        assert_eq!(
+            map_game_rect_to_drawable((0, 0, 320, 480), (320, 480), viewport),
+            (1064, 0, 960, 1440)
+        );
+        assert_eq!(
+            map_game_rect_to_drawable((0, 0, 160, 240), (320, 480), viewport),
+            (1064, 0, 480, 720)
+        );
+    }
+
+    #[test]
+    fn mapped_scissor_is_clamped_to_letterboxed_viewport() {
+        let viewport = (1064, 0, 960, 1440);
+        assert_eq!(
+            map_game_rect_to_drawable((-20, -10, 400, 520), (320, 480), viewport),
+            (1064, 0, 960, 1440)
+        );
+    }
 }

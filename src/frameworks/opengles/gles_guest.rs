@@ -662,7 +662,58 @@ fn glSampleCoveragex(env: &mut Environment, value: GLclampx, invert: GLboolean) 
 fn glShadeModel(env: &mut Environment, mode: GLenum) {
     with_ctx_and_mem(env, |gles, _mem| unsafe { gles.ShadeModel(mode) })
 }
+fn log_game_rect_mapping(env: &Environment, label: &str, x: GLint, y: GLint, width: GLsizei, height: GLsizei) {
+    if !crate::gles::translator_tracing_enabled() {
+        return;
+    }
+    let Some(window) = env.window.as_ref() else {
+        return;
+    };
+    let game_size = window.framebuffer_size();
+    let drawable_size = window.drawable_size();
+    let drawable_viewport = window.viewport();
+    let mapped = crate::window::map_game_rect_to_drawable(
+        (x, y, width.max(0) as u32, height.max(0) as u32),
+        game_size,
+        drawable_viewport,
+    );
+    log!(
+        "[{label} MAPPING] bundle={} game={}x{} rect=({}, {}, {}, {}) drawable={}x{} viewport=({}, {}, {}, {}) mapped=({}, {}, {}, {})",
+        env.bundle.bundle_identifier(),
+        game_size.0,
+        game_size.1,
+        x,
+        y,
+        width,
+        height,
+        drawable_size.0,
+        drawable_size.1,
+        drawable_viewport.0,
+        drawable_viewport.1,
+        drawable_viewport.2,
+        drawable_viewport.3,
+        mapped.0,
+        mapped.1,
+        mapped.2,
+        mapped.3,
+    );
+    if label == "SCISSOR" {
+        let viewport_right = drawable_viewport.0 + drawable_viewport.2;
+        let viewport_bottom = drawable_viewport.1 + drawable_viewport.3;
+        let inside = mapped.0 >= drawable_viewport.0 as i32
+            && mapped.1 >= drawable_viewport.1 as i32
+            && mapped.0 as u32 + mapped.2 <= viewport_right
+            && mapped.1 as u32 + mapped.3 <= viewport_bottom;
+        log!(
+            "[VIEWPORT/SCISSOR VALIDATION] bundle={} scissor_within_viewport={}",
+            env.bundle.bundle_identifier(),
+            inside
+        );
+    }
+}
+
 fn glScissor(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height: GLsizei) {
+    log_game_rect_mapping(env, "SCISSOR", x, y, width, height);
     if crate::gles::translator_tracing_enabled() {
         log!("[GLES GUEST STATE] glScissor requested x={} y={} width={} height={} scale_hack={}", x, y, width, height, env.options.scale_hack);
     }
@@ -677,6 +728,7 @@ fn glScissor(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height: 
     let scale = |value: GLsizei| (value as f32 * factor).round() as GLsizei;
     let (x, y) = (scale(x), scale(y));
     let (width, height) = (scale(width), scale(height));
+    log_game_rect_mapping(env, "SCISSOR", x, y, width, height);
     if crate::gles::translator_tracing_enabled() {
         log!("[GLES GUEST STATE] glScissor scaled x={} y={} width={} height={}", x, y, width, height);
     }
@@ -685,6 +737,7 @@ fn glScissor(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height: 
     })
 }
 fn glViewport(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height: GLsizei) {
+    log_game_rect_mapping(env, "VIEWPORT", x, y, width, height);
     // ULTRAHLE_MINIONJUMP_VIEWPORT_BEGIN
     let (x, y, width, height) = if matches!(
         env.bundle.bundle_identifier(),
@@ -747,6 +800,7 @@ fn glViewport(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height:
     let scale = |value: GLsizei| (value as f32 * factor).round() as GLsizei;
     let (x, y) = (scale(x), scale(y));
     let (width, height) = (scale(width), scale(height));
+    log_game_rect_mapping(env, "VIEWPORT", x, y, width, height);
     with_ctx_and_mem(env, |gles, _mem| unsafe {
         gles.Viewport(x, y, width, height)
     })
