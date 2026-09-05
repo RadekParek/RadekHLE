@@ -56,19 +56,12 @@ impl MatrixFixer {
 
         match mode {
             RotationFixMode::Aggressive => {
-                let composite = screen_rotation_clockwise();
-                *matrix = multiply(&composite, matrix);
-                Self::log_fix(logger, 1, "axis swap folded into clockwise composite");
-                Self::log_fix(
-                    logger,
-                    2,
-                    "Y inversion folded into clockwise composite; no second quarter-turn",
-                );
-                Self::log_fix(
-                    logger,
-                    3,
-                    "screen rotation applied (clockwise_90; overcorrection removed)",
-                );
+                let rotated = multiply(&screen_rotation_clockwise(), matrix);
+                *matrix = multiply(&screen_horizontal_flip(), &rotated);
+                Self::log_fix(logger, 1, "axis swap disabled to avoid a second coordinate remap");
+                Self::log_fix(logger, 2, "Y inversion disabled to avoid a second coordinate remap");
+                Self::log_fix(logger, 3, "screen rotation applied (clockwise_90)");
+                Self::log_fix(logger, 4, "horizontal flip applied (screen-space X reflection)");
             }
             RotationFixMode::Clockwise => {
                 *matrix = multiply(&screen_rotation_clockwise(), matrix);
@@ -93,13 +86,8 @@ impl MatrixFixer {
             }
         }
 
-        Self::log_fix(logger, 4, "transpose skipped for column-major matrices");
-        Self::log_fix(logger, 5, "Z axis preserved");
-        Self::log_fix(
-            logger,
-            6,
-            "scale normalised without changing guest scale factors",
-        );
+        Self::log_fix(logger, 5, "transpose skipped for column-major matrices");
+        Self::log_fix(logger, 6, "Z axis preserved; scale normalised without changing guest scale factors");
         Self::log_fix(
             logger,
             7,
@@ -133,6 +121,12 @@ fn screen_rotation_counter_clockwise() -> [f32; 16] {
     ]
 }
 
+fn screen_horizontal_flip() -> [f32; 16] {
+    [
+        -1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
 fn multiply(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
     let mut result = [0.0; 16];
     for column in 0..4 {
@@ -154,6 +148,14 @@ mod tests {
         assert_eq!(
             screen_rotation_clockwise(),
             [0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,]
+        );
+    }
+
+    #[test]
+    fn aggressive_composite_includes_horizontal_flip() {
+        assert_eq!(
+            multiply(&screen_horizontal_flip(), &screen_rotation_clockwise()),
+            [0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,]
         );
     }
 

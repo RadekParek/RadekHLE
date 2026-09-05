@@ -77,3 +77,5 @@ More generally, and especially Outside the OpenGL realm, sometimes the most effe
 ## GLES1-on-GLES2 coordinate debugging
 
 Set `TOUCHHLE_TRACE_TRANSLATOR=1` or `TOUCHHLE_GLES1_GLES2_LOG=1` to enable structured logs for matrix operations, projection parameters, viewport changes, texture coordinates, vertex samples, clip-space transformations and NDC values. The built-in `aggressive` rotation mode is enabled by default; it applies the corrected clockwise quarter-turn while preserving Z, scale and perspective terms. Override it with `TOUCHHLE_GLES1_ROTATION_FIX=none` or `diagnostic` for diagnosis, `clockwise` or `counter-clockwise` for a single quarter-turn, or `conservative`/`swap_xy_invert_y` for the equivalent composite fix. The seven stages are logged for every MVP upload.
+
+`TOUCHHLE_GLES1_ROTATION_FIX=aggressive` enables the default compatibility transform: one clockwise 90° screen rotation followed by a horizontal X reflection. The axis-swap and Y-inversion candidates remain disabled in this mode to avoid applying two competing coordinate conversions.
