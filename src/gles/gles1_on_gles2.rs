@@ -13,7 +13,7 @@
 use super::gles2_raw as gl;
 use super::gles2_raw::types::*;
 use super::gles11_raw as es1;
-use super::gles1_on_gles2_fixes::{rotation_fix_mode, MatrixFixer};
+use super::gles1_on_gles2_fixes::{apply_render_rotation, rotation_fix_mode, MatrixFixer};
 use super::gles1_on_gles2_logging::{self, GLES1to2Logger};
 use super::gles_generic::{GLchar, GLES};
 use super::util::{fixed_to_float, float_to_fixed, try_decode_pvrtc};
@@ -147,6 +147,7 @@ struct TranslatorState {
     texture_crop_rect: [GLint; 4],
     viewport: [GLint; 4],
     actual_window_size: (u32, u32),
+    render_rotation: crate::options::RenderRotation,
     first_viewport_logged: bool,
     program: Option<GLuint>,
     program_creation_failed: bool,
@@ -221,6 +222,7 @@ impl TranslatorState {
             texture_crop_rect: [0, 0, 0, 0],
             viewport: [0, 0, 0, 0],
             actual_window_size: (0, 0),
+            render_rotation: crate::options::RenderRotation::Default,
             first_viewport_logged: false,
             program: None,
             program_creation_failed: false,
@@ -241,7 +243,8 @@ impl TranslatorState {
     fn mvp(&self) -> [GLfloat; 16] {
         let mut matrix = apply_projection_fix(multiply(&self.projection.current, &self.modelview.current));
         let logger = GLES1to2Logger::new("mvp_upload", "GLES2 vertex shader");
-        let result = MatrixFixer::apply_all_fixes(&mut matrix, &logger);
+        let mut result = MatrixFixer::apply_all_fixes(&mut matrix, &logger);
+        let result = apply_render_rotation(&mut result, self.render_rotation, &logger);
         logger.finish();
         result
     }
@@ -379,10 +382,12 @@ impl GLESContext for GLES1OnGLES2Context {
 
     fn new(window: &mut Window) -> Result<Self, String> {
         gles1_on_gles2_logging::log_initialization(rotation_fix_mode().as_str());
+        let mut state = TranslatorState::new();
+        state.render_rotation = window.render_rotation();
         Ok(Self {
             gl_ctx: window.create_gl_context(GLVersion::GLES20)?,
             is_loaded: false,
-            state: TranslatorState::new(),
+            state,
         })
     }
 
@@ -410,6 +415,7 @@ impl GLESContext for GLES1OnGLES2Context {
             );
         }
         self.state.actual_window_size = drawable_size;
+        self.state.render_rotation = window.render_rotation();
         Box::new(GLES1OnGLES2 {
             state: &mut self.state,
             _gl_lifetime: PhantomData,

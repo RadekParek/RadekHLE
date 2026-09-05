@@ -139,6 +139,47 @@ impl GraphicsApi {
     }
 }
 
+/// Rotation applied to rendered pixels without changing the emulated device orientation.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum RenderRotation {
+    Default,
+    Minus90,
+    Minus180,
+    Plus90,
+    Plus180,
+}
+
+impl Default for RenderRotation {
+    fn default() -> Self {
+        Self::Default
+    }
+}
+
+impl RenderRotation {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().trim_end_matches('°') {
+            "default" => Ok(Self::Default),
+            "-90" => Ok(Self::Minus90),
+            "-180" => Ok(Self::Minus180),
+            "90" => Ok(Self::Plus90),
+            "180" => Ok(Self::Plus180),
+            _ => Err(format!(
+                "Invalid render rotation {value:?}; expected default, -90, -180, 90, or 180"
+            )),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Minus90 => "-90°",
+            Self::Minus180 => "-180°",
+            Self::Plus90 => "90°",
+            Self::Plus180 => "180°",
+        }
+    }
+}
+
 /// Struct containing all user-configurable options.
 #[derive(Clone)]
 pub struct Options {
@@ -153,6 +194,7 @@ pub struct Options {
     /// Explicit custom logical screen size selected in the app picker.
     pub custom_screen_size: Option<(u32, u32)>,
     pub initial_orientation: DeviceOrientation,
+    pub render_rotation: RenderRotation,
     /// iOS version reported to guest applications. `None` uses the latest compatibility version.
     pub ios_version: Option<(i32, i32, i32)>,
     pub scale_hack: f32,
@@ -254,6 +296,7 @@ impl Default for Options {
             host_screen_size: None,
             custom_screen_size: None,
             initial_orientation: DeviceOrientation::Portrait,
+            render_rotation: RenderRotation::Default,
             ios_version: None,
             scale_hack: 1.0,
             analog_stick_tilt_controls: true,
@@ -338,6 +381,8 @@ impl Options {
             self.initial_orientation = DeviceOrientation::LandscapeRight;
         } else if arg == "--upside-down" {
             self.initial_orientation = DeviceOrientation::PortraitUpsideDown;
+        } else if let Some(value) = arg.strip_prefix("--render-rotation=") {
+            self.render_rotation = RenderRotation::parse(value)?;
         } else if let Some(value) = arg.strip_prefix("--device-family=") {
             if value == "auto" {
                 self.auto_device_family = true;
@@ -700,4 +745,35 @@ fn parse_dump_options(options: &str) -> Result<DumpingOptions, String> {
         }
     }
     Ok(dumping_options)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_render_rotation_values_without_changing_orientation() {
+        let values = [
+            ("default", RenderRotation::Default),
+            ("-90", RenderRotation::Minus90),
+            ("-180°", RenderRotation::Minus180),
+            ("90", RenderRotation::Plus90),
+            ("180°", RenderRotation::Plus180),
+        ];
+        for (value, expected) in values {
+            let mut options = Options::default();
+            assert!(options
+                .parse_argument(&format!("--render-rotation={value}"))
+                .unwrap());
+            assert_eq!(options.render_rotation, expected);
+            assert_eq!(options.initial_orientation, DeviceOrientation::Portrait);
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_render_rotation_values() {
+        let mut options = Options::default();
+        let error = options.parse_argument("--render-rotation=45").unwrap_err();
+        assert!(error.contains("render rotation"));
+    }
 }

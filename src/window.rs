@@ -1133,6 +1133,7 @@ pub struct Window {
     splash_image_is_orientation_specific: bool,
     device_family: DeviceFamily,
     device_orientation: DeviceOrientation,
+    render_rotation: crate::options::RenderRotation,
     controller_ctx: sdl2::GameControllerSubsystem,
     controllers: Vec<sdl2::controller::GameController>,
     dpad_state: DpadState,
@@ -1276,6 +1277,7 @@ impl Window {
         // that here.
         let device_family = options.device_family.unwrap_or(DeviceFamily::iPhone);
         let device_orientation = options.initial_orientation;
+        let render_rotation = options.render_rotation;
         let fullscreen = options.fullscreen;
         let portrait_screen_size =
             host_screen_size.unwrap_or_else(|| device_family.portrait_size());
@@ -1376,6 +1378,7 @@ impl Window {
             splash_image_is_orientation_specific,
             device_family,
             device_orientation,
+            render_rotation,
             controller_ctx,
             controllers: Vec::new(),
             dpad_state: DpadState {
@@ -2836,6 +2839,11 @@ impl Window {
     /// Returns the current device orientation
     pub fn current_rotation(&self) -> DeviceOrientation {
         self.device_orientation
+    }
+
+    /// Rotation applied to rendered content without changing the device orientation or window bounds.
+    pub fn render_rotation(&self) -> crate::options::RenderRotation {
+        self.render_rotation
     }
 
     /// Get the size in pixels of the window without rotation or scaling.

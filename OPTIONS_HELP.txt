@@ -22,6 +22,11 @@ View options:
         and it will automatically rotate the window, but some apps neglect to
         do this. These options may be useful in that case.
 
+    --render-rotation=<default|-90|-180|90|180>
+        Rotate rendered content without changing the emulated device orientation,
+        window orientation, or screen bounds. The default is no additional
+        render rotation. This affects the graphics transform only.
+
     --scale-hack=...
         Set a scaling factor for the window. touchHLE will attempt to run the
         app with an increased internal resolution. This is a hack and there's

@@ -1,4 +1,5 @@
 use super::gles1_on_gles2_logging::GLES1to2Logger;
+use crate::options::RenderRotation;
 
 const ROTATION_MODE: &str = "aggressive";
 
@@ -56,12 +57,11 @@ impl MatrixFixer {
 
         match mode {
             RotationFixMode::Aggressive => {
-                let rotated = multiply(&screen_rotation_clockwise(), matrix);
-                *matrix = multiply(&screen_horizontal_flip(), &rotated);
+                *matrix = multiply(&screen_rotation_clockwise(), matrix);
                 Self::log_fix(logger, 1, "axis swap disabled to avoid a second coordinate remap");
                 Self::log_fix(logger, 2, "Y inversion disabled to avoid a second coordinate remap");
                 Self::log_fix(logger, 3, "screen rotation applied (clockwise_90)");
-                Self::log_fix(logger, 4, "horizontal flip applied (screen-space X reflection)");
+                Self::log_fix(logger, 4, "horizontal flip disabled after blackscreen regression");
             }
             RotationFixMode::Clockwise => {
                 *matrix = multiply(&screen_rotation_clockwise(), matrix);
@@ -109,6 +109,31 @@ impl MatrixFixer {
     }
 }
 
+pub fn apply_render_rotation(
+    matrix: &mut [f32; 16],
+    rotation: RenderRotation,
+    logger: &GLES1to2Logger,
+) -> [f32; 16] {
+    if rotation == RenderRotation::Default {
+        return *matrix;
+    }
+    let rotation_matrix = match rotation {
+        RenderRotation::Default => unreachable!(),
+        RenderRotation::Minus90 => screen_rotation_clockwise(),
+        RenderRotation::Minus180 | RenderRotation::Plus180 => screen_rotation_180(),
+        RenderRotation::Plus90 => screen_rotation_counter_clockwise(),
+    };
+    *matrix = multiply(&rotation_matrix, matrix);
+    if super::gles1_on_gles2_logging::enabled() {
+        log!(
+            "[GLES1→GLES2 RENDER ROTATION] op={} rotation={}",
+            logger.operation_id(),
+            rotation.label()
+        );
+    }
+    *matrix
+}
+
 fn screen_rotation_clockwise() -> [f32; 16] {
     [
         0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
@@ -121,9 +146,9 @@ fn screen_rotation_counter_clockwise() -> [f32; 16] {
     ]
 }
 
-fn screen_horizontal_flip() -> [f32; 16] {
+fn screen_rotation_180() -> [f32; 16] {
     [
-        -1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        -1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
     ]
 }
 
@@ -152,11 +177,21 @@ mod tests {
     }
 
     #[test]
-    fn aggressive_composite_includes_horizontal_flip() {
+    fn aggressive_composite_leaves_horizontal_flip_disabled() {
         assert_eq!(
-            multiply(&screen_horizontal_flip(), &screen_rotation_clockwise()),
-            [0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,]
+            multiply(&screen_rotation_clockwise(), &identity()),
+            screen_rotation_clockwise()
         );
+    }
+
+    #[test]
+    fn render_rotation_uses_screen_space_without_changing_depth() {
+        let mut matrix = identity();
+        let logger = GLES1to2Logger::new("test", "test");
+        let result = apply_render_rotation(&mut matrix, RenderRotation::Plus90, &logger);
+        assert_eq!(result, screen_rotation_counter_clockwise());
+        assert_eq!([result[2], result[6], result[10], result[14]], [0.0, 0.0, 1.0, 0.0]);
+        logger.finish();
     }
 
     #[test]
