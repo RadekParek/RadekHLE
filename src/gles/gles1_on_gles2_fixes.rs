@@ -56,18 +56,18 @@ impl MatrixFixer {
 
         match mode {
             RotationFixMode::Aggressive => {
-                let composite = multiply(&axis_swap(), &y_inversion());
+                let composite = screen_rotation_clockwise();
                 *matrix = multiply(&composite, matrix);
-                Self::log_fix(logger, 1, "axis swap applied");
+                Self::log_fix(logger, 1, "axis swap folded into clockwise composite");
                 Self::log_fix(
                     logger,
                     2,
-                    "Y inversion applied; fixes 1+2 form one counter-clockwise quarter-turn",
+                    "Y inversion folded into clockwise composite; no second quarter-turn",
                 );
                 Self::log_fix(
                     logger,
                     3,
-                    "screen rotation applied (ccw_90 composite; no double rotation)",
+                    "screen rotation applied (clockwise_90; overcorrection removed)",
                 );
             }
             RotationFixMode::Clockwise => {
@@ -121,27 +121,15 @@ impl MatrixFixer {
     }
 }
 
-fn axis_swap() -> [f32; 16] {
-    [
-        0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-    ]
-}
-
-fn y_inversion() -> [f32; 16] {
-    [
-        1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
-    ]
-}
-
 fn screen_rotation_clockwise() -> [f32; 16] {
     [
-        0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
     ]
 }
 
 fn screen_rotation_counter_clockwise() -> [f32; 16] {
     [
-        0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
     ]
 }
 
@@ -162,10 +150,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn aggressive_composite_is_one_counter_clockwise_quarter_turn() {
+    fn aggressive_composite_is_one_clockwise_quarter_turn() {
         assert_eq!(
-            multiply(&axis_swap(), &y_inversion()),
-            screen_rotation_counter_clockwise()
+            screen_rotation_clockwise(),
+            [0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,]
         );
     }
 
