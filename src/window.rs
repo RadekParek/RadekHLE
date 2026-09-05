@@ -2849,6 +2849,9 @@ impl Window {
     pub fn framebuffer_size(&self) -> (u32, u32) {
         size_for_orientation_from_size(self.screen_size(), self.device_orientation, self.scale_hack)
     }
+    pub fn drawable_size(&self) -> (u32, u32) {
+        self.window.drawable_size()
+    }
 
     pub fn is_software_presentation(&self) -> bool {
         self.software_presentation

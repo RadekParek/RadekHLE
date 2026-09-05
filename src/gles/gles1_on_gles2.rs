@@ -284,15 +284,22 @@ fn log_viewport(actual_width: u32, actual_height: u32, x: GLint, y: GLint, width
     if !coordinate_trace_enabled() {
         return;
     }
-    let aspect = if height > 0 { width as f32 / height as f32 } else { 0.0 };
+    let requested_aspect = if height > 0 { width as f32 / height as f32 } else { 0.0 };
+    let actual_aspect = if actual_height > 0 {
+        actual_width as f32 / actual_height as f32
+    } else {
+        0.0
+    };
+    let aspect_mismatch = actual_aspect > 0.0
+        && (requested_aspect - actual_aspect).abs() > 0.01;
     log!(
-        "[GLES1→GLES2] glViewport called: x={}, y={}, width={}, height={}, aspect={:.3}, actual_window={}x{}",
-        x, y, width, height, aspect, actual_width, actual_height
+        "[GLES1→GLES2] glViewport called: x={}, y={}, width={}, height={}, requested_aspect={:.3}, drawable={}x{}, drawable_aspect={:.3}, aspect_mismatch={}",
+        x, y, width, height, requested_aspect, actual_width, actual_height, actual_aspect, aspect_mismatch
     );
-    if width != actual_width as GLsizei || height != actual_height as GLsizei {
+    if aspect_mismatch {
         log!(
-            "[GLES1→GLES2 VIEWPORT MISMATCH WARNING] game_requested={}x{}, actual_window={}x{}, aspect_mismatch=true",
-            width, height, actual_width, actual_height
+            "[GLES1→GLES2 VIEWPORT MISMATCH WARNING] game_requested={}x{} aspect={:.3}, drawable={}x{} aspect={:.3}",
+            width, height, requested_aspect, actual_width, actual_height, actual_aspect
         );
     }
 }
@@ -388,7 +395,20 @@ impl GLESContext for GLES1OnGLES2Context {
             es1::load_with(|s| window.gl_get_proc_address(s));
             self.is_loaded = true;
         }
-        self.state.actual_window_size = window.framebuffer_size();
+        let logical_framebuffer_size = window.framebuffer_size();
+        let drawable_size = window.drawable_size();
+        if coordinate_trace_enabled() {
+            log!(
+                "[GLES1→GLES2 WINDOW] orientation={:?} logical_framebuffer={}x{} drawable={}x{} viewport={:?}",
+                window.current_rotation(),
+                logical_framebuffer_size.0,
+                logical_framebuffer_size.1,
+                drawable_size.0,
+                drawable_size.1,
+                window.viewport(),
+            );
+        }
+        self.state.actual_window_size = drawable_size;
         Box::new(GLES1OnGLES2 {
             state: &mut self.state,
             _gl_lifetime: PhantomData,
