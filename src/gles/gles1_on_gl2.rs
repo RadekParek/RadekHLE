@@ -20,6 +20,9 @@
 
 use super::gl21compat_raw as gl21;
 use super::gl21compat_raw::types::*;
+use super::gles1_on_gles2_fixes::{apply_axis_reverts, apply_render_rotation};
+use super::gles1_on_gles2_logging::GLES1to2Logger;
+use crate::options::RenderRotation;
 use super::gles11_raw as gles11; // constants only
 use super::gles_generic::GLES;
 use super::util::{
@@ -489,6 +492,9 @@ pub struct GLES1OnGL2State {
     palette_matrices: Vec<[GLfloat; 16]>,
     palette_weight_state: MatrixArrayPointerState,
     palette_index_state: MatrixArrayPointerState,
+    render_rotation: RenderRotation,
+    revert_x_axis: bool,
+    revert_y_axis: bool,
 }
 
 pub struct GLES1OnGL2Context {
@@ -511,6 +517,9 @@ fn new_gles1_on_gl2_state() -> GLES1OnGL2State {
         palette_matrices: vec![MATRIX_IDENTITY; MATRIX_PALETTE_MIN_MATRICES],
         palette_weight_state: MatrixArrayPointerState::default(),
         palette_index_state: MatrixArrayPointerState::default(),
+        render_rotation: RenderRotation::Default,
+        revert_x_axis: false,
+        revert_y_axis: false,
     }
 }
 
@@ -542,6 +551,9 @@ impl GLESContext for GLES1OnGL2Context {
         }
         gl21::load_with(|s| window.gl_get_proc_address(s));
         self.is_loaded = true;
+        self.state.render_rotation = window.render_rotation();
+        self.state.revert_x_axis = window.revert_x_axis();
+        self.state.revert_y_axis = window.revert_y_axis();
 
         Box::new(GLES1OnGL2 {
             state: &mut self.state,
@@ -574,6 +586,46 @@ pub struct GLES1OnGL2<'a> {
 }
 
 impl GLES1OnGL2<'_> {
+    unsafe fn begin_render_transform(&self) -> Option<GLenum> {
+        if self.state.render_rotation == RenderRotation::Default
+            && !self.state.revert_x_axis
+            && !self.state.revert_y_axis
+        {
+            return None;
+        }
+        let previous_mode = match self.state.matrix_mode {
+            MatrixModeState::Projection => gl21::PROJECTION,
+            MatrixModeState::Texture => gl21::TEXTURE,
+            _ => gl21::MODELVIEW,
+        };
+        let logger = GLES1to2Logger::new("render-transform", "gles1-on-gl2");
+        let mut correction = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        correction = apply_render_rotation(&mut correction, self.state.render_rotation, &logger);
+        correction = apply_axis_reverts(
+            &mut correction,
+            self.state.revert_x_axis,
+            self.state.revert_y_axis,
+            &logger,
+        );
+        gl21::MatrixMode(gl21::PROJECTION);
+        gl21::PushMatrix();
+        let mut projection = [0.0; 16];
+        gl21::GetFloatv(gl21::PROJECTION_MATRIX, projection.as_mut_ptr());
+        gl21::LoadMatrixf(correction.as_ptr());
+        gl21::MultMatrixf(projection.as_ptr());
+        Some(previous_mode)
+    }
+
+    unsafe fn end_render_transform(&self, previous_mode: Option<GLenum>) {
+        if let Some(previous_mode) = previous_mode {
+            gl21::MatrixMode(gl21::PROJECTION);
+            gl21::PopMatrix();
+            gl21::MatrixMode(previous_mode);
+        }
+    }
+
     /// If any arrays with fixed-point data are in use at the time of a draw
     /// call, this function will convert the data to floating-point and
     /// replace the pointers. [Self::restore_fixed_point_arrays] can be called
@@ -2212,11 +2264,14 @@ impl GLES for GLES1OnGL2<'_> {
         ]
         .contains(&mode));
 
+        let render_transform_active = self.begin_render_transform();
+
         // GL_OES_matrix_palette skinning: transform vertices on the CPU and
         // draw with the blended positions if palette skinning is active.
         if self.matrix_palette_active() {
             if let Some(skinned) = self.skin_vertices(first, count) {
                 self.draw_arrays_skinned(mode, first, count, &skinned);
+                self.end_render_transform(render_transform_active);
                 return;
             }
         }
@@ -2226,6 +2281,7 @@ impl GLES for GLES1OnGL2<'_> {
         gl21::DrawArrays(mode, first, count);
 
         self.restore_fixed_point_arrays(fixed_point_arrays_state_backup);
+        self.end_render_transform(render_transform_active);
     }
     unsafe fn DrawElements(
         &mut self,
@@ -2246,12 +2302,15 @@ impl GLES for GLES1OnGL2<'_> {
         .contains(&mode));
         assert!(type_ == gl21::UNSIGNED_BYTE || type_ == gl21::UNSIGNED_SHORT);
 
+        let render_transform_active = self.begin_render_transform();
+
         // GL_OES_matrix_palette skinning for indexed draws: skin the full
         // range of referenced vertices, then draw with blended positions.
         if self.matrix_palette_active() {
             if let Some((first, vcount)) = self.indexed_draw_vertex_range(count, type_, indices) {
                 if let Some(skinned) = self.skin_vertices(first, vcount) {
                     self.draw_elements_skinned(mode, count, type_, indices, &skinned);
+                    self.end_render_transform(render_transform_active);
                     return;
                 }
             }
@@ -2329,6 +2388,7 @@ impl GLES for GLES1OnGL2<'_> {
         if let Some(fixed_point_arrays_state_backup) = fixed_point_arrays_state_backup {
             self.restore_fixed_point_arrays(fixed_point_arrays_state_backup);
         }
+        self.end_render_transform(render_transform_active);
     }
 
     // Clearing

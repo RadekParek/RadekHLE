@@ -16,6 +16,9 @@ use super::gles2_raw::types::*;
 use super::gles_generic::{GLchar, GLES};
 use super::util::{fixed_to_float, float_to_fixed, try_decode_pvrtc, PalettedTextureFormat};
 use super::GLESContext;
+use super::gles1_on_gles2_fixes::{apply_axis_reverts, apply_render_rotation};
+use super::gles1_on_gles2_logging::GLES1to2Logger;
+use crate::options::RenderRotation;
 use crate::window::{GLContext, GLVersion, Window};
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
@@ -183,6 +186,9 @@ struct TranslatorState {
     logic_op_enabled: bool,
     logic_op: GLenum,
     gles3: bool,
+    render_rotation: RenderRotation,
+    revert_x_axis: bool,
+    revert_y_axis: bool,
 }
 
 impl TranslatorState {
@@ -263,6 +269,9 @@ impl TranslatorState {
             logic_op_enabled: false,
             logic_op: es1::COPY,
             gles3: false,
+            render_rotation: RenderRotation::Default,
+            revert_x_axis: false,
+            revert_y_axis: false,
         }
     }
 
@@ -275,8 +284,18 @@ impl TranslatorState {
         }
     }
 
+    fn render_transform(&self, mut matrix: [GLfloat; 16]) -> [GLfloat; 16] {
+        let logger = GLES1to2Logger::new("render-transform", "gles1-on-gles3");
+        matrix = apply_render_rotation(&mut matrix, self.render_rotation, &logger);
+        apply_axis_reverts(&mut matrix, self.revert_x_axis, self.revert_y_axis, &logger)
+    }
+
     fn mvp(&self) -> [GLfloat; 16] {
-        multiply(&self.projection.current, &self.modelview.current)
+        self.render_transform(multiply(&self.projection.current, &self.modelview.current))
+    }
+
+    fn render_projection(&self) -> [GLfloat; 16] {
+        self.render_transform(self.projection.current)
     }
 }
 
@@ -321,6 +340,9 @@ impl GLESContext for GLES1OnGLES3Context {
             es1::load_with(|s| window.gl_get_proc_address(s));
             self.is_loaded = true;
         }
+        self.state.render_rotation = window.render_rotation();
+        self.state.revert_x_axis = window.revert_x_axis();
+        self.state.revert_y_axis = window.revert_y_axis();
         Box::new(GLES1OnGLES3 {
             state: &mut self.state,
             _gl_lifetime: PhantomData,
@@ -3261,7 +3283,7 @@ impl GLES for GLES1OnGLES3<'_> {
             projection_loc,
             1,
             gl::FALSE,
-            self.state.projection.current.as_ptr(),
+            self.state.render_projection().as_ptr(),
         );
         let texture_matrix_loc =
             gl::GetUniformLocation(program, b"u_texture_matrix0\0".as_ptr() as *const _);
@@ -3643,7 +3665,7 @@ impl GLES for GLES1OnGLES3<'_> {
             projection_loc,
             1,
             gl::FALSE,
-            self.state.projection.current.as_ptr(),
+            self.state.render_projection().as_ptr(),
         );
         let texture_matrix_loc =
             gl::GetUniformLocation(program, b"u_texture_matrix0\0".as_ptr() as *const _);
