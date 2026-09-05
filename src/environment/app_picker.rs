@@ -251,6 +251,8 @@ struct AppPickerDelegateHostObject {
     orientation_landscape_right: bool,
     orientation_portrait_upside_down: bool,
     render_rotation: Option<RenderRotation>,
+    revert_x_axis: Option<bool>,
+    revert_y_axis: Option<bool>,
     analog_stick_tilt_controls: Option<bool>,
     network: Option<bool>,
     /// Quick option: show FPS counter (maps to --print-fps)
@@ -401,6 +403,14 @@ const CLASSES: ClassExports = objc_classes! {
 }
 - (())renderRotationPlus180 {
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).render_rotation = Some(RenderRotation::Plus180);
+}
+- (())revertXAxis:(id)switch {
+    let switch_state: bool = msg![env; switch isOn];
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).revert_x_axis = Some(switch_state);
+}
+- (())revertYAxis:(id)switch {
+    let switch_state: bool = msg![env; switch isOn];
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).revert_y_axis = Some(switch_state);
 }
 - (())analogStickTiltControls:(id)switch { // UISwitch*
     let switch_state: bool = msg![env; switch isOn];
@@ -869,6 +879,8 @@ fn app_picker_inner(
     let mut quick_options_fullscreen: Option<()> = None;
     let mut quick_options_orientation: Option<DeviceOrientation> = None;
     let mut quick_options_render_rotation: Option<RenderRotation> = None;
+    let mut quick_options_revert_x_axis = false;
+    let mut quick_options_revert_y_axis = false;
     let mut quick_options_analog_stick_tilt_controls = true;
     let mut quick_options_network = false;
     let mut quick_options_show_fps = true;
@@ -1044,6 +1056,8 @@ fn app_picker_inner(
         &quick_options_stuff.render_rotation_buttons,
         quick_options_render_rotation,
     );
+    () = msg![env; (quick_options_stuff.revert_x_axis_switch) setOn:quick_options_revert_x_axis];
+    () = msg![env; (quick_options_stuff.revert_y_axis_switch) setOn:quick_options_revert_y_axis];
     update_device_model_menu(
         env,
         &quick_options_stuff.device_model_items,
@@ -1335,6 +1349,12 @@ fn app_picker_inner(
                 &quick_options_stuff.render_rotation_buttons,
                 quick_options_render_rotation,
             );
+        } else if let Some(enabled) = std::mem::take(&mut host_obj.revert_x_axis) {
+            quick_options_revert_x_axis = enabled;
+            () = msg![env; (quick_options_stuff.revert_x_axis_switch) setOn:enabled];
+        } else if let Some(enabled) = std::mem::take(&mut host_obj.revert_y_axis) {
+            quick_options_revert_y_axis = enabled;
+            () = msg![env; (quick_options_stuff.revert_y_axis_switch) setOn:enabled];
         } else if let Some(tag) = std::mem::take(&mut host_obj.device_model_tag) {
             quick_options_device_tag = Some(tag);
             quick_options_device_model_open = false;
@@ -1495,6 +1515,12 @@ fn app_picker_inner(
     if let Some(render_rotation) = quick_options_render_rotation {
         option_args.push(format!("--render-rotation={}", render_rotation.label()));
     }
+    if quick_options_revert_x_axis {
+        option_args.push("--revert-x-axis".to_string());
+    }
+    if quick_options_revert_y_axis {
+        option_args.push("--revert-y-axis".to_string());
+    }
     if let Some(()) = quick_options_fullscreen {
         option_args.push("--fullscreen".to_string());
     }
@@ -1556,6 +1582,7 @@ fn app_picker_inner(
             crate::options::GraphicsApi::GLES20 => "gles2.0",
             crate::options::GraphicsApi::GLES30 => "gles3.0",
             crate::options::GraphicsApi::Wgpu => "wgpu",
+            crate::options::GraphicsApi::Vulkan => "vulkan",
             crate::options::GraphicsApi::Software => unreachable!("software rendering is standalone"),
             crate::options::GraphicsApi::Metal => "metal",
             crate::options::GraphicsApi::Default => unreachable!(),
@@ -2331,6 +2358,8 @@ struct QuickOptionsStuff {
     render_rotation_buttons: [id; 5],
     frame_generation_switch: id,
     no_texture_compression_switch: id,
+    revert_x_axis_switch: id,
+    revert_y_axis_switch: id,
     /// The button that toggles the "Device model" dropdown open/closed. Its
     /// title shows the currently-selected model plus an up/down arrow.
     device_model_btn: id,
@@ -2554,12 +2583,12 @@ fn setup_quick_options(
         RowKind::Switch("frameGeneration:", false),
         RowKind::Label("Anisotropic filtering"),
         RowKind::Buttons(&[("1×", "anisotropicFiltering1"), ("2×", "anisotropicFiltering2"), ("4×", "anisotropicFiltering4"), ("8×", "anisotropicFiltering8"), ("16×", "anisotropicFiltering16")]),
+        RowKind::Label("Anti-aliasing"),
+        RowKind::Buttons(&[("1×", "antiAliasing1"), ("2×", "antiAliasing2"), ("4×", "antiAliasing4"), ("8×", "antiAliasing8")]),
         RowKind::Label("Texture upscaler"),
         RowKind::Buttons(&[("1×", "textureUpscaler1"), ("2×", "textureUpscaler2"), ("3×", "textureUpscaler3"), ("4×", "textureUpscaler4")]),
         RowKind::Label("No texture compression"),
         RowKind::Switch("noTextureCompression:", false),
-        RowKind::Label("Anti-aliasing"),
-        RowKind::Buttons(&[("1×", "antiAliasing1"), ("2×", "antiAliasing2"), ("4×", "antiAliasing4"), ("8×", "antiAliasing8")]),
         RowKind::Label("Dynarmic JIT"),
         RowKind::Switch("arm64Backend:", false),
         RowKind::Label("Interpreter fallback"),
@@ -2600,6 +2629,10 @@ fn setup_quick_options(
             ("90°", "renderRotationPlus90"),
             ("180°", "renderRotationPlus180"),
         ]),
+        RowKind::Label("Revert X axis"),
+        RowKind::Switch("revertXAxis:", false),
+        RowKind::Label("Revert Y axis"),
+        RowKind::Switch("revertYAxis:", false),
         RowKind::Label("Device model"),
         RowKind::DeviceDropdown,
         RowKind::Label("Network access"),
@@ -2645,6 +2678,8 @@ fn setup_quick_options(
     let mut render_rotation_buttons: Option<[id; 5]> = None;
     let mut frame_generation_switch: id = nil;
     let mut no_texture_compression_switch: id = nil;
+    let mut revert_x_axis_switch: id = nil;
+    let mut revert_y_axis_switch: id = nil;
     let mut ios_version_btn: id = nil;
     let mut ios_version_menu: id = nil;
     let mut ios_version_items: Vec<id> = Vec::new();
@@ -2801,6 +2836,12 @@ fn setup_quick_options(
                 }
                 if selector_name == "noTextureCompression:" {
                     no_texture_compression_switch = switch;
+                }
+                if selector_name == "revertXAxis:" {
+                    revert_x_axis_switch = switch;
+                }
+                if selector_name == "revertYAxis:" {
+                    revert_y_axis_switch = switch;
                 }
             }
         }
@@ -3012,6 +3053,8 @@ fn setup_quick_options(
         render_rotation_buttons: render_rotation_buttons.unwrap_or([nil; 5]),
         frame_generation_switch,
         no_texture_compression_switch,
+        revert_x_axis_switch,
+        revert_y_axis_switch,
         device_model_btn,
         device_model_menu,
         device_model_items,
@@ -3097,6 +3140,7 @@ const GRAPHICS_API_ENTRIES: &[(&str, crate::options::GraphicsApi)] = &[
         crate::options::GraphicsApi::TranslatorGLES30,
     ),
     ("WGPU presentation", crate::options::GraphicsApi::Wgpu),
+    ("Vulkan presentation", crate::options::GraphicsApi::Vulkan),
 ];
 
 fn update_graphics_api_dropdown(

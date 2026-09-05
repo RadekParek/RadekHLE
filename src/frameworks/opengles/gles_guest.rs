@@ -1272,7 +1272,7 @@ fn glDrawTexsvOES(env: &mut Environment, coords: ConstPtr<i16>) {
 fn glRenderbufferStorageMultisampleAPPLE(
     env: &mut Environment,
     target: GLenum,
-    samples: GLsizei,
+    _samples: GLsizei,
     internalformat: GLenum,
     width: GLsizei,
     height: GLsizei,
@@ -1282,6 +1282,7 @@ fn glRenderbufferStorageMultisampleAPPLE(
     let factor = env.options.scale_hack;
     let scale = |value: GLsizei| (value as f32 * factor).round() as GLsizei;
     let (width, height) = (scale(width), scale(height));
+    let samples = crate::gles::quality_options().2.max(1) as GLsizei;
     with_ctx_and_mem(env, |gles, _mem| unsafe {
         gles.RenderbufferStorageMultisampleAPPLE(target, samples, internalformat, width, height)
     })
@@ -1882,6 +1883,7 @@ fn glIsTexture(env: &mut Environment, texture: GLuint) -> GLboolean {
     with_ctx_and_mem(env, |gles, _mem| unsafe { gles.IsTexture(texture) })
 }
 fn glBindTexture(env: &mut Environment, target: GLenum, texture: GLuint) {
+    let anisotropic_filtering = env.options.anisotropic_filtering;
     if trace_potatogold_render() {
         use std::sync::atomic::{AtomicU32, Ordering};
         static COUNT: AtomicU32 = AtomicU32::new(0);
@@ -1896,7 +1898,14 @@ fn glBindTexture(env: &mut Environment, target: GLenum, texture: GLuint) {
     }
 
     with_ctx_and_mem(env, |gles, _mem| unsafe {
-        gles.BindTexture(target, texture)
+        gles.BindTexture(target, texture);
+        if texture != 0 && anisotropic_filtering > 1 {
+            gles.TexParameterf(
+                target,
+                gles11::TEXTURE_MAX_ANISOTROPY_EXT,
+                anisotropic_filtering as GLfloat,
+            );
+        }
     })
 }
 /// If `pname` is `GL_TEXTURE_MIN_FILTER` and `param` is a mipmap min-filter
@@ -2200,6 +2209,8 @@ fn glTexImage2D(
         }
     }
     let fix_filter = env.options.fix_texture_min_filter && level == 0;
+    let texture_upscaler = env.options.texture_upscaler;
+    let anisotropic_filtering = env.options.anisotropic_filtering;
     with_ctx_and_mem(env, |gles, mem| unsafe {
         let mut alignment = 4;
         gles.GetIntegerv(gles11::UNPACK_ALIGNMENT, &mut alignment);
@@ -2213,17 +2224,28 @@ fn glTexImage2D(
         if let Some(decoded) = crate::gles::util::decode_texture_to_rgba8(
             width, height, format, type_, pixels, alignment,
         ) {
+            let (upload_pixels, upload_width, upload_height) =
+                crate::gles::util::upscale_rgba8(
+                    &decoded,
+                    width.max(0) as u32,
+                    height.max(0) as u32,
+                    texture_upscaler,
+                )
+                .map_or(
+                    (decoded, width.max(0) as u32, height.max(0) as u32),
+                    |(pixels, width, height)| (pixels, width, height),
+                );
             gles.PixelStorei(gles11::UNPACK_ALIGNMENT, 1);
             gles.TexImage2D(
                 target,
                 level,
                 gles11::RGBA as GLint,
-                width,
-                height,
+                upload_width as GLsizei,
+                upload_height as GLsizei,
                 border,
                 gles11::RGBA,
                 gles11::UNSIGNED_BYTE,
-                decoded.as_ptr().cast(),
+                upload_pixels.as_ptr().cast(),
             );
             gles.PixelStorei(gles11::UNPACK_ALIGNMENT, alignment);
         } else {
@@ -2245,6 +2267,13 @@ fn glTexImage2D(
                 log_dbg!("fix_texture_min_filter: forcing GL_TEXTURE_MIN_FILTER=GL_LINEAR after level-0 texture upload");
             }
             gles.TexParameteri(target, gles11::TEXTURE_MIN_FILTER, gles11::LINEAR as GLint);
+        }
+        if anisotropic_filtering > 1 {
+            gles.TexParameterf(
+                target,
+                gles11::TEXTURE_MAX_ANISOTROPY_EXT,
+                anisotropic_filtering as GLfloat,
+            );
         }
     })
 }
@@ -2315,6 +2344,8 @@ fn glCompressedTexImage2D(
     }
     let fix_filter = env.options.fix_texture_min_filter && level == 0;
     let no_texture_compression = env.options.no_texture_compression;
+    let texture_upscaler = env.options.texture_upscaler;
+    let anisotropic_filtering = env.options.anisotropic_filtering;
     with_ctx_and_mem(env, |gles, mem| unsafe {
         let data: *const GLvoid = mem
             .ptr_at(data.cast::<u8>(), image_size.try_into().unwrap())
@@ -2336,17 +2367,35 @@ fn glCompressedTexImage2D(
             if let Some(decoded) = crate::gles::util::PalettedTextureFormat::decode_rgba8(
                 internalformat, width, height, payload,
             ) {
+                let (upload_pixels, upload_width, upload_height) =
+                    crate::gles::util::upscale_rgba8(
+                        &decoded,
+                        width.max(0) as u32,
+                        height.max(0) as u32,
+                        texture_upscaler,
+                    )
+                    .map_or(
+                        (decoded, width.max(0) as u32, height.max(0) as u32),
+                        |(pixels, width, height)| (pixels, width, height),
+                    );
                 gles.TexImage2D(
                     target,
                     level,
                     gles11::RGBA as GLint,
-                    width,
-                    height,
+                    upload_width as GLsizei,
+                    upload_height as GLsizei,
                     border,
                     gles11::RGBA,
                     gles11::UNSIGNED_BYTE,
-                    decoded.as_ptr().cast(),
+                    upload_pixels.as_ptr().cast(),
                 );
+                if anisotropic_filtering > 1 {
+                    gles.TexParameterf(
+                        target,
+                        gles11::TEXTURE_MAX_ANISOTROPY_EXT,
+                        anisotropic_filtering as GLfloat,
+                    );
+                }
                 return;
             }
         }
@@ -2437,6 +2486,13 @@ fn glCompressedTexImage2D(
 
         if fix_filter {
             gles.TexParameteri(target, gles11::TEXTURE_MIN_FILTER, gles11::LINEAR as GLint);
+        }
+        if anisotropic_filtering > 1 {
+            gles.TexParameterf(
+                target,
+                gles11::TEXTURE_MAX_ANISOTROPY_EXT,
+                anisotropic_filtering as GLfloat,
+            );
         }
     })
 }

@@ -92,6 +92,10 @@ fn effective_eagl_api(
             log!("EAGL: WGPU presentation uses the existing GLES2 guest compatibility path");
             kEAGLRenderingAPIOpenGLES2
         }
+        GraphicsApi::Vulkan => {
+            log!("EAGL: Vulkan presentation uses the existing GLES2 guest compatibility path");
+            kEAGLRenderingAPIOpenGLES2
+        }
         GraphicsApi::Software => match requested {
             kEAGLRenderingAPIOpenGLES3 => kEAGLRenderingAPIOpenGLES3,
             _ => kEAGLRenderingAPIOpenGLES2,

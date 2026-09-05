@@ -96,6 +96,7 @@ pub enum GraphicsApi {
     GLES20,
     GLES30,
     Wgpu,
+    Vulkan,
     Software,
     Metal,
 }
@@ -117,6 +118,7 @@ impl GraphicsApi {
             "gles2.0" | "gles20" => Ok(Self::GLES20),
             "gles3.0" | "gles30" => Ok(Self::GLES30),
             "wgpu" | "webgpu" => Ok(Self::Wgpu),
+            "vulkan" => Ok(Self::Vulkan),
             "software" | "software-rendering" | "cpu" => Ok(Self::Software),
             "metal" => Ok(Self::Metal),
             _ => Err(()),
@@ -133,6 +135,7 @@ impl GraphicsApi {
             Self::GLES20 => "OpenGL ES 2.0",
             Self::GLES30 => "OpenGL ES 3.0",
             Self::Wgpu => "WGPU",
+            Self::Vulkan => "Vulkan",
             Self::Software => "Software rendering",
             Self::Metal => "Metal compatibility",
         }
@@ -195,6 +198,8 @@ pub struct Options {
     pub custom_screen_size: Option<(u32, u32)>,
     pub initial_orientation: DeviceOrientation,
     pub render_rotation: RenderRotation,
+    pub revert_x_axis: bool,
+    pub revert_y_axis: bool,
     /// iOS version reported to guest applications. `None` uses the latest compatibility version.
     pub ios_version: Option<(i32, i32, i32)>,
     pub scale_hack: f32,
@@ -297,6 +302,8 @@ impl Default for Options {
             custom_screen_size: None,
             initial_orientation: DeviceOrientation::Portrait,
             render_rotation: RenderRotation::Default,
+            revert_x_axis: false,
+            revert_y_axis: false,
             ios_version: None,
             scale_hack: 1.0,
             analog_stick_tilt_controls: true,
@@ -668,6 +675,14 @@ impl Options {
             self.zero_stack_after_guest_to_host_call = Some(value.parse().map_err(|_| {
                 "Invalid value for --zero-stack-after-guest-to-host-call=".to_string()
             })?);
+        } else if arg == "--revert-x-axis" {
+            self.revert_x_axis = true;
+        } else if arg == "--disable-revert-x-axis" {
+            self.revert_x_axis = false;
+        } else if arg == "--revert-y-axis" {
+            self.revert_y_axis = true;
+        } else if arg == "--disable-revert-y-axis" {
+            self.revert_y_axis = false;
         } else {
             return Ok(false);
         };

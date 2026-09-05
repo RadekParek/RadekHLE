@@ -144,6 +144,35 @@ pub fn apply_render_rotation(
     *matrix
 }
 
+pub fn apply_axis_reverts(
+    matrix: &mut [f32; 16],
+    revert_x_axis: bool,
+    revert_y_axis: bool,
+    logger: &GLES1to2Logger,
+) -> [f32; 16] {
+    let mut correction = [
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    if revert_x_axis {
+        correction[0] = -1.0;
+    }
+    if revert_y_axis {
+        correction[5] = -1.0;
+    }
+    if revert_x_axis || revert_y_axis {
+        *matrix = multiply(&correction, matrix);
+        if super::gles1_on_gles2_logging::enabled() {
+            log!(
+                "[GLES1→GLES2 AXIS REVERT] operation={} x={} y={}",
+                logger.operation_id(),
+                revert_x_axis,
+                revert_y_axis
+            );
+        }
+    }
+    *matrix
+}
+
 fn screen_rotation_clockwise() -> [f32; 16] {
     [
         0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
@@ -234,6 +263,20 @@ mod tests {
             [matrix[3], matrix[7], matrix[11], matrix[15]],
             [0.0, 0.0, 0.0, 1.0]
         );
+    }
+
+    #[test]
+    fn axis_reverts_flip_only_selected_axes() {
+        let logger = GLES1to2Logger::new("test", "test");
+        let mut matrix = identity();
+        let result = apply_axis_reverts(&mut matrix, true, false, &logger);
+        assert_eq!(result[0], -1.0);
+        assert_eq!(result[5], 1.0);
+        let mut matrix = identity();
+        let result = apply_axis_reverts(&mut matrix, false, true, &logger);
+        assert_eq!(result[0], 1.0);
+        assert_eq!(result[5], -1.0);
+        logger.finish();
     }
 
     fn identity() -> [f32; 16] {

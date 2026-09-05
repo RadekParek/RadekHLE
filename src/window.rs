@@ -1134,6 +1134,8 @@ pub struct Window {
     device_family: DeviceFamily,
     device_orientation: DeviceOrientation,
     render_rotation: crate::options::RenderRotation,
+    revert_x_axis: bool,
+    revert_y_axis: bool,
     controller_ctx: sdl2::GameControllerSubsystem,
     controllers: Vec<sdl2::controller::GameController>,
     dpad_state: DpadState,
@@ -1197,6 +1199,11 @@ impl Window {
         launch_image: Option<(Image, bool)>,
         options: &Options,
     ) -> Window {
+        crate::gles::configure_quality_options(
+            options.anisotropic_filtering,
+            options.texture_upscaler,
+            options.anti_aliasing,
+        );
         let custom_driver_active = crate::gles::configure_custom_driver(options.custom_driver.as_deref());
         crate::gles::configure_angle_driver(options.angle_driver && !custom_driver_active);
         let llvmpipe_active = crate::gles::configure_llvmpipe_fallback(options.llvmpipe_fallback && !custom_driver_active);
@@ -1236,6 +1243,7 @@ impl Window {
                         | crate::options::GraphicsApi::GLES30
                         | crate::options::GraphicsApi::Metal
                         | crate::options::GraphicsApi::Wgpu
+                        | crate::options::GraphicsApi::Vulkan
                 ) || (matches!(options.graphics_api, crate::options::GraphicsApi::Default)
                     && (options.prefer_gles2_context || options.angle_driver || llvmpipe_active));
 
@@ -1278,6 +1286,8 @@ impl Window {
         let device_family = options.device_family.unwrap_or(DeviceFamily::iPhone);
         let device_orientation = options.initial_orientation;
         let render_rotation = options.render_rotation;
+        let revert_x_axis = options.revert_x_axis;
+        let revert_y_axis = options.revert_y_axis;
         let fullscreen = options.fullscreen;
         let portrait_screen_size =
             host_screen_size.unwrap_or_else(|| device_family.portrait_size());
@@ -1379,6 +1389,8 @@ impl Window {
             device_family,
             device_orientation,
             render_rotation,
+            revert_x_axis,
+            revert_y_axis,
             controller_ctx,
             controllers: Vec::new(),
             dpad_state: DpadState {
@@ -1412,15 +1424,20 @@ impl Window {
             return window;
         }
 
-        if matches!(options.graphics_api, crate::options::GraphicsApi::Wgpu) {
-            log!("WGPU selected as the host presentation backend; guest EAGL remains on the existing GLES2 compatibility path");
-            match WgpuPresentation::new(&window.window) {
+        if matches!(options.graphics_api, crate::options::GraphicsApi::Wgpu | crate::options::GraphicsApi::Vulkan) {
+            let presentation = if options.graphics_api == crate::options::GraphicsApi::Vulkan {
+                WgpuPresentation::new_vulkan(&window.window)
+            } else {
+                WgpuPresentation::new(&window.window)
+            };
+            log!("{} selected as the host presentation backend; guest EAGL remains on the existing GLES2 compatibility path", options.graphics_api.label());
+            match presentation {
                 Ok(presentation) => {
-                    log!("WGPU presentation initialized successfully");
+                    log!("{} presentation initialized successfully", options.graphics_api.label());
                     window.wgpu_presentation = Some(presentation);
                 }
                 Err(error) => {
-                    log!("WGPU presentation unavailable; continuing with the GLES presentation path: {error}");
+                    log!("{} presentation unavailable; continuing with the GLES presentation path: {}", options.graphics_api.label(), error);
                 }
             }
         }
@@ -1442,7 +1459,7 @@ impl Window {
                 SoftwareGLESContext::new(&mut window)
                     .expect("Could not create software GLES context"),
             ),
-            crate::options::GraphicsApi::Metal | crate::options::GraphicsApi::Wgpu => {
+            crate::options::GraphicsApi::Metal | crate::options::GraphicsApi::Wgpu | crate::options::GraphicsApi::Vulkan => {
                 create_gles2_ctx_no_parent_stack(&mut window)
             }
             crate::options::GraphicsApi::Default => {
@@ -2844,6 +2861,14 @@ impl Window {
     /// Rotation applied to rendered content without changing the device orientation or window bounds.
     pub fn render_rotation(&self) -> crate::options::RenderRotation {
         self.render_rotation
+    }
+
+    pub fn revert_x_axis(&self) -> bool {
+        self.revert_x_axis
+    }
+
+    pub fn revert_y_axis(&self) -> bool {
+        self.revert_y_axis
     }
 
     /// Get the size in pixels of the window without rotation or scaling.

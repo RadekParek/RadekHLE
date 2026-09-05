@@ -100,11 +100,28 @@ pub use gles_generic::GLESContext;
 pub use gles_generic::GLES;
 pub use software::SoftwareGLESContext;
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 static TRANSLATOR_TRACE_EVENTS: AtomicU32 = AtomicU32::new(0);
 static TRANSLATOR_TRACING_ENABLED: AtomicBool = AtomicBool::new(false);
 static GL_CALL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static ANISOTROPIC_FILTERING: AtomicU8 = AtomicU8::new(1);
+static TEXTURE_UPSCALER: AtomicU8 = AtomicU8::new(1);
+static ANTI_ALIASING: AtomicU8 = AtomicU8::new(1);
+
+pub(crate) fn configure_quality_options(anisotropic_filtering: u8, texture_upscaler: u8, anti_aliasing: u8) {
+    ANISOTROPIC_FILTERING.store(anisotropic_filtering.clamp(1, 16), Ordering::Relaxed);
+    TEXTURE_UPSCALER.store(texture_upscaler.clamp(1, 4), Ordering::Relaxed);
+    ANTI_ALIASING.store(anti_aliasing.clamp(1, 8), Ordering::Relaxed);
+}
+
+pub(crate) fn quality_options() -> (u8, u8, u8) {
+    (
+        ANISOTROPIC_FILTERING.load(Ordering::Relaxed),
+        TEXTURE_UPSCALER.load(Ordering::Relaxed),
+        ANTI_ALIASING.load(Ordering::Relaxed),
+    )
+}
 
 pub(crate) fn next_gl_call_id() -> u64 {
     GL_CALL_SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1

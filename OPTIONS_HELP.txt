@@ -27,6 +27,18 @@ View options:
         window orientation, or screen bounds. The default is no additional
         render rotation. This affects the graphics transform only.
 
+    --revert-x-axis
+        Mirror rendered content across the X axis after the render rotation.
+
+    --disable-revert-x-axis
+        Disable the X-axis mirror.
+
+    --revert-y-axis
+        Mirror rendered content across the Y axis after the render rotation.
+
+    --disable-revert-y-axis
+        Disable the Y-axis mirror.
+
     --scale-hack=...
         Set a scaling factor for the window. touchHLE will attempt to run the
         app with an increased internal resolution. This is a hack and there's
@@ -259,8 +271,20 @@ Graphics driver options:
     --graphics-api=<value>
         Select the host graphics API compatibility path. Values include default,
         translator, translator-gles3, gles1.0, gles1.1, gles2.0, gles3.0, wgpu,
-        and metal. Software rendering is selected independently with
+        vulkan, and metal. Software rendering is selected independently with
         --software-rendering.
+
+    --anisotropic-filtering=<1|2|4|8|16>
+        Set the maximum anisotropic texture-filtering level. 1 disables the
+        override and leaves the normal texture filtering in place.
+
+    --anti-aliasing=<1|2|4|8>
+        Request this many samples for the guest multisample framebuffer. 1 is
+        single-sampled.
+
+    --texture-upscaler=<1|2|3|4>
+        Nearest-neighbour upscale decoded RGBA and PVRTC textures before upload.
+        1 leaves texture dimensions unchanged.
 
 Debugging options:
     --angle-driver

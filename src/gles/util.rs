@@ -253,17 +253,20 @@ pub fn try_decode_pvrtc(
     let upload_format = gles11::RGBA;
     let pixels =
         crate::image::decode_pvrtc_with_alpha(pvrtc_data, is_2bit, width_u, height_u, is_opaque);
+    let (upload_pixels, upload_width, upload_height) =
+        upscale_rgba8_words(&pixels, width_u, height_u, crate::gles::quality_options().1)
+            .map_or((pixels, width_u, height_u), |value| value);
     unsafe {
         gles.TexImage2D(
             target,
             level,
             upload_format as _,
-            width,
-            height,
+            upload_width as GLsizei,
+            upload_height as GLsizei,
             border,
             upload_format,
             gles11::UNSIGNED_BYTE,
-            pixels.as_ptr() as *const _,
+            upload_pixels.as_ptr() as *const _,
         )
     };
     true
@@ -365,6 +368,62 @@ pub unsafe fn decode_texture_to_rgba8(
         }
     }
     Some(output)
+}
+
+/// Nearest-neighbour upscale for decoded RGBA8 byte pixels.
+pub fn upscale_rgba8(pixels: &[u8], width: u32, height: u32, scale: u8) -> Option<(Vec<u8>, u32, u32)> {
+    if scale <= 1 || width == 0 || height == 0 {
+        return None;
+    }
+    let scale = u32::from(scale);
+    let output_width = width.checked_mul(scale)?;
+    let output_height = height.checked_mul(scale)?;
+    let source_len = usize::try_from(width).ok()?.checked_mul(usize::try_from(height).ok()?)?.checked_mul(4)?;
+    if pixels.len() < source_len {
+        return None;
+    }
+    let output_len = usize::try_from(output_width).ok()?.checked_mul(usize::try_from(output_height).ok()?)?.checked_mul(4)?;
+    let mut output = vec![0; output_len];
+    let source_width = usize::try_from(width).ok()?;
+    let output_width_usize = usize::try_from(output_width).ok()?;
+    let scale_usize = usize::try_from(scale).ok()?;
+    for y in 0..usize::try_from(output_height).ok()? {
+        let source_y = y / scale_usize;
+        for x in 0..output_width_usize {
+            let source_x = x / scale_usize;
+            let source = (source_y * source_width + source_x) * 4;
+            let target = (y * output_width_usize + x) * 4;
+            output[target..target + 4].copy_from_slice(&pixels[source..source + 4]);
+        }
+    }
+    Some((output, output_width, output_height))
+}
+
+/// Nearest-neighbour upscale for decoded RGBA8 words.
+pub fn upscale_rgba8_words(pixels: &[u32], width: u32, height: u32, scale: u8) -> Option<(Vec<u32>, u32, u32)> {
+    if scale <= 1 || width == 0 || height == 0 {
+        return None;
+    }
+    let scale = u32::from(scale);
+    let output_width = width.checked_mul(scale)?;
+    let output_height = height.checked_mul(scale)?;
+    let source_len = usize::try_from(width).ok()?.checked_mul(usize::try_from(height).ok()?)?;
+    if pixels.len() < source_len {
+        return None;
+    }
+    let output_len = usize::try_from(output_width).ok()?.checked_mul(usize::try_from(output_height).ok()?)?;
+    let mut output = vec![0; output_len];
+    let source_width = usize::try_from(width).ok()?;
+    let output_width_usize = usize::try_from(output_width).ok()?;
+    let scale_usize = usize::try_from(scale).ok()?;
+    for y in 0..usize::try_from(output_height).ok()? {
+        let source_y = y / scale_usize;
+        for x in 0..output_width_usize {
+            let source_x = x / scale_usize;
+            output[y * output_width_usize + x] = pixels[source_y * source_width + source_x];
+        }
+    }
+    Some((output, output_width, output_height))
 }
 
 pub struct PalettedTextureFormat {

@@ -93,6 +93,12 @@ impl WgpuPresentation {
         Self::new_with_backends(window, backends, use_surface)
     }
 
+    pub fn new_vulkan(window: &sdl2::video::Window) -> Result<Self, String> {
+        let use_surface = !cfg!(target_os = "android");
+        log!("WGPU Vulkan presentation requested; forcing the Vulkan backend");
+        Self::new_with_backends(window, wgpu::Backends::VULKAN, use_surface)
+    }
+
     fn new_with_backends(
         window: &sdl2::video::Window,
         backends: wgpu::Backends,
