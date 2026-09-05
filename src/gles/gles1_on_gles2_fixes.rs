@@ -57,20 +57,22 @@ impl MatrixFixer {
 
         match mode {
             RotationFixMode::Aggressive => {
-                *matrix = multiply(&screen_rotation_clockwise(), matrix);
+                Self::fix_rotation_cw(matrix);
                 Self::log_fix(logger, 1, "axis swap disabled to avoid a second coordinate remap");
                 Self::log_fix(logger, 2, "Y inversion disabled to avoid a second coordinate remap");
-                Self::log_fix(logger, 3, "screen rotation applied (clockwise_90)");
+                Self::log_fix(logger, 3, "screen rotation applied (clockwise_90) [first]");
+                Self::fix_rotation_cw(matrix);
+                Self::log_fix(logger, 3, "screen rotation applied (clockwise_90) [second]");
                 Self::log_fix(logger, 4, "horizontal flip disabled after blackscreen regression");
             }
             RotationFixMode::Clockwise => {
-                *matrix = multiply(&screen_rotation_clockwise(), matrix);
+                Self::fix_rotation_cw(matrix);
                 Self::log_fix(logger, 1, "axis swap candidate retained for diagnosis");
                 Self::log_fix(logger, 2, "Y inversion candidate retained for diagnosis");
                 Self::log_fix(logger, 3, "screen rotation applied (clockwise_90)");
             }
             RotationFixMode::CounterClockwise => {
-                *matrix = multiply(&screen_rotation_counter_clockwise(), matrix);
+                Self::fix_rotation_ccw(matrix);
                 Self::log_fix(logger, 1, "axis swap candidate retained for diagnosis");
                 Self::log_fix(logger, 2, "Y inversion candidate retained for diagnosis");
                 Self::log_fix(logger, 3, "screen rotation applied (ccw_90)");
@@ -95,6 +97,14 @@ impl MatrixFixer {
         );
         logger.log_matrix("fixed", matrix, false);
         *matrix
+    }
+
+    fn fix_rotation_cw(matrix: &mut [f32; 16]) {
+        *matrix = multiply(&screen_rotation_clockwise(), matrix);
+    }
+
+    fn fix_rotation_ccw(matrix: &mut [f32; 16]) {
+        *matrix = multiply(&screen_rotation_counter_clockwise(), matrix);
     }
 
     fn log_fix(logger: &GLES1to2Logger, number: u8, message: &str) {
@@ -169,19 +179,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn aggressive_composite_is_one_clockwise_quarter_turn() {
-        assert_eq!(
-            screen_rotation_clockwise(),
-            [0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,]
-        );
+    fn aggressive_composite_is_two_clockwise_quarter_turns() {
+        let mut matrix = identity();
+        MatrixFixer::fix_rotation_cw(&mut matrix);
+        MatrixFixer::fix_rotation_cw(&mut matrix);
+        assert_eq!(matrix, screen_rotation_180());
     }
 
     #[test]
-    fn aggressive_composite_leaves_horizontal_flip_disabled() {
-        assert_eq!(
-            multiply(&screen_rotation_clockwise(), &identity()),
-            screen_rotation_clockwise()
-        );
+    fn aggressive_composite_preserves_depth_and_homogeneous_coordinates() {
+        let mut matrix = identity();
+        MatrixFixer::fix_rotation_cw(&mut matrix);
+        MatrixFixer::fix_rotation_cw(&mut matrix);
+        assert_eq!([matrix[2], matrix[6], matrix[10], matrix[14]], [0.0, 0.0, 1.0, 0.0]);
+        assert_eq!([matrix[3], matrix[7], matrix[11], matrix[15]], [0.0, 0.0, 0.0, 1.0]);
     }
 
     #[test]

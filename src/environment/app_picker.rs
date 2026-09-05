@@ -33,6 +33,7 @@ use crate::mem::Ptr;
 use crate::objc::{id, msg, msg_class, nil, objc_classes, release, ClassExports, HostObject};
 use crate::options::Options;
 use crate::paths;
+use crate::options::RenderRotation;
 use crate::window::DeviceOrientation;
 use crate::Environment;
 use std::collections::HashMap;
@@ -249,6 +250,7 @@ struct AppPickerDelegateHostObject {
     orientation_landscape_left: bool,
     orientation_landscape_right: bool,
     orientation_portrait_upside_down: bool,
+    render_rotation: Option<RenderRotation>,
     analog_stick_tilt_controls: Option<bool>,
     network: Option<bool>,
     /// Quick option: show FPS counter (maps to --print-fps)
@@ -384,6 +386,21 @@ const CLASSES: ClassExports = objc_classes! {
 }
 - (())orientationPortraitUpsideDown {
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).orientation_portrait_upside_down = true;
+}
+- (())renderRotationDefault {
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).render_rotation = Some(RenderRotation::Default);
+}
+- (())renderRotationMinus90 {
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).render_rotation = Some(RenderRotation::Minus90);
+}
+- (())renderRotationMinus180 {
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).render_rotation = Some(RenderRotation::Minus180);
+}
+- (())renderRotationPlus90 {
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).render_rotation = Some(RenderRotation::Plus90);
+}
+- (())renderRotationPlus180 {
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).render_rotation = Some(RenderRotation::Plus180);
 }
 - (())analogStickTiltControls:(id)switch { // UISwitch*
     let switch_state: bool = msg![env; switch isOn];
@@ -851,6 +868,7 @@ fn app_picker_inner(
     let mut quick_options_custom_resolution: Option<(u32, u32)> = None;
     let mut quick_options_fullscreen: Option<()> = None;
     let mut quick_options_orientation: Option<DeviceOrientation> = None;
+    let mut quick_options_render_rotation: Option<RenderRotation> = None;
     let mut quick_options_analog_stick_tilt_controls = true;
     let mut quick_options_network = false;
     let mut quick_options_show_fps = true;
@@ -959,6 +977,20 @@ fn app_picker_inner(
             }),
         );
     }
+    fn update_render_rotation_buttons(
+        env: &mut Environment,
+        buttons: &[id; 5],
+        value: Option<RenderRotation>,
+    ) {
+        let selected = match value {
+            None | Some(RenderRotation::Default) => 0,
+            Some(RenderRotation::Minus90) => 1,
+            Some(RenderRotation::Minus180) => 2,
+            Some(RenderRotation::Plus90) => 3,
+            Some(RenderRotation::Plus180) => 4,
+        };
+        update_quick_option_buttons(env, buttons, selected);
+    }
     update_ios_version_dropdown(
         env,
         quick_options_stuff.ios_version_btn,
@@ -1006,6 +1038,11 @@ fn app_picker_inner(
         env,
         &quick_options_stuff.orientation_buttons,
         quick_options_orientation,
+    );
+    update_render_rotation_buttons(
+        env,
+        &quick_options_stuff.render_rotation_buttons,
+        quick_options_render_rotation,
     );
     update_device_model_menu(
         env,
@@ -1291,6 +1328,13 @@ fn app_picker_inner(
                 &quick_options_stuff.orientation_buttons,
                 quick_options_orientation,
             );
+        } else if let Some(value) = std::mem::take(&mut host_obj.render_rotation) {
+            quick_options_render_rotation = Some(value);
+            update_render_rotation_buttons(
+                env,
+                &quick_options_stuff.render_rotation_buttons,
+                quick_options_render_rotation,
+            );
         } else if let Some(tag) = std::mem::take(&mut host_obj.device_model_tag) {
             quick_options_device_tag = Some(tag);
             quick_options_device_model_open = false;
@@ -1447,6 +1491,9 @@ fn app_picker_inner(
             }
             .to_string(),
         );
+    }
+    if let Some(render_rotation) = quick_options_render_rotation {
+        option_args.push(format!("--render-rotation={}", render_rotation.label()));
     }
     if let Some(()) = quick_options_fullscreen {
         option_args.push("--fullscreen".to_string());
@@ -2281,6 +2328,7 @@ struct QuickOptionsStuff {
     custom_resolution_height_field: id,
     custom_resolution_error: id,
     orientation_buttons: [id; 4],
+    render_rotation_buttons: [id; 5],
     frame_generation_switch: id,
     no_texture_compression_switch: id,
     /// The button that toggles the "Device model" dropdown open/closed. Its
@@ -2544,6 +2592,14 @@ fn setup_quick_options(
             ("→", "orientationLandscapeRight"),
             ("↓", "orientationPortraitUpsideDown"),
         ]),
+        RowKind::Label("Render rotation"),
+        RowKind::Buttons(&[
+            ("Default", "renderRotationDefault"),
+            ("-90°", "renderRotationMinus90"),
+            ("-180°", "renderRotationMinus180"),
+            ("90°", "renderRotationPlus90"),
+            ("180°", "renderRotationPlus180"),
+        ]),
         RowKind::Label("Device model"),
         RowKind::DeviceDropdown,
         RowKind::Label("Network access"),
@@ -2586,6 +2642,7 @@ fn setup_quick_options(
     let mut custom_resolution_height_field: id = nil;
     let mut custom_resolution_error: id = nil;
     let mut orientation_buttons: Option<[id; 4]> = None;
+    let mut render_rotation_buttons: Option<[id; 5]> = None;
     let mut frame_generation_switch: id = nil;
     let mut no_texture_compression_switch: id = nil;
     let mut ios_version_btn: id = nil;
@@ -2670,6 +2727,9 @@ fn setup_quick_options(
                     }
                     Some("orientationDefault") => {
                         orientation_buttons = controls.try_into().ok();
+                    }
+                    Some("renderRotationDefault") => {
+                        render_rotation_buttons = controls.try_into().ok();
                     }
                     Some("anisotropicFiltering1")
                     | Some("textureUpscaler1")
@@ -2949,6 +3009,7 @@ fn setup_quick_options(
         custom_resolution_height_field,
         custom_resolution_error,
         orientation_buttons: orientation_buttons.unwrap_or([nil; 4]),
+        render_rotation_buttons: render_rotation_buttons.unwrap_or([nil; 5]),
         frame_generation_switch,
         no_texture_compression_switch,
         device_model_btn,
