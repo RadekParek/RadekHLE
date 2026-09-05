@@ -67,6 +67,8 @@ pub mod wgpu;
 pub mod gles1_native;
 pub mod gles1_on_gl2;
 pub mod gles1_on_gles2;
+pub mod gles1_on_gles2_fixes;
+pub mod gles1_on_gles2_logging;
 pub mod gles1_on_gles3;
 pub mod gles2_glsl;
 pub mod gles2_native;

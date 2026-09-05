@@ -73,3 +73,7 @@ touchHLE only communicates with GDB while execution is paused. Beyond being paus
 [apitrace](https://apitrace.github.io/) is invaluable for figuring out OpenGL-related issues.
 
 More generally, and especially Outside the OpenGL realm, sometimes the most effective solution is dumping image data to a file. There's some functions in [`crate::debug`](../src/debug.rs) that might be useful for this. Don't forget that you can also use Rust's `std::fs::write` if necessary. GIMP and some other tools can read raw pixel data (easiest if the filename ends in `.data`).
+
+## GLES1-on-GLES2 coordinate debugging
+
+Set `TOUCHHLE_TRACE_TRANSLATOR=1` or `TOUCHHLE_GLES1_GLES2_LOG=1` to enable structured logs for matrix operations, projection parameters, viewport changes, texture coordinates, vertex samples, clip-space transformations and NDC values. `TOUCHHLE_GLES1_ROTATION_FIX=clockwise` or `counter-clockwise` enables one screen-space quarter-turn in the GLES1-on-GLES2 MVP upload; the default is `none` so the translator does not silently rotate every application. The seven diagnostic fix stages are logged, but axis swapping, Y inversion, transposition, scale normalisation and perspective-row rewriting are not stacked because doing so would corrupt valid GLES projection matrices.
