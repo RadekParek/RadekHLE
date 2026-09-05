@@ -672,11 +672,13 @@ fn log_game_rect_mapping(env: &Environment, label: &str, x: GLint, y: GLint, wid
     let game_size = window.framebuffer_size();
     let drawable_size = window.drawable_size();
     let drawable_viewport = window.viewport();
-    let (fixed_width, fixed_height) = crate::window::fix_viewport_dimension_mismatch(
-        game_size,
-        (width, height),
-        drawable_size,
-    );
+    let (fixed_width, fixed_height) = if crate::window::viewport_mismatch_fix_enabled(
+        env.bundle.bundle_identifier(),
+    ) {
+        crate::window::fix_viewport_dimension_mismatch(game_size, (width, height), drawable_size)
+    } else {
+        (width, height)
+    };
     let mapped = crate::window::map_game_rect_to_drawable(
         (x, y, fixed_width.max(0) as u32, fixed_height.max(0) as u32),
         game_size,
@@ -738,11 +740,17 @@ fn fix_guest_rect_dimensions(
     let Some(window) = env.window.as_ref() else {
         return (width, height);
     };
-    let fixed = crate::window::fix_viewport_dimension_mismatch(
-        window.framebuffer_size(),
-        (width, height),
-        window.drawable_size(),
-    );
+    let fixed = if crate::window::viewport_mismatch_fix_enabled(
+        env.bundle.bundle_identifier(),
+    ) {
+        crate::window::fix_viewport_dimension_mismatch(
+            window.framebuffer_size(),
+            (width, height),
+            window.drawable_size(),
+        )
+    } else {
+        (width, height)
+    };
     if fixed != (width, height) {
         log!(
             "[VIEWPORT DIMENSION MISMATCH] bundle={} kind={} game={}x{} requested={}x{} fixed={}x{} drawable={}x{}",

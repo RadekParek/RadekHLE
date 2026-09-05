@@ -53,6 +53,17 @@ pub(crate) fn calculate_letterboxed_viewport(
     ((drawable_width - width) / 2, (drawable_height - height) / 2, width, height)
 }
 
+pub(crate) fn viewport_mismatch_fix_enabled(bundle_identifier: &str) -> bool {
+    if std::env::var_os("TOUCHHLE_FORCE_VIEWPORT_FIX").is_some() {
+        return true;
+    }
+    let id = bundle_identifier.to_ascii_lowercase();
+    id.contains("ninjago")
+        || id.contains("scavenger")
+        || id.contains("riseofthesnakes")
+        || id.contains("rise_of_the_snakes")
+}
+
 pub(crate) fn fix_viewport_dimension_mismatch(
     game_size: (u32, u32),
     requested: (i32, i32),
@@ -3239,6 +3250,13 @@ mod viewport_mapping_tests {
             map_game_rect_to_drawable((-20, -10, 400, 520), (320, 480), viewport),
             (1064, 0, 960, 1440)
         );
+    }
+
+    #[test]
+    fn viewport_mismatch_fix_is_scoped_to_ninjago_games() {
+        assert!(super::viewport_mismatch_fix_enabled("com.lego.ninjago.scavenger"));
+        assert!(super::viewport_mismatch_fix_enabled("com.lego.rise_of_the_snakes"));
+        assert!(!super::viewport_mismatch_fix_enabled("com.example.normal-game"));
     }
 
     #[test]
