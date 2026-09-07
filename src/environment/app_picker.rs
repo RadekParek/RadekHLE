@@ -141,6 +141,38 @@ fn enumerate_apps(apps_dir: &Path) -> Result<Vec<AppInfo>, std::io::Error> {
     Ok(apps)
 }
 
+/// URL that Android maps to the .ipa file picker activity (see
+/// android/app/src/main/java/org/touchhle/android/AddIpaActivity.java and
+/// AndroidManifest.xml).
+const ADD_IPA_URL: &str = "touchhle://add-ipa";
+
+/// List the file names of the .ipa files directly inside the apps directory.
+///
+/// This is cheap enough to poll every run-loop iteration, unlike a full
+/// [enumerate_apps], which opens every app bundle.
+fn list_top_level_ipa_files(apps_dir: &Path) -> Vec<String> {
+    let mut names = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(apps_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_ipa = path
+                .extension()
+                .map(|ext| ext.eq_ignore_ascii_case("ipa"))
+                .unwrap_or(false);
+            if is_ipa {
+                names.push(
+                    path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+    }
+    names.sort();
+    names
+}
+
 const IOS_VERSION_ENTRIES: &[(&str, i32)] = &[
     ("Latest (iOS 26.6)", 0),
     ("iOS 2.0", 1),
@@ -253,6 +285,7 @@ fn ios_version_label(value: Option<(i32, i32, i32)>) -> String {
 #[derive(Default)]
 struct AppPickerDelegateHostObject {
     icon_tapped: id,
+    add_ipa: bool,
     copyright_show: bool,
     copyright_hide: bool,
     copyright_prev: bool,
@@ -282,6 +315,7 @@ struct AppPickerDelegateHostObject {
     revert_y_axis: Option<bool>,
     analog_stick_tilt_controls: Option<bool>,
     network: Option<bool>,
+    gles1_on_gles2: Option<bool>,
     rtcs: Option<bool>,
     /// Quick option: show FPS counter (maps to --print-fps)
     show_fps: Option<bool>,
@@ -357,6 +391,10 @@ const CLASSES: ClassExports = objc_classes! {
     // used within the app picker, so it can't be abused. :)
     let host_obj = env.objc.borrow_mut::<AppPickerDelegateHostObject>(this);
     host_obj.icon_tapped = sender;
+}
+
+- (())addIpa {
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).add_ipa = true;
 }
 
 - (())copyrightInfoShow {
@@ -464,6 +502,10 @@ const CLASSES: ClassExports = objc_classes! {
 - (())network:(id)switch { // UISwitch*
     let switch_state: bool = msg![env; switch isOn];
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).network = Some(switch_state);
+}
+- (())gles1OnGLES2:(id)switch { // UISwitch*
+    let switch_state: bool = msg![env; switch isOn];
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).gles1_on_gles2 = Some(switch_state);
 }
 - (())rtcs:(id)switch { // UISwitch*
     let switch_state: bool = msg![env; switch isOn];
@@ -1016,6 +1058,7 @@ fn app_picker_inner(
     let mut quick_options_revert_y_axis = false;
     let mut quick_options_analog_stick_tilt_controls = true;
     let mut quick_options_network = false;
+    let mut quick_options_gles1_on_gles2 = false;
     let mut quick_options_rtcs = false;
     let mut quick_options_show_fps = true;
     let mut quick_options_frame_pacing = true;
@@ -1275,6 +1318,12 @@ fn app_picker_inner(
 
     () = msg![env; window makeKeyAndVisible];
 
+    let apps_dir = paths::user_data_base_path().join(paths::APPS_DIR);
+    let mut current_page = 0usize;
+    // If the user taps the "+" tile, this records the .ipa files that existed
+    // at that moment; once a new one shows up, the app list is re-enumerated.
+    let mut awaited_ipa: Option<Vec<String>> = None;
+
     let main_run_loop: id = msg_class![env; NSRunLoop mainRunLoop];
     // If an app is picked, this loop returns. If the user quits touchHLE, the
     // process exits.
@@ -1303,6 +1352,7 @@ fn app_picker_inner(
                     break app_path.clone();
                 }
                 Some(&TappedIcon::ChangePage(page_idx)) => {
+                    current_page = page_idx;
                     update_icon_grid(
                         env,
                         icon_grid_stuff.as_mut().unwrap(),
@@ -1310,11 +1360,35 @@ fn app_picker_inner(
                         page_idx,
                     );
                 }
+                Some(&TappedIcon::AddIpa) => {
+                    // Handled by the main loop body below (next iteration).
+                    env.objc
+                        .borrow_mut::<AppPickerDelegateHostObject>(delegate)
+                        .add_ipa = true;
+                }
                 None => (), // Tapped on a black space
             }
             continue;
         }
-        if std::mem::take(&mut host_obj.copyright_show) {
+        if std::mem::take(&mut host_obj.add_ipa) {
+            // Snapshot existing IPA files so we can refresh automatically when
+            // the Android picker (or desktop file manager) adds a new one.
+            awaited_ipa = Some(list_top_level_ipa_files(&apps_dir));
+            if std::env::consts::OS == "android" {
+                if let Err(e) = crate::window::open_url(env, ADD_IPA_URL) {
+                    echo!("Couldn't open IPA picker: {}", e);
+                }
+            } else {
+                match paths::url_for_opening_apps_dir() {
+                    Ok(url) => {
+                        if let Err(e) = crate::window::open_url(env, &url) {
+                            echo!("Couldn't open file manager at {:?}: {}", url, e);
+                        }
+                    }
+                    Err(e) => echo!("Couldn't open file manager: {}", e),
+                }
+            }
+        } else if std::mem::take(&mut host_obj.copyright_show) {
             copyright_info_page_idx = 0;
             change_copyright_page(
                 env,
@@ -1350,23 +1424,35 @@ fn app_picker_inner(
             () = msg![env; (quick_options_stuff.main_view) setHidden:true];
             () = msg![env; (quick_options_stuff.settings_backdrop) setHidden:true];
         } else if std::mem::take(&mut host_obj.apps_refresh_requested) {
-            let apps_dir = paths::user_data_base_path().join(paths::APPS_DIR);
             match enumerate_apps(&apps_dir) {
-                Ok(new_apps) if !new_apps.is_empty() => {
-                    apps = Ok(new_apps);
+                Ok(mut new_apps) => {
                     if let Some(icon_grid) = icon_grid_stuff.as_mut() {
-                        *icon_grid = make_icon_grid(
-                            env,
-                            delegate,
-                            main_view,
-                            app_frame,
-                            apps.as_ref().unwrap().len(),
-                            have_wallpaper,
+                        icon_grid.pages = compute_pages(
+                            icon_grid.icon_buttons_and_labels.len(),
+                            new_apps.len(),
                         );
-                        update_icon_grid(env, icon_grid, apps.as_mut().unwrap(), 0);
+                        if current_page >= icon_grid.pages.len() {
+                            current_page = icon_grid.pages.len().saturating_sub(1);
+                        }
+                        update_icon_grid(env, icon_grid, &mut new_apps, current_page);
+                        apps = Ok(new_apps);
+                    } else {
+                        apps = Ok(new_apps);
+                        if let Ok(ref mut apps_vec) = apps {
+                            let mut icon_grid = make_icon_grid(
+                                env,
+                                delegate,
+                                main_view,
+                                app_frame,
+                                apps_vec.len(),
+                                have_wallpaper,
+                            );
+                            current_page = 0;
+                            update_icon_grid(env, &mut icon_grid, apps_vec, current_page);
+                            icon_grid_stuff = Some(icon_grid);
+                        }
                     }
                 }
-                Ok(_) => echo!("No games found in the game folder yet."),
                 Err(e) => echo!("Couldn't refresh the game list: {}", e),
             }
         } else if std::mem::take(&mut host_obj.ios_version_toggle) {
@@ -1709,6 +1795,8 @@ fn app_picker_inner(
             quick_options_analog_stick_tilt_controls = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.network) {
             quick_options_network = enabled;
+        } else if let Some(enabled) = std::mem::take(&mut host_obj.gles1_on_gles2) {
+            quick_options_gles1_on_gles2 = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.rtcs) {
             quick_options_rtcs = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.show_fps) {
@@ -1823,6 +1911,30 @@ fn app_picker_inner(
                 value,
             );
         }
+
+        // Detect .ipa files copied in by the "+" tile flow and refresh the
+        // existing grid once the new file appears.
+        if let Some(old_listing) = &mut awaited_ipa {
+            let new_listing = list_top_level_ipa_files(&apps_dir);
+            if *old_listing != new_listing {
+                *old_listing = new_listing;
+                if let Ok(mut new_apps) = enumerate_apps(&apps_dir) {
+                    if let Some(grid) = icon_grid_stuff.as_mut() {
+                        grid.pages = compute_pages(
+                            grid.icon_buttons_and_labels.len(),
+                            new_apps.len(),
+                        );
+                        if current_page >= grid.pages.len() {
+                            current_page = grid.pages.len().saturating_sub(1);
+                        }
+                        update_icon_grid(env, grid, &mut new_apps, current_page);
+                        apps = Ok(new_apps);
+                    }
+                }
+                // A single picker action is complete once the directory changes.
+                awaited_ipa = None;
+            }
+        }
     };
 
     // Apply user-specified overrides
@@ -1871,6 +1983,9 @@ fn app_picker_inner(
     }
     if quick_options_network {
         option_args.push("--allow-network-access".to_string());
+    }
+    if quick_options_gles1_on_gles2 {
+        option_args.push("--gles1=gles1_on_gles2".to_string());
     }
     option_args.push(
         if quick_options_rtcs {
@@ -2130,6 +2245,7 @@ fn picker_font(env: &mut Environment, size: CGFloat) -> id {
 enum TappedIcon {
     App(usize),
     ChangePage(usize),
+    AddIpa,
 }
 
 struct IconGridStuff {
@@ -2137,6 +2253,7 @@ struct IconGridStuff {
     placeholder_icon: Option<id>,
     prev_icon: Option<id>,
     next_icon: Option<id>,
+    plus_icon: Option<id>,
     pages: Vec<std::ops::Range<usize>>,
     icon_map: HashMap<id, TappedIcon>,
 }
@@ -2243,33 +2360,52 @@ fn make_icon_grid(
     }
 
     // TODO: Use UIScrollView pagination and UIPageControl once available.
-    let mut pages = Vec::new();
-    if total_app_count == 0 {
-        pages.push(0..0);
-    }
-    let mut start = 0;
-    while start < total_app_count {
-        let mut end = start + icon_buttons_and_labels.len();
-        if start > 0 {
-            end -= 1; // one icon space taken by "previous" button
-        }
-        if end < total_app_count {
-            end -= 1; // one icon space taken by "next" button
-        } else {
-            end = total_app_count;
-        }
-        pages.push(start..end);
-        start = end;
-    }
+    let total_slots = icon_buttons_and_labels.len();
+    let pages = compute_pages(total_slots, total_app_count);
 
     IconGridStuff {
         icon_buttons_and_labels,
         placeholder_icon: None,
         prev_icon: None,
         next_icon: None,
+        plus_icon: None,
         pages,
         icon_map: HashMap::new(),
     }
+}
+
+/// Work out which apps go on each page of the icon grid.
+///
+/// Page 0 reserves its first slot for the "add IPA" (+) tile; the remaining
+/// slots are used for the prev/next arrows (when relevant) and the apps.
+fn compute_pages(total_slots: usize, total_app_count: usize) -> Vec<std::ops::Range<usize>> {
+    let mut pages = Vec::new();
+    if total_app_count == 0 {
+        pages.push(0..0);
+        return pages;
+    }
+
+    let mut start = 0;
+    while start < total_app_count {
+        let page_idx = pages.len();
+        let has_prev = start != 0;
+        let has_plus = page_idx == 0;
+        let reserved = usize::from(has_prev) + usize::from(has_plus);
+        let mut app_slots = total_slots.saturating_sub(reserved);
+        let remaining = total_app_count - start;
+        if remaining > app_slots && app_slots > 0 {
+            app_slots -= 1; // reserve a slot for the next-page arrow
+        }
+        // A normal Radek grid always has many slots, but guard against an
+        // unexpectedly tiny layout to avoid an infinite pagination loop.
+        if app_slots == 0 {
+            app_slots = 1;
+        }
+        let end = (start + app_slots).min(total_app_count);
+        pages.push(start..end);
+        start = end;
+    }
+    pages
 }
 
 fn make_icon_from_glyph(
@@ -2357,6 +2493,19 @@ fn update_icon_grid(
         icon_grid_stuff
             .icon_map
             .insert(icon_button, TappedIcon::ChangePage(page_idx - 1));
+    }
+
+    // Klug branch: iOS-style "+" tile on page 0 for importing an IPA.
+    if page_idx == 0 {
+        let &(icon_button, label) = icon_iter.next().unwrap();
+        let image = *icon_grid_stuff.plus_icon.get_or_insert_with(|| {
+            make_icon_from_glyph(env, '+', 50.0, -6.0, (0.25, 0.25, 0.25, 1.0))
+        });
+        () = msg![env; icon_button setImage:image forState:UIControlStateNormal];
+        () = msg![env; label setText:(ns_string::get_static_str(env, ""))];
+        icon_grid_stuff
+            .icon_map
+            .insert(icon_button, TappedIcon::AddIpa);
     }
 
     for app_idx in app_idx_range.clone() {
@@ -3049,6 +3198,8 @@ fn setup_quick_options(
         RowKind::Switch("forceComposition:", false),
         RowKind::Label("GLES override version"),
         RowKind::GlesOverrideDropdown,
+        RowKind::Label("Use GLES1 → GLES2 translator"),
+        RowKind::Switch("gles1OnGLES2:", false),
         RowKind::Label("Custom driver"),
         RowKind::Switch("customDriver:", false),
         RowKind::Label("Custom driver files"),
