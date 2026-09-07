@@ -141,6 +141,34 @@ fn enumerate_apps(apps_dir: &Path) -> Result<Vec<AppInfo>, std::io::Error> {
     Ok(apps)
 }
 
+/// URL handled by touchHLE's Android AddIpaActivity.
+const ADD_IPA_URL: &str = "touchhle://add-ipa";
+
+/// Cheap top-level IPA listing used to notice when the Android picker has
+/// finished copying a new IPA into the apps directory.
+fn list_top_level_ipa_files(apps_dir: &Path) -> Vec<String> {
+    let mut names = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(apps_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path
+                .extension()
+                .map(|ext| ext.eq_ignore_ascii_case("ipa"))
+                .unwrap_or(false)
+            {
+                names.push(
+                    path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
+        }
+    }
+    names.sort();
+    names
+}
+
 const IOS_VERSION_ENTRIES: &[(&str, i32)] = &[
     ("Latest (iOS 26.6)", 0),
     ("iOS 2.0", 1),
@@ -253,6 +281,7 @@ fn ios_version_label(value: Option<(i32, i32, i32)>) -> String {
 #[derive(Default)]
 struct AppPickerDelegateHostObject {
     icon_tapped: id,
+    add_ipa: bool,
     copyright_show: bool,
     copyright_hide: bool,
     copyright_prev: bool,
@@ -357,6 +386,10 @@ const CLASSES: ClassExports = objc_classes! {
     // used within the app picker, so it can't be abused. :)
     let host_obj = env.objc.borrow_mut::<AppPickerDelegateHostObject>(this);
     host_obj.icon_tapped = sender;
+}
+
+- (())addIpa {
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).add_ipa = true;
 }
 
 - (())copyrightInfoShow {
@@ -1275,6 +1308,9 @@ fn app_picker_inner(
 
     () = msg![env; window makeKeyAndVisible];
 
+    let apps_dir = paths::user_data_base_path().join(paths::APPS_DIR);
+    let mut awaited_ipa: Option<Vec<String>> = None;
+
     let main_run_loop: id = msg_class![env; NSRunLoop mainRunLoop];
     // If an app is picked, this loop returns. If the user quits touchHLE, the
     // process exits.
@@ -1314,7 +1350,28 @@ fn app_picker_inner(
             }
             continue;
         }
-        if std::mem::take(&mut host_obj.copyright_show) {
+        if std::mem::take(&mut host_obj.add_ipa) {
+            awaited_ipa = Some(list_top_level_ipa_files(&apps_dir));
+            if std::env::consts::OS == "android" {
+                if let Err(e) = crate::window::open_url(env, ADD_IPA_URL) {
+                    echo!("Couldn't open IPA picker: {}", e);
+                    awaited_ipa = None;
+                }
+            } else {
+                match paths::url_for_opening_apps_dir() {
+                    Ok(url) => {
+                        if let Err(e) = crate::window::open_url(env, &url) {
+                            echo!("Couldn't open file manager at {:?}: {}", url, e);
+                            awaited_ipa = None;
+                        }
+                    }
+                    Err(e) => {
+                        echo!("Couldn't open file manager: {}", e);
+                        awaited_ipa = None;
+                    }
+                }
+            }
+        } else if std::mem::take(&mut host_obj.copyright_show) {
             copyright_info_page_idx = 0;
             change_copyright_page(
                 env,
@@ -1822,6 +1879,33 @@ fn app_picker_inner(
                 &[1, 2, 4, 8],
                 value,
             );
+        }
+
+        // Only poll the apps directory after the user explicitly started an IPA
+        // import. This leaves the normal picker startup path unchanged.
+        if let Some(old_listing) = awaited_ipa.as_ref() {
+            let new_listing = list_top_level_ipa_files(&apps_dir);
+            if &new_listing != old_listing {
+                awaited_ipa = None;
+                match enumerate_apps(&apps_dir) {
+                    Ok(new_apps) if !new_apps.is_empty() => {
+                        apps = Ok(new_apps);
+                        if let Some(icon_grid) = icon_grid_stuff.as_mut() {
+                            *icon_grid = make_icon_grid(
+                                env,
+                                delegate,
+                                main_view,
+                                app_frame,
+                                apps.as_ref().unwrap().len(),
+                                have_wallpaper,
+                            );
+                            update_icon_grid(env, icon_grid, apps.as_mut().unwrap(), 0);
+                        }
+                    }
+                    Ok(_) => echo!("No games found in the game folder yet."),
+                    Err(e) => echo!("Couldn't refresh the game list: {}", e),
+                }
+            }
         }
     };
 
@@ -2419,18 +2503,14 @@ fn make_app_launcher_grid(
     let icon_size = (58.0 * ui_scale).min(short_side * 0.23).max(48.0);
     let card_width = (super_view_size.width * 0.40).max(icon_size + 12.0 * ui_scale);
     let items = [
-        ("Files", "openFileManager", "/res/picker_files_icon.jpg"),
+        ("Add IPA", "addIpa", "/res/picker_files_icon.jpg"),
         (
             "Settings",
             "quickOptionsShow",
             "/res/picker_settings_icon.jpg",
         ),
+        ("Files", "openFileManager", "/res/picker_files_icon.jpg"),
         ("Info", "copyrightInfoShow", "/res/picker_touchhle_icon.png"),
-        (
-            "TouchHLE.org",
-            "visitWebsite",
-            "/res/picker_touchhle_icon.png",
-        ),
     ];
     for (index, (title, selector_name, icon_path)) in items.iter().enumerate() {
         let row = index / 2;
