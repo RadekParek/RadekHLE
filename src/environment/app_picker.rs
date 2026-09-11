@@ -1083,7 +1083,7 @@ fn app_picker_inner(
     let mut quick_options_revert_x_axis = false;
     let mut quick_options_revert_y_axis = false;
     let mut quick_options_analog_stick_tilt_controls = true;
-    let mut quick_options_network = false;
+    let mut quick_options_network = true;
     let mut quick_options_rtcs = false;
     let mut quick_options_show_fps = true;
     let mut quick_options_frame_pacing = true;
@@ -1097,7 +1097,7 @@ fn app_picker_inner(
     let mut quick_options_verbose_logging = false;
     let mut quick_options_shader_compatibility_fixes = true;
     let mut quick_options_fix_texture_min_filter = cfg!(target_os = "android");
-    let mut quick_options_force_composition = true;
+    let mut quick_options_force_composition = false;
     let mut quick_options_angle_driver = false;
     let mut quick_options_log_file = true;
     let mut quick_options_trace_gl_errors = false;
@@ -2018,6 +2018,8 @@ fn app_picker_inner(
     }
     if quick_options_network {
         option_args.push("--allow-network-access".to_string());
+    } else {
+        option_args.push("--disable-network-access".to_string());
     }
     option_args.push(
         if quick_options_rtcs {
@@ -3243,7 +3245,7 @@ fn setup_quick_options(
         RowKind::Label("Fix incomplete textures"),
         RowKind::Switch("fixTextureMinFilter:", cfg!(target_os = "android")),
         RowKind::Label("Force Core Animation composition"),
-        RowKind::Switch("forceComposition:", true),
+        RowKind::Switch("forceComposition:", false),
         RowKind::Label("Custom driver"),
         RowKind::Switch("customDriver:", false),
         RowKind::Label("Custom driver files"),
@@ -3335,7 +3337,7 @@ fn setup_quick_options(
         RowKind::Label("Device model"),
         RowKind::DeviceDropdown,
         RowKind::Label("Network access"),
-        RowKind::Switch("network:", false),
+        RowKind::Switch("network:", true),
         RowKind::Label("RTCS"),
         RowKind::Switch("rtcs:", false),
         RowKind::Label("ANGLE driver"),

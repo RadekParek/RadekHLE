@@ -1627,7 +1627,17 @@ impl Window {
         };
         {
             let gl_ctx = gl_ins.make_current(&mut window);
-            log!("Driver info: {}", unsafe { gl_ctx.driver_description() });
+            let driver_description = unsafe { gl_ctx.driver_description() };
+            if angle_driver_active
+                && cfg!(target_os = "android")
+                && !driver_description.to_ascii_uppercase().contains("ANGLE")
+            {
+                panic!(
+                    "Android system ANGLE was requested, but the platform selected this driver instead: {}",
+                    driver_description
+                );
+            }
+            log!("Driver info: {}", driver_description);
         }
         if options.vsync {
             if let Err(error) = window.video_ctx.gl_set_swap_interval(SwapInterval::VSync) {

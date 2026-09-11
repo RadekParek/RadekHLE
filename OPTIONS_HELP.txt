@@ -463,8 +463,9 @@ Other options:
         should NOT enable this flag, because real ES 2.0 has no fixed-function
         pipeline.
 
-    --allow-network-access
-        Allow apps running in touchHLE to access the Internet and the local network.
+    --allow-network-access / --disable-network-access
+        Allow or deny apps running in touchHLE access to the Internet and local network.
+        Network access is enabled by default.
 
     --ignore-gl-errors
         Ignore host OpenGL errors as queried by glGetError function.

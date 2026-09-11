@@ -541,9 +541,9 @@ impl Default for Options {
             high_performance: DEFAULT_HIGH_PERFORMANCE,
             force_max_clocks: false,
             rtcs: false,
-            force_composition: true,
+            force_composition: false,
             prefer_gles2_context: false,
-            network_access: false,
+            network_access: true,
             popup_errors: true,
             dumping_options: Default::default(),
             dumping_file: crate::paths::user_data_base_path().join("DUMP.txt"),
@@ -943,6 +943,8 @@ impl Options {
             self.prefer_gles2_context = true;
         } else if arg == "--allow-network-access" {
             self.network_access = true;
+        } else if arg == "--disable-network-access" {
+            self.network_access = false;
         } else if arg == "--no-error-popup" {
             self.popup_errors = false;
         } else if let Some(values) = arg.strip_prefix("--dump=") {
@@ -1266,7 +1268,8 @@ mod tests {
         let options = Options::default();
         assert_eq!(options.graphics_api, GraphicsApi::Default);
         assert!(options.high_performance);
-        assert!(options.force_composition);
+        assert!(!options.force_composition);
+        assert!(options.network_access);
         assert_eq!(options.metal_translator, cfg!(target_arch = "aarch64"));
     }
 

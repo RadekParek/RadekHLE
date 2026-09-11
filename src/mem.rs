@@ -302,6 +302,7 @@ impl<T: SafeRead> SafeWrite for T {}
 type Bytes = [u8; 1 << 32];
 pub const PAGE_SIZE: GuestUSize = 4096;
 pub const PAGE_SIZE_ALIGN_MASK: GuestUSize = 0xfff;
+const MAX_DEFENSIVE_GUEST_ACCESS: GuestUSize = 64 * 1024 * 1024;
 
 /// The type that owns the guest memory and provides accessors for it.
 pub struct Mem {
@@ -586,6 +587,12 @@ impl Mem {
     #[inline(always)]
     pub fn bytes_at<const MUT: bool>(&self, ptr: Ptr<u8, MUT>, count: GuestUSize) -> &[u8] {
         let _perf_scope = crate::perf::memory_scope();
+        if count > MAX_DEFENSIVE_GUEST_ACCESS {
+            Self::null_check_fail(ptr.to_bits(), count, false, "bytes_at(oversized)");
+            return unsafe {
+                std::slice::from_raw_parts(self.null_stub_page, PAGE_SIZE as usize)
+            };
+        }
         // ХАК: Вместо паники логируем и возвращаем данные из stub-страницы
         if ptr.to_bits() < self.null_segment_size {
             Self::null_check_fail(ptr.to_bits(), count, false, "bytes_at");
@@ -670,6 +677,12 @@ impl Mem {
     #[inline(always)]
     pub fn bytes_at_mut(&mut self, ptr: MutPtr<u8>, count: GuestUSize) -> &mut [u8] {
         let _perf_scope = crate::perf::memory_scope();
+        if count > MAX_DEFENSIVE_GUEST_ACCESS {
+            Self::null_check_fail(ptr.to_bits(), count, true, "bytes_at_mut(oversized)");
+            return unsafe {
+                std::slice::from_raw_parts_mut(self.null_write_sink, PAGE_SIZE as usize)
+            };
+        }
         let count_usize = count as usize;
         // ХАК: Вместо паники логируем и возвращаем данные из stub-страницы
         if ptr.to_bits() < self.null_segment_size {

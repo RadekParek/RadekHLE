@@ -8,14 +8,53 @@ use std::ffi::{c_void, CStr, CString};
 use std::marker::PhantomData;
 use std::path::Path;
 
+fn library_spec_is_loadable(path: &Path) -> bool {
+    path.is_file() || (path.parent().is_some_and(|parent| parent.as_os_str().is_empty()) && !path.as_os_str().is_empty())
+}
+
 pub fn available() -> bool {
-    let Some(egl) = std::env::var_os("TOUCHHLE_LLVMPIPE_EGL") else {
-        return false;
-    };
-    let Some(gles) = std::env::var_os("TOUCHHLE_LLVMPIPE_GLES") else {
-        return false;
-    };
-    Path::new(&egl).is_file() && Path::new(&gles).is_file()
+    let egl = std::env::var_os("TOUCHHLE_LLVMPIPE_EGL")
+        .or_else(|| std::env::var_os("SDL_VIDEO_EGL_DRIVER"));
+    let gles = std::env::var_os("TOUCHHLE_LLVMPIPE_GLES")
+        .or_else(|| std::env::var_os("SDL_VIDEO_GL_DRIVER"));
+    match (egl, gles) {
+        (Some(egl), Some(gles))
+            if library_spec_is_loadable(Path::new(&egl))
+                && library_spec_is_loadable(Path::new(&gles)) => true,
+        _ => {
+            let egl = native_library_path(&[
+                "libEGL_swiftshader.so",
+                "libEGL_mesa.so.0",
+                "libEGL_mesa.so",
+                "libEGL.so.1",
+                "libEGL.so",
+            ]);
+            let gles = native_library_path(&[
+                "libGLESv2_swiftshader.so",
+                "libGLESv2_mesa.so.2",
+                "libGLESv2_mesa.so",
+                "libGLESv2.so.2",
+                "libGLESv2.so",
+            ]);
+            egl.is_some() && gles.is_some()
+        }
+    }
+}
+
+fn find_library_below(root: &Path, name: &str, depth: u8) -> Option<std::path::PathBuf> {
+    let entries = std::fs::read_dir(root).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() && path.file_name().is_some_and(|file| file == name) {
+            return Some(path);
+        }
+        if depth > 0 && path.is_dir() {
+            if let Some(found) = find_library_below(&path, name, depth - 1) {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 fn native_library_path(names: &[&str]) -> Option<std::path::PathBuf> {
@@ -31,8 +70,7 @@ fn native_library_path(names: &[&str]) -> Option<std::path::PathBuf> {
         ]);
         for root in roots.iter() {
             for name in names {
-                let path = root.join(name);
-                if path.is_file() {
+                if let Some(path) = find_library_below(root, name, 3) {
                     return Some(path);
                 }
             }
@@ -44,12 +82,15 @@ fn native_library_path(names: &[&str]) -> Option<std::path::PathBuf> {
         for root in [
             std::path::Path::new("/system/lib64"),
             std::path::Path::new("/system/lib"),
+            std::path::Path::new("/system_ext/lib64"),
+            std::path::Path::new("/system_ext/lib"),
+            std::path::Path::new("/apex/com.android.angle/lib64"),
+            std::path::Path::new("/apex/com.android.angle/lib"),
             std::path::Path::new("/vendor/lib64/egl"),
             std::path::Path::new("/vendor/lib/egl"),
         ] {
             for name in system_names.clone() {
-                let path = root.join(name);
-                if path.is_file() {
+                if let Some(path) = find_library_below(root, name, 2) {
                     return Some(path);
                 }
             }
@@ -65,8 +106,7 @@ fn native_library_path(names: &[&str]) -> Option<std::path::PathBuf> {
     roots.push(std::path::PathBuf::from("/usr/lib"));
     for root in roots {
         for name in names {
-            let path = root.join(name);
-            if path.is_file() {
+            if let Some(path) = find_library_below(&root, name, 1) {
                 return Some(path);
             }
         }
@@ -102,19 +142,21 @@ pub fn configure(enabled: bool) -> bool {
         });
     let (Some(egl), Some(gles)) = (egl, gles) else {
         log_once!(
-            "LLVMPipe fallback unavailable; using the built-in CPU rasterizer when software rendering is selected"
+            "Native Android CPU rasterizer libraries were not found; using RadekHLE's built-in CPU rasterizer"
         );
         return false;
     };
-    if !egl.is_file() || !gles.is_file() {
+    if !library_spec_is_loadable(&egl) || !library_spec_is_loadable(&gles) {
         log_once!(
-            "LLVMPipe fallback unavailable because its configured Mesa libraries were not found"
+            "Configured native CPU rasterizer libraries were not found; using RadekHLE's built-in CPU rasterizer"
         );
         return false;
     }
     unsafe {
         std::env::set_var("SDL_VIDEO_EGL_DRIVER", &egl);
         std::env::set_var("SDL_VIDEO_GL_DRIVER", &gles);
+        std::env::set_var("TOUCHHLE_LLVMPIPE_EGL", &egl);
+        std::env::set_var("TOUCHHLE_LLVMPIPE_GLES", &gles);
     }
     sdl2::hint::set("SDL_OPENGL_ES_DRIVER", "1");
     std::env::set_var("GALLIUM_DRIVER", "llvmpipe");

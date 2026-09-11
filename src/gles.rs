@@ -406,57 +406,6 @@ fn extract_custom_driver_archive(path: &std::path::Path) -> Result<std::path::Pa
     Ok(output)
 }
 
-#[cfg(target_os = "android")]
-fn preload_angle_library(
-    path: &std::path::Path,
-    kind: &str,
-    allow_basename: bool,
-) -> Result<std::path::PathBuf, String> {
-    use std::ffi::{CStr, CString};
-
-    let mut candidates = vec![path.to_path_buf()];
-    if allow_basename {
-        if let Some(name) = path.file_name() {
-            let basename = std::path::PathBuf::from(name);
-            if basename != path {
-                candidates.push(basename);
-            }
-        }
-    }
-
-    let mut last_error = String::from("unknown Android linker error");
-    for candidate in candidates {
-        let c_path = CString::new(candidate.to_string_lossy().as_bytes())
-            .map_err(|_| format!("ANGLE {} path contains an embedded NUL", kind))?;
-        let handle = unsafe { libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL) };
-        if !handle.is_null() {
-            return Ok(candidate);
-        }
-        let detail = unsafe {
-            let error = libc::dlerror();
-            if error.is_null() {
-                "unknown Android linker error".to_string()
-            } else {
-                CStr::from_ptr(error).to_string_lossy().into_owned()
-            }
-        };
-        last_error = format!("{}: {}", candidate.display(), detail);
-    }
-
-    Err(format!("ANGLE {} library could not be loaded: {}", kind, last_error))
-}
-
-#[cfg(target_os = "android")]
-fn preload_angle_libraries(
-    egl: &std::path::Path,
-    gles: &std::path::Path,
-    allow_basename: bool,
-) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
-    let egl = preload_angle_library(egl, "EGL", allow_basename)?;
-    let gles = preload_angle_library(gles, "GLES", allow_basename)?;
-    Ok((egl, gles))
-}
-
 pub fn configure_angle_driver(enabled: bool) -> bool {
     if !enabled {
         return false;
@@ -465,79 +414,70 @@ pub fn configure_angle_driver(enabled: bool) -> bool {
     let explicit_egl = std::env::var_os("TOUCHHLE_ANGLE_EGL").map(std::path::PathBuf::from);
     let explicit_gles = std::env::var_os("TOUCHHLE_ANGLE_GLES").map(std::path::PathBuf::from);
     let explicit_override = explicit_egl.is_some() || explicit_gles.is_some();
-    let (mut egl_path, mut gles_path) = if explicit_override {
-        let Some(egl) = explicit_egl else {
+
+    if explicit_override {
+        let Some(egl_path) = explicit_egl else {
             panic!("ANGLE override requires both TOUCHHLE_ANGLE_EGL and TOUCHHLE_ANGLE_GLES");
         };
-        let Some(gles) = explicit_gles else {
+        let Some(gles_path) = explicit_gles else {
             panic!("ANGLE override requires both TOUCHHLE_ANGLE_EGL and TOUCHHLE_ANGLE_GLES");
         };
-        (egl, gles)
+        if !angle_library_paths_are_usable(&egl_path, &gles_path) {
+            panic!(
+                "ANGLE override libraries are not usable: EGL={} GLES={}",
+                egl_path.display(),
+                gles_path.display()
+            );
+        }
+        unsafe {
+            std::env::set_var("SDL_VIDEO_EGL_DRIVER", &egl_path);
+            std::env::set_var("SDL_VIDEO_GL_DRIVER", &gles_path);
+        }
+        log!(
+            "Custom ANGLE Vulkan driver active: EGL={}, GLES={}",
+            egl_path.display(),
+            gles_path.display()
+        );
     } else if cfg!(target_os = "android") {
-        let egl = [
-            "/data/local/tmp/radekhle/angle/libEGL_angle.so",
-            "/data/local/tmp/angle/libEGL_angle.so",
-            "/system/lib64/egl/libEGL_angle.so",
-            "/system/lib/egl/libEGL_angle.so",
-            "/system/lib64/libEGL_angle.so",
-            "/system/lib/libEGL_angle.so",
-        ]
-        .into_iter()
-        .map(std::path::PathBuf::from)
-        .find(|path| path.is_file())
-        .expect("ANGLE was selected, but no Android libEGL_angle.so was found");
-        let gles = [
-            "/data/local/tmp/radekhle/angle/libGLESv2_angle.so",
-            "/data/local/tmp/angle/libGLESv2_angle.so",
-            "/system/lib64/egl/libGLESv2_angle.so",
-            "/system/lib/egl/libGLESv2_angle.so",
-            "/system/lib64/libGLESv2_angle.so",
-            "/system/lib/libGLESv2_angle.so",
-        ]
-        .into_iter()
-        .map(std::path::PathBuf::from)
-        .find(|path| path.is_file())
-        .expect("ANGLE was selected, but no Android libGLESv2_angle.so was found");
-        (egl, gles)
+        unsafe {
+            std::env::remove_var("SDL_VIDEO_EGL_DRIVER");
+            std::env::remove_var("SDL_VIDEO_GL_DRIVER");
+        }
+        log!(
+            "Android system ANGLE requested with Vulkan backend; using Android's system GLES loader"
+        );
     } else {
-        let (egl, gles) = if cfg!(target_os = "windows") {
+        let (egl_path, gles_path) = if cfg!(target_os = "windows") {
             ("libEGL.dll", "libGLESv2.dll")
         } else if cfg!(target_os = "macos") {
             ("libEGL.dylib", "libGLESv2.dylib")
         } else {
             ("libEGL.so", "libGLESv2.so")
         };
-        (
-            std::path::PathBuf::from(egl),
-            std::path::PathBuf::from(gles),
-        )
-    };
-
-    if !angle_library_paths_are_usable(&egl_path, &gles_path) {
-        panic!(
-            "ANGLE was selected, but its EGL/GLES libraries are not usable: EGL={} GLES={}",
+        let egl_path = std::path::PathBuf::from(egl_path);
+        let gles_path = std::path::PathBuf::from(gles_path);
+        if !angle_library_paths_are_usable(&egl_path, &gles_path) {
+            panic!(
+                "ANGLE libraries are not usable: EGL={} GLES={}",
+                egl_path.display(),
+                gles_path.display()
+            );
+        }
+        unsafe {
+            std::env::set_var("SDL_VIDEO_EGL_DRIVER", &egl_path);
+            std::env::set_var("SDL_VIDEO_GL_DRIVER", &gles_path);
+        }
+        log!(
+            "Native ANGLE Vulkan driver active: EGL={}, GLES={}",
             egl_path.display(),
             gles_path.display()
         );
     }
+
     unsafe {
         std::env::set_var("ANGLE_DEFAULT_PLATFORM", "vulkan");
     }
-    #[cfg(target_os = "android")]
-    {
-        (egl_path, gles_path) = preload_angle_libraries(&egl_path, &gles_path, !explicit_override)
-            .unwrap_or_else(|error| panic!("ANGLE was selected but could not be loaded: {}", error));
-    }
-    unsafe {
-        std::env::set_var("SDL_VIDEO_EGL_DRIVER", &egl_path);
-        std::env::set_var("SDL_VIDEO_GL_DRIVER", &gles_path);
-    }
     sdl2::hint::set("SDL_OPENGL_ES_DRIVER", "1");
-    log!(
-        "Native ANGLE Vulkan driver active: EGL={}, GLES={}",
-        egl_path.display(),
-        gles_path.display()
-    );
     true
 }
 
@@ -891,6 +831,6 @@ pub(crate) fn log_ortho_matrix_details(matrix: &[f32; 16], label: &str) {
         matrix[0], matrix[4], matrix[8], matrix[12],
         matrix[1], matrix[5], matrix[9], matrix[13],
         matrix[2], matrix[6], matrix[10], matrix[14],
-        matrix[3], matrix[7], matrix[11], matrix[15]
+        matrix[3], matrix[7], matrix[11], matrix[15],
     );
 }
