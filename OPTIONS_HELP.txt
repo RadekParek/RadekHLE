@@ -283,9 +283,8 @@ Graphics driver options:
     --graphics-api=<value>
         Select the host graphics API compatibility path. Values include default,
         translator, translator-gles3, gles1.0, gles1.1, gles2.0, gles3.0, wgpu,
-        vulkan, software, and metal. `software` requests a native CPU OpenGL
-        driver when one is available and keeps the compatibility rasterizer as
-        a last-resort fallback.
+        vulkan, and metal. Software rendering is selected independently with
+        --software-rendering.
 
     --anisotropic-filtering=<1|2|4|8|16>
         Set the maximum anisotropic texture-filtering level. 1 disables the

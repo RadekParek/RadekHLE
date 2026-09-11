@@ -782,14 +782,10 @@ impl Options {
             self.gles2_compat = true;
         } else if arg == "--software-rendering" {
             self.software_rendering = true;
-            self.software_presentation = false;
-            self.graphics_api = GraphicsApi::Software;
+            self.software_presentation = true;
         } else if arg == "--disable-software-rendering" {
             self.software_rendering = false;
             self.software_presentation = false;
-            if self.graphics_api == GraphicsApi::Software {
-                self.graphics_api = GraphicsApi::Default;
-            }
         } else if let Some(value) = arg.strip_prefix("--custom-driver=") {
             let value = value.trim();
             if value.is_empty()
@@ -826,9 +822,10 @@ impl Options {
         } else if let Some(value) = arg.strip_prefix("--graphics-api=") {
             let api = GraphicsApi::from_short_name(value)
                 .map_err(|_| "Unrecognized --graphics-api= value".to_string())?;
+            if api == GraphicsApi::Software {
+                return Err("Software rendering is controlled by --software-rendering".to_string());
+            }
             self.graphics_api = api;
-            self.software_rendering = api == GraphicsApi::Software;
-            self.software_presentation = false;
         } else if let Some(value) = arg.strip_prefix("--gles-override-version=") {
             let override_version = GlesOverrideVersion::parse(value)?;
             self.gles_override_version = override_version;
@@ -1281,19 +1278,6 @@ mod tests {
         assert_eq!(options.graphics_api, GraphicsApi::GLES20);
         options.parse_argument("--graphics-api=vulkan").unwrap();
         assert_eq!(options.graphics_api, GraphicsApi::Vulkan);
-    }
-
-    #[test]
-    fn software_graphics_api_is_a_real_selection() {
-        let mut options = Options::default();
-        options.parse_argument("--graphics-api=software").unwrap();
-        assert_eq!(options.graphics_api, GraphicsApi::Software);
-        assert!(options.software_rendering);
-        assert!(!options.software_presentation);
-        options
-            .parse_argument("--disable-software-rendering")
-            .unwrap();
-        assert_eq!(options.graphics_api, GraphicsApi::Default);
     }
 
     #[test]

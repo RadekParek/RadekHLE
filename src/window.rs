@@ -1295,18 +1295,15 @@ impl Window {
         );
         let custom_driver_active =
             crate::gles::configure_custom_driver(options.custom_driver.as_deref());
-        let angle_driver_active =
-            crate::gles::configure_angle_driver(options.angle_driver && !custom_driver_active);
-        let software_api_selected = options.graphics_api == crate::options::GraphicsApi::Software;
+        crate::gles::configure_angle_driver(options.angle_driver && !custom_driver_active);
         let llvmpipe_active = crate::gles::configure_llvmpipe_fallback(
-            (options.llvmpipe_fallback || options.software_rendering || software_api_selected)
-                && !custom_driver_active,
+            (options.llvmpipe_fallback || options.software_rendering) && !custom_driver_active,
         );
-        let software_presentation = options.software_presentation && !software_api_selected;
-        if software_api_selected && llvmpipe_active {
-            log!("Software rendering selected: using the host's native CPU OpenGL driver");
-        } else if software_api_selected {
-            log!("Software rendering selected, but no native CPU OpenGL driver was found; the built-in compatibility fallback will be used");
+        let native_cpu_renderer = options.software_rendering && llvmpipe_active;
+        let software_presentation =
+            (options.software_rendering || options.software_presentation) && !native_cpu_renderer;
+        if native_cpu_renderer {
+            log!("Software rendering selected: using the host's native LLVMPipe CPU rasterizer instead of the built-in fallback");
         }
         let frame_generation = options.frame_generation && !software_presentation;
         let rtcs = options.rtcs;
@@ -1350,11 +1347,8 @@ impl Window {
                         | crate::options::GraphicsApi::Metal
                         | crate::options::GraphicsApi::Wgpu
                         | crate::options::GraphicsApi::Vulkan
-                ) || matches!(options.graphics_api, crate::options::GraphicsApi::Software)
-                    || (matches!(options.graphics_api, crate::options::GraphicsApi::Default)
-                        && (options.prefer_gles2_context
-                            || options.angle_driver
-                            || llvmpipe_active));
+                ) || (matches!(options.graphics_api, crate::options::GraphicsApi::Default)
+                    && (options.prefer_gles2_context || options.angle_driver || llvmpipe_active));
 
             if use_gles2 {
                 let version = if matches!(
@@ -1374,24 +1368,6 @@ impl Window {
 
             // Disable blocking of event loop when app is paused.
             sdl2::hint::set("SDL_ANDROID_BLOCK_ON_PAUSE", "0");
-        }
-
-        if angle_driver_active {
-            if let Some((_, gles_path)) = crate::gles::angle_driver_paths() {
-                match video_ctx.gl_load_library(&gles_path) {
-                    Ok(()) => log!("ANGLE library validated by SDL before window creation"),
-                    Err(error) => {
-                        crate::gles::disable_angle_driver();
-                        log!("ANGLE library rejected by SDL; falling back to the platform GLES loader: {}", error);
-                        if let Err(default_error) = video_ctx.gl_load_library_default() {
-                            log!(
-                                "Platform GLES loader will be selected during window creation: {}",
-                                default_error
-                            );
-                        }
-                    }
-                }
-            }
         }
 
         // Separate mouse and touch events in both SDL synthesis directions.
@@ -1573,15 +1549,13 @@ impl Window {
 
         if matches!(
             options.graphics_api,
-            crate::options::GraphicsApi::Metal
-                | crate::options::GraphicsApi::Wgpu
-                | crate::options::GraphicsApi::Vulkan
+            crate::options::GraphicsApi::Wgpu | crate::options::GraphicsApi::Vulkan
         ) || frame_generation
         {
-            let presentation = match options.graphics_api {
-                crate::options::GraphicsApi::Metal => WgpuPresentation::new_metal(&window.window),
-                crate::options::GraphicsApi::Vulkan => WgpuPresentation::new_vulkan(&window.window),
-                _ => WgpuPresentation::new(&window.window),
+            let presentation = if options.graphics_api == crate::options::GraphicsApi::Vulkan {
+                WgpuPresentation::new_vulkan(&window.window)
+            } else {
+                WgpuPresentation::new(&window.window)
             };
             log!("{} selected as the host presentation backend; guest EAGL remains on the existing GLES2 compatibility path", options.graphics_api.label());
             match presentation {
@@ -1612,16 +1586,10 @@ impl Window {
             crate::options::GraphicsApi::GLES10 | crate::options::GraphicsApi::GLES11 => {
                 create_gles1_ctx_no_parent_stack(&mut window, options)
             }
-            crate::options::GraphicsApi::Software => {
-                if llvmpipe_active {
-                    create_gles1_translator_ctx_no_parent_stack(&mut window)
-                } else {
-                    Box::new(
-                        SoftwareGLESContext::new(&mut window)
-                            .expect("Could not create software GLES context"),
-                    )
-                }
-            }
+            crate::options::GraphicsApi::Software => Box::new(
+                SoftwareGLESContext::new(&mut window)
+                    .expect("Could not create software GLES context"),
+            ),
             crate::options::GraphicsApi::Metal
             | crate::options::GraphicsApi::Wgpu
             | crate::options::GraphicsApi::Vulkan => create_gles2_ctx_no_parent_stack(&mut window),

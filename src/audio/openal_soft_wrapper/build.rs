@@ -100,33 +100,11 @@ fn main() {
             build.define("ALSOFT_REQUIRE_ALSA", "ON");
         }
 
-        let mut oboe_enabled = false;
-        if os.eq_ignore_ascii_case("android") {
-            let oboe_source = workspace_root.join("vendor/oboe");
-            if oboe_source.join("CMakeLists.txt").is_file() {
-                build.define("OBOE_SOURCE", oboe_source);
-                build.define("ALSOFT_BACKEND_OBOE", "ON");
-                build.define("ALSOFT_INSTALL", "OFF");
-                oboe_enabled = true;
-                println!("cargo:warning=Building OpenAL Soft with the vendored Oboe native AAudio backend");
-            }
-        }
-
         let openal_soft_out = build.build();
 
         link_search(&openal_soft_out.join("lib"));
-        // Some Linux systems.
+        // some Linux systems
         link_search(&openal_soft_out.join("lib64"));
-        if oboe_enabled {
-            // Oboe is built as a separate static archive by OpenAL Soft's
-            // vendored CMake project. Its install path includes the Android ABI.
-            link_search(&openal_soft_out.join("lib/arm64-v8a"));
-            link_search(&openal_soft_out.join("build"));
-            link_search(&openal_soft_out.join("build/lib"));
-            link_search(&openal_soft_out.join("build/oboe"));
-            println!("cargo:rustc-link-lib=static=oboe");
-            println!("cargo:rustc-link-lib=dylib=log");
-        }
 
         // Some dependencies of OpenAL Soft.
         if os.eq_ignore_ascii_case("linux") {
