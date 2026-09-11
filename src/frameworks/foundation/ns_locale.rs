@@ -429,6 +429,9 @@ pub const CLASSES: ClassExports = objc_classes! {
 // MARK: - objectForKey:
 
 - (id)objectForKey:(id)key {
+    if key == nil {
+        return nil;
+    }
     let key_str = ns_string::to_rust_string(env, key).into_owned();
     match key_str.as_str() {
         // Simple id-valued fields: copy the id out, drop borrow, return.
@@ -465,10 +468,26 @@ pub const CLASSES: ClassExports = objc_classes! {
             autorelease(env, ns)
         }
         NSLocaleUsesMetricSystem => {
-            msg_class![env; NSNumber numberWithBool:false]
+            let country_code = env.objc.borrow::<NSLocaleHostObject>(this).country_code;
+            let country = ns_string::to_rust_string(env, country_code);
+            let uses_metric = !matches!(country.as_ref(), "US" | "LR" | "MM");
+            msg_class![env; NSNumber numberWithBool:uses_metric]
+        }
+        NSLocaleMeasurementSystem => {
+            let country_code = env.objc.borrow::<NSLocaleHostObject>(this).country_code;
+            let country = ns_string::to_rust_string(env, country_code);
+            let value = if matches!(country.as_ref(), "US" | "LR" | "MM") { "U.S." } else { "Metric" };
+            let value = ns_string::from_rust_string(env, value.to_string());
+            autorelease(env, value)
         }
         NSLocaleCalendar => {
             msg_class![env; NSCalendar currentCalendar]
+        }
+        NSLocaleScriptCode => {
+            nil
+        }
+        NSLocaleVariantCode => {
+            nil
         }
         NSLocaleQuotationBeginDelimiterKey => {
             // Left double quotation mark U+201C

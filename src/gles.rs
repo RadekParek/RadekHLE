@@ -374,46 +374,93 @@ fn extract_custom_driver_archive(path: &std::path::Path) -> Result<std::path::Pa
     Ok(output)
 }
 
-pub fn configure_angle_driver(enabled: bool) {
+pub fn configure_angle_driver(enabled: bool) -> bool {
     if !enabled {
-        return;
+        return false;
     }
 
-    let default_egl = if cfg!(target_os = "windows") {
-        "libEGL.dll"
-    } else if cfg!(target_os = "macos") {
-        "libEGL.dylib"
+    let explicit_egl = std::env::var_os("TOUCHHLE_ANGLE_EGL").map(std::path::PathBuf::from);
+    let explicit_gles = std::env::var_os("TOUCHHLE_ANGLE_GLES").map(std::path::PathBuf::from);
+    let (egl_path, gles_path) = if explicit_egl.is_some() || explicit_gles.is_some() {
+        let Some(egl) = explicit_egl else {
+            log!("ANGLE override requires both TOUCHHLE_ANGLE_EGL and TOUCHHLE_ANGLE_GLES");
+            return false;
+        };
+        let Some(gles) = explicit_gles else {
+            log!("ANGLE override requires both TOUCHHLE_ANGLE_EGL and TOUCHHLE_ANGLE_GLES");
+            return false;
+        };
+        (egl, gles)
+    } else if cfg!(target_os = "android") {
+        let egl = [
+            "/data/local/tmp/radekhle/angle/libEGL_angle.so",
+            "/data/local/tmp/angle/libEGL_angle.so",
+            "/system/lib64/egl/libEGL_angle.so",
+            "/system/lib/egl/libEGL_angle.so",
+            "/system/lib64/libEGL_angle.so",
+            "/system/lib/libEGL_angle.so",
+        ]
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .find(|path| path.is_file());
+        let gles = [
+            "/data/local/tmp/radekhle/angle/libGLESv2_angle.so",
+            "/data/local/tmp/angle/libGLESv2_angle.so",
+            "/system/lib64/egl/libGLESv2_angle.so",
+            "/system/lib/egl/libGLESv2_angle.so",
+            "/system/lib64/libGLESv2_angle.so",
+            "/system/lib/libGLESv2_angle.so",
+        ]
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .find(|path| path.is_file());
+        let (Some(egl), Some(gles)) = (egl, gles) else {
+            log!("ANGLE requested, but no native Android ANGLE libraries were found; leaving SDL on the system GLES driver");
+            return false;
+        };
+        (egl, gles)
     } else {
-        "libEGL.so"
+        let (egl, gles) = if cfg!(target_os = "windows") {
+            ("libEGL.dll", "libGLESv2.dll")
+        } else if cfg!(target_os = "macos") {
+            ("libEGL.dylib", "libGLESv2.dylib")
+        } else {
+            ("libEGL.so", "libGLESv2.so")
+        };
+        (
+            std::path::PathBuf::from(egl),
+            std::path::PathBuf::from(gles),
+        )
     };
-    let default_gles = if cfg!(target_os = "windows") {
-        "libGLESv2.dll"
-    } else if cfg!(target_os = "macos") {
-        "libGLESv2.dylib"
-    } else {
-        "libGLESv2.so"
-    };
-    let egl_path = std::env::var("TOUCHHLE_ANGLE_EGL").unwrap_or_else(|_| default_egl.to_owned());
-    let gles_path =
-        std::env::var("TOUCHHLE_ANGLE_GLES").unwrap_or_else(|_| default_gles.to_owned());
-    let egl_exists = std::path::Path::new(&egl_path).exists();
-    let gles_exists = std::path::Path::new(&gles_path).exists();
 
+    if !angle_library_paths_are_usable(&egl_path, &gles_path) {
+        log!(
+            "ANGLE libraries are not usable: EGL={} GLES={}",
+            egl_path.display(),
+            gles_path.display()
+        );
+        return false;
+    }
     unsafe {
         std::env::set_var("SDL_VIDEO_EGL_DRIVER", &egl_path);
         std::env::set_var("SDL_VIDEO_GL_DRIVER", &gles_path);
     }
     sdl2::hint::set("SDL_OPENGL_ES_DRIVER", "1");
     log!(
-        "ANGLE override requested: EGL={} (exists={}), GLES={} (exists={}); SDL will try these before the first window",
-        egl_path,
-        egl_exists,
-        gles_path,
-        gles_exists
+        "Native ANGLE driver active: EGL={}, GLES={}",
+        egl_path.display(),
+        gles_path.display()
     );
-    if !egl_exists || !gles_exists {
-        log!("ANGLE libraries are not present at the configured paths; SDL may fall back or context creation may fail");
+    true
+}
+
+fn angle_library_paths_are_usable(egl: &std::path::Path, gles: &std::path::Path) -> bool {
+    if std::env::var_os("TOUCHHLE_ANGLE_EGL").is_some()
+        || std::env::var_os("TOUCHHLE_ANGLE_GLES").is_some()
+    {
+        return egl.is_file() && gles.is_file();
     }
+    cfg!(not(target_os = "android")) || (egl.is_file() && gles.is_file())
 }
 
 /// Labels for [GLES] implementations and an abstraction for constructing them.

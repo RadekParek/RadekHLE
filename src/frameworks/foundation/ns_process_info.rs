@@ -21,7 +21,7 @@ use crate::abi::{impl_GuestRet_for_large_struct, GuestArg};
 use crate::frameworks::foundation::ns_string;
 use crate::libc::mach::host::physical_memory;
 use crate::mem::SafeRead;
-use crate::objc::{id, msg, msg_class, objc_classes, ClassExports};
+use crate::objc::{autorelease, id, msg, msg_class, objc_classes, release, ClassExports};
 use crate::Environment;
 use std::time::Instant;
 
@@ -129,7 +129,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 - (i32)processIdentifier {
     assert_process_info_singleton(env, this);
-    1234
+    std::process::id().min(i32::MAX as u32) as i32
 }
 
 - (id)globallyUniqueString {
@@ -150,12 +150,19 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 - (id)hostName {
     assert_process_info_singleton(env, this);
-    ns_string::get_static_str(env, "touchHLE-host.local")
+    let hostname = std::env::var("HOSTNAME").unwrap_or_else(|_| "touchHLE-host.local".to_string());
+    ns_string::from_rust_string(env, hostname)
 }
 
 - (id)arguments {
     assert_process_info_singleton(env, this);
-    msg_class![env; NSArray array]
+    let arguments: id = msg_class![env; NSMutableArray array];
+    for argument in std::env::args() {
+        let argument = ns_string::from_rust_string(env, argument);
+        () = msg![env; arguments addObject:argument];
+        release(env, argument);
+    }
+    autorelease(env, arguments)
 }
 
 - (id)environment {
@@ -174,12 +181,12 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 - (u32)processorCount {
     assert_process_info_singleton(env, this);
-    1
+    std::thread::available_parallelism().map_or(1, |count| count.get()) as u32
 }
 
 - (u32)activeProcessorCount {
     assert_process_info_singleton(env, this);
-    1
+    std::thread::available_parallelism().map_or(1, |count| count.get()) as u32
 }
 
 // =========================================================================

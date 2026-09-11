@@ -3,6 +3,8 @@ package org.radekhle.android;
 import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Build;
+import android.os.Process;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.util.Log;
@@ -21,6 +23,7 @@ public class MainActivity extends SDLActivity {
     private static final int ADD_IPA_REQUEST = 4713;
     private static final int ADD_IPA_MESSAGE = 0x8000;
     private static final int PERFORMANCE_MODE_MESSAGE = 0x8001;
+    private Object performanceHintSession;
 
     @Override
     protected String[] getLibraries() {
@@ -47,13 +50,53 @@ public class MainActivity extends SDLActivity {
     private void applyPerformanceMode(int flags) {
         boolean highPerformance = (flags & 1) != 0;
         boolean maxClocks = (flags & 2) != 0;
-        if (android.os.Build.VERSION.SDK_INT >= 24) {
-            getWindow().setSustainedPerformanceMode(highPerformance || maxClocks);
+        boolean enabled = highPerformance || maxClocks;
+        if (Build.VERSION.SDK_INT >= 24) {
+            getWindow().setSustainedPerformanceMode(enabled);
+        }
+        if (enabled) {
+            getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        } else {
+            getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
+        updatePerformanceHintSession(enabled, maxClocks);
+        if (Build.VERSION.SDK_INT >= 30 && enabled) {
+            float refreshRate = getWindow().getWindowManager().getDefaultDisplay().getRefreshRate();
+            if (refreshRate > 0.0f) getWindow().setPreferredRefreshRate(refreshRate);
         }
         Log.i(TAG, "Native sustained-performance hint "
-                + ((highPerformance || maxClocks) ? "enabled" : "disabled")
+                + (enabled ? "enabled" : "disabled")
                 + "; max-clocks request=" + maxClocks
-                + " (the device governor remains in control of actual clock rates)");
+                + " (Android governors still control the actual CPU/GPU clocks)");
+    }
+
+    private void updatePerformanceHintSession(boolean enabled, boolean maxClocks) {
+        if (Build.VERSION.SDK_INT < 31) return;
+        try {
+            if (!enabled) {
+                if (performanceHintSession != null) {
+                    performanceHintSession.getClass().getMethod("close").invoke(performanceHintSession);
+                    performanceHintSession = null;
+                }
+                return;
+            }
+            if (performanceHintSession == null) {
+                Object manager = getSystemService("performance_hint");
+                if (manager != null) {
+                    performanceHintSession = manager.getClass()
+                            .getMethod("createHintSession", int[].class, long.class)
+                            .invoke(manager, new int[]{Process.myTid()}, maxClocks ? 8_333_333L : 16_666_667L);
+                }
+            }
+            if (performanceHintSession != null) {
+                performanceHintSession.getClass()
+                        .getMethod("updateTargetWorkDuration", long.class)
+                        .invoke(performanceHintSession, maxClocks ? 8_333_333L : 16_666_667L);
+            }
+        } catch (Exception ex) {
+            Log.w(TAG, "Android performance hint session is unavailable", ex);
+            performanceHintSession = null;
+        }
     }
 
     private static void openIpaPicker() {

@@ -148,15 +148,23 @@ impl Bundle {
             .get("UIRequiredDeviceCapabilities")
             .map(|v| {
                 if let Some(dict) = v.as_dictionary() {
-                    // TODO: support undesired capabilities
-                    assert!(dict.values().all(|x| x.as_boolean().unwrap()));
-                    dict.keys().map(|o| o.as_str()).collect()
+                    dict.iter()
+                        .filter_map(|(key, value)| {
+                            value
+                                .as_boolean()
+                                .filter(|enabled| *enabled)
+                                .map(|_| key.as_str())
+                        })
+                        .collect()
                 } else {
                     v.as_array()
-                        .unwrap()
-                        .iter()
-                        .map(|o| o.as_string().unwrap())
-                        .collect()
+                        .map(|values| {
+                            values
+                                .iter()
+                                .filter_map(|value| value.as_string())
+                                .collect()
+                        })
+                        .unwrap_or_default()
                 }
             })
             .unwrap_or_default()
@@ -164,8 +172,17 @@ impl Bundle {
 
     pub fn executable_path(&self) -> GuestPathBuf {
         // FIXME: Is this key optional? All iPhone apps seem to have it.
-        self.path
-            .join(self.plist["CFBundleExecutable"].as_string().unwrap())
+        let executable = self
+            .plist
+            .get("CFBundleExecutable")
+            .and_then(|value| value.as_string())
+            .or_else(|| {
+                self.plist
+                    .get("CFBundleName")
+                    .and_then(|value| value.as_string())
+            })
+            .unwrap_or("UnknownApp");
+        self.path.join(executable)
     }
 
     pub fn launch_image_path(&self, fs: &Fs, device_family: DeviceFamily) -> GuestPathBuf {
@@ -173,7 +190,7 @@ impl Bundle {
         let base_name = self
             .plist
             .get("UILaunchImageFile")
-            .map(|v| v.as_string().unwrap())
+            .and_then(|value| value.as_string())
             .unwrap_or("Default");
 
         // Try device-specific variants first, then fallback to base name

@@ -529,8 +529,18 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (id)appStoreReceiptURL {
-    log!("TODO: [NSBundle appStoreReceiptURL] — returning nil");
-    nil
+    let name = ns_string::get_static_str(env, "sandboxReceipt");
+    let directory = ns_string::get_static_str(env, "StoreKit");
+    let path: id = msg![env; this pathForResource:name ofType:nil inDirectory:directory];
+    release(env, name);
+    release(env, directory);
+    if path == nil {
+        return nil;
+    }
+    let url: id = msg_class![env; NSURL alloc];
+    let url: id = msg![env; url initFileURLWithPath:path];
+    release(env, path);
+    autorelease(env, url)
 }
 
 // =========================================================================

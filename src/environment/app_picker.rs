@@ -1089,7 +1089,7 @@ fn app_picker_inner(
     let mut quick_options_frame_pacing = true;
     let mut quick_options_fps_limit: Option<f64> = None;
     let mut quick_options_frame_generation = false;
-    let mut quick_options_high_performance = false;
+    let mut quick_options_high_performance = true;
     let mut quick_options_force_max_clocks = false;
     let mut quick_options_vsync = false;
     let mut quick_options_battery_saver = false;
@@ -1097,7 +1097,7 @@ fn app_picker_inner(
     let mut quick_options_verbose_logging = false;
     let mut quick_options_shader_compatibility_fixes = true;
     let mut quick_options_fix_texture_min_filter = cfg!(target_os = "android");
-    let mut quick_options_force_composition = false;
+    let mut quick_options_force_composition = true;
     let mut quick_options_angle_driver = false;
     let mut quick_options_log_file = true;
     let mut quick_options_trace_gl_errors = false;
@@ -1837,10 +1837,16 @@ fn app_picker_inner(
             quick_options_vsync = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.battery_saver) {
             quick_options_battery_saver = enabled;
+            if enabled {
+                quick_options_high_performance = false;
+                quick_options_force_max_clocks = false;
+            }
         } else if let Some(enabled) = std::mem::take(&mut host_obj.ultra_battery_saver) {
             quick_options_ultra_battery_saver = enabled;
             if enabled {
                 quick_options_battery_saver = true;
+                quick_options_high_performance = false;
+                quick_options_force_max_clocks = false;
                 () = msg![env; (quick_options_stuff.battery_saver_switch) setOn:true];
             }
             () = msg![env; (quick_options_stuff.ultra_battery_saver_switch) setOn:enabled];
@@ -3226,8 +3232,10 @@ fn setup_quick_options(
         RowKind::Switch("lowAudioQuality:", false),
         RowKind::Label("Graphics API"),
         RowKind::GraphicsApiDropdown,
+        RowKind::Label("GLES override version"),
+        RowKind::GlesOverrideDropdown,
         RowKind::Label("High performance mode"),
-        RowKind::Switch("highPerformance:", false),
+        RowKind::Switch("highPerformance:", true),
         RowKind::Label("Force max clocks (Adreno)"),
         RowKind::Switch("forceMaxClocks:", false),
         RowKind::Label("Shader compatibility fixes"),
@@ -3235,9 +3243,7 @@ fn setup_quick_options(
         RowKind::Label("Fix incomplete textures"),
         RowKind::Switch("fixTextureMinFilter:", cfg!(target_os = "android")),
         RowKind::Label("Force Core Animation composition"),
-        RowKind::Switch("forceComposition:", false),
-        RowKind::Label("GLES override version"),
-        RowKind::GlesOverrideDropdown,
+        RowKind::Switch("forceComposition:", true),
         RowKind::Label("Custom driver"),
         RowKind::Switch("customDriver:", false),
         RowKind::Label("Custom driver files"),
@@ -3287,7 +3293,7 @@ fn setup_quick_options(
         RowKind::Label("LLVMPipe fallback"),
         RowKind::Switch("llvmpipeFallback:", false),
         RowKind::Label("Metal translator (ARM64)"),
-        RowKind::Switch("metalTranslator:", false),
+        RowKind::Switch("metalTranslator:", cfg!(target_arch = "aarch64")),
         RowKind::Label("Game folder"),
         RowKind::Buttons(&[
             ("Open folder", "openFileManager"),

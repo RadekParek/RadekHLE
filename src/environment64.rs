@@ -346,7 +346,7 @@ fn display_boot_screen(
                 error
             );
             window.display_compatibility_image(
-                crate::image::Image::from_pixels(1, 1, vec![0, 0, 0, 255]),
+                crate::image::Image::from_pixels(320, 480, vec![255; 320 * 480 * 4]),
                 crate::window::DeviceOrientation::Portrait,
             );
             true

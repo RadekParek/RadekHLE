@@ -2208,6 +2208,24 @@ fn image_size_estimate(
         .saturating_mul(height.saturating_sub(1))
         .saturating_add(row_bytes)
 }
+fn valid_host_tex_image_2d(internalformat: GLint, format: GLenum, type_: GLenum) -> bool {
+    let internal = internalformat as GLenum;
+    if internal != format {
+        return false;
+    }
+    match (format, type_) {
+        (gles11::ALPHA | gles11::LUMINANCE | gles11::LUMINANCE_ALPHA, gles11::UNSIGNED_BYTE) => {
+            true
+        }
+        (gles11::RGB, gles11::UNSIGNED_BYTE | gles11::UNSIGNED_SHORT_5_6_5) => true,
+        (
+            gles11::RGBA,
+            gles11::UNSIGNED_BYTE | gles11::UNSIGNED_SHORT_4_4_4_4 | gles11::UNSIGNED_SHORT_5_5_5_1,
+        ) => true,
+        _ => false,
+    }
+}
+
 fn normalise_tex_image_formats(
     internalformat: GLint,
     format: GLenum,
@@ -2258,6 +2276,33 @@ unsafe fn tex_image_2d_checked(
     pixels: *const GLvoid,
     fallback_pixels: *const GLvoid,
 ) {
+    let valid_upload = valid_host_tex_image_2d(internalformat, format, type_);
+    let fallback_len = (width.max(0) as usize)
+        .saturating_mul(height.max(0) as usize)
+        .saturating_mul(4);
+    let safe_blank = if valid_upload {
+        None
+    } else {
+        Some(vec![0u8; fallback_len])
+    };
+    let (upload_internalformat, upload_format, upload_type, upload_pixels) = if let Some(blank) =
+        safe_blank.as_ref()
+    {
+        log!(
+            "Warning: normalizing invalid host TexImage2D combination internalformat=0x{:x} format=0x{:x} type=0x{:x} to RGBA/UNSIGNED_BYTE",
+            internalformat as u32,
+            format,
+            type_
+        );
+        (
+            gles11::RGBA as GLint,
+            gles11::RGBA,
+            gles11::UNSIGNED_BYTE,
+            blank.as_ptr().cast(),
+        )
+    } else {
+        (internalformat, format, type_, pixels)
+    };
     let previous_error = gles.GetError();
     if previous_error != gles11::NO_ERROR {
         log_dbg!(
@@ -2269,13 +2314,13 @@ unsafe fn tex_image_2d_checked(
     gles.TexImage2D(
         target,
         level,
-        internalformat,
+        upload_internalformat,
         width,
         height,
-        border,
-        format,
-        type_,
-        pixels,
+        if valid_upload { border } else { 0 },
+        upload_format,
+        upload_type,
+        upload_pixels,
     );
     let error = gles.GetError();
     if error == gles11::NO_ERROR {

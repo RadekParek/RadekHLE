@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use crate::abi::CallFromHost;
 use crate::audio::openal as al;
-use crate::audio::openal::al_types::{ALuint, ALvoid};
+use crate::audio::openal::al_types::{ALenum, ALsizei, ALuint, ALvoid};
 use crate::audio::openal::{
     OpenAL, AL_BUFFERS_PROCESSED, AL_BUFFERS_QUEUED, AL_PLAYING, AL_SOURCE_STATE,
 };
@@ -21,7 +21,8 @@ use crate::frameworks::audio_toolbox::audio_components;
 use crate::frameworks::audio_toolbox::audio_queue::log_if_broken_audio_format;
 use crate::frameworks::carbon_core::{paramErr, OSStatus};
 use crate::frameworks::core_audio_types::{
-    fourcc, kAudioFormatFlagIsNonInterleaved, AudioStreamBasicDescription,
+    fourcc, kAudioFormatFlagIsNonInterleaved, kAudioFormatMPEG4AAC, kAudioFormatMPEGLayer3,
+    AudioStreamBasicDescription,
 };
 use crate::frameworks::core_foundation::cf_run_loop::CFRunLoopGetMain;
 use crate::frameworks::foundation::ns_run_loop;
@@ -29,7 +30,9 @@ use crate::mem::{guest_size_of, ConstVoidPtr, MutPtr, MutVoidPtr, SafeRead};
 use crate::objc::nil;
 
 use super::audio_components::{AURenderCallbackStruct, AudioComponentInstance};
-use super::audio_queue::{apply_lower_audio_quality, decode_buffer};
+use super::audio_queue::{
+    apply_lower_audio_quality, decode_buffer, decode_buffer_cached, decode_compressed_buffer,
+};
 
 const AL_POSITION: i32 = 0x1004;
 const AL_REFERENCE_DISTANCE: i32 = 0x1020;
@@ -53,6 +56,55 @@ fn audio_bytes_per_frame(format: &AudioStreamBasicDescription) -> u32 {
         format
             .bytes_per_frame
             .max(audio_bytes_per_sample(format).saturating_mul(format.channels_per_frame.max(1)))
+    }
+}
+
+fn decode_audio_unit_buffer(
+    env: &mut Environment,
+    audio_unit: AudioUnit,
+    bus_id: Option<u32>,
+    format: &AudioStreamBasicDescription,
+    data: MutPtr<u8>,
+    size: u32,
+) -> (ALenum, ALsizei, Vec<u8>) {
+    let compressed = matches!(
+        format.format_id,
+        kAudioFormatMPEGLayer3 | kAudioFormatMPEG4AAC
+    );
+    let state = audio_components::State::get(&mut env.framework_state);
+    let Some(instance) = state.audio_component_instances.get_mut(&audio_unit) else {
+        return decode_buffer(&env.mem, format, data, size);
+    };
+    let (cache, pending, pending_format, emitted) = if let Some(bus_id) = bus_id {
+        let Some(bus) = instance.mixer_buses.get_mut(&bus_id) else {
+            return decode_buffer(&env.mem, format, data, size);
+        };
+        (
+            &mut bus.decoded_buffer_cache,
+            &mut bus.compressed_pending,
+            &mut bus.compressed_pending_format,
+            &mut bus.compressed_emitted_pcm_bytes,
+        )
+    } else {
+        (
+            &mut instance.decoded_buffer_cache,
+            &mut instance.compressed_pending,
+            &mut instance.compressed_pending_format,
+            &mut instance.compressed_emitted_pcm_bytes,
+        )
+    };
+    if compressed {
+        decode_compressed_buffer(
+            pending,
+            pending_format,
+            emitted,
+            &env.mem,
+            format,
+            data,
+            size,
+        )
+    } else {
+        decode_buffer_cached(cache, &env.mem, format, data, size)
     }
 }
 
@@ -769,6 +821,17 @@ fn AudioUnitReset(
         .get_mut(&in_unit)
     {
         obj.last_render_time = None;
+        obj.decoded_buffer_cache.clear();
+        obj.compressed_pending.clear();
+        obj.compressed_pending_format = None;
+        obj.compressed_emitted_pcm_bytes = 0;
+        for bus in obj.mixer_buses.values_mut() {
+            bus.last_render_time = None;
+            bus.decoded_buffer_cache.clear();
+            bus.compressed_pending.clear();
+            bus.compressed_pending_format = None;
+            bus.compressed_emitted_pcm_bytes = 0;
+        }
     }
     0
 }
@@ -886,7 +949,15 @@ fn AudioOutputUnitStop(env: &mut Environment, ci: AudioUnit) -> OSStatus {
             }
         }
         audio_unit_state.al_source = None;
+        audio_unit_state.decoded_buffer_cache.clear();
+        audio_unit_state.compressed_pending.clear();
+        audio_unit_state.compressed_pending_format = None;
+        audio_unit_state.compressed_emitted_pcm_bytes = 0;
         for bus in audio_unit_state.mixer_buses.values_mut() {
+            bus.decoded_buffer_cache.clear();
+            bus.compressed_pending.clear();
+            bus.compressed_pending_format = None;
+            bus.compressed_emitted_pcm_bytes = 0;
             if let Some(source) = bus.al_source {
                 unsafe {
                     context.DeleteSources(1, &source);
@@ -1169,8 +1240,14 @@ fn render_audio_unit_buses(env: &mut Environment, audio_unit: AudioUnit) {
             ),
         );
 
-        let (al_fmt, mut decoded_sample_rate, mut processed) =
-            decode_buffer(&env.mem, &fmt, buffer_data.cast(), buffer_size);
+        let (al_fmt, mut decoded_sample_rate, mut processed) = decode_audio_unit_buffer(
+            env,
+            audio_unit,
+            Some(bus_id),
+            &fmt,
+            buffer_data.cast(),
+            buffer_size,
+        );
         if env.options.low_audio_quality {
             (decoded_sample_rate, processed) =
                 apply_lower_audio_quality(al_fmt, decoded_sample_rate, processed);
@@ -1578,8 +1655,14 @@ fn render_audio_unit_once(env: &mut Environment, audio_unit: AudioUnit) {
         (buffer.data, written, None, stream_format)
     };
 
-    let (al_fmt, mut decoded_sample_rate, mut processed) =
-        decode_buffer(&env.mem, &decode_format, decode_ptr.cast(), written_bytes);
+    let (al_fmt, mut decoded_sample_rate, mut processed) = decode_audio_unit_buffer(
+        env,
+        audio_unit,
+        None,
+        &decode_format,
+        decode_ptr.cast(),
+        written_bytes,
+    );
     if let Some(ptr) = interleaved_ptr {
         env.mem.free(ptr.cast_void());
     }

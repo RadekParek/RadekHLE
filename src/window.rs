@@ -2307,7 +2307,16 @@ impl Window {
         self.sensor_ctx.update();
         if self.controllers.is_empty() || !options.analog_stick_tilt_controls {
             if let Some(ref accelerometer) = self.accelerometer {
-                let data = accelerometer.get_data().unwrap();
+                let data = match accelerometer.get_data() {
+                    Ok(data) => data,
+                    Err(error) => {
+                        log_once_fmt!(
+                            "Warning: accelerometer read failed ({}); reporting neutral acceleration",
+                            error
+                        );
+                        return (0.0, 0.0, -1.0);
+                    }
+                };
                 let sdl2::sensor::SensorData::Accel(data) = data else {
                     // We asked SDL for the accelerometer sensor explicitly
                     // earlier; if SDL handed us a different sensor variant

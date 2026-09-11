@@ -451,7 +451,11 @@ impl Environment {
                     "Warning: No launch image found for {}; using generated blank fallback",
                     bundle.bundle_identifier()
                 );
-                Some(image::Image::from_pixels(1, 1, vec![0, 0, 0, 255]))
+                Some(image::Image::from_pixels(
+                    320,
+                    480,
+                    vec![255; 320 * 480 * 4],
+                ))
             };
             Some(Box::new(window::Window::new(
                 &format!(

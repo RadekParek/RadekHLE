@@ -6,7 +6,7 @@
  */
 //! `AudioComponent.h` (Audio Component Services)
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use crate::abi::GuestFunction;
@@ -63,6 +63,10 @@ pub struct MixerBusState {
     pub render_callback: Option<AURenderCallbackStruct>,
     pub stream_format: Option<AudioStreamBasicDescription>,
     pub last_render_time: Option<Instant>,
+    pub decoded_buffer_cache: VecDeque<super::audio_queue::DecodedAudioBuffer>,
+    pub compressed_pending: Vec<u8>,
+    pub compressed_pending_format: Option<u32>,
+    pub compressed_emitted_pcm_bytes: usize,
 }
 
 impl Default for MixerBusState {
@@ -79,6 +83,10 @@ impl Default for MixerBusState {
             render_callback: None,
             stream_format: None,
             last_render_time: None,
+            decoded_buffer_cache: VecDeque::new(),
+            compressed_pending: Vec::new(),
+            compressed_pending_format: None,
+            compressed_emitted_pcm_bytes: 0,
         }
     }
 }
@@ -111,6 +119,10 @@ pub struct AudioComponentInstanceHostObject {
     pub rendered_frames: u64,
     pub render_underruns: u64,
     pub last_underrun_log: Option<Instant>,
+    pub decoded_buffer_cache: VecDeque<super::audio_queue::DecodedAudioBuffer>,
+    pub compressed_pending: Vec<u8>,
+    pub compressed_pending_format: Option<u32>,
+    pub compressed_emitted_pcm_bytes: usize,
 
     // --- 3D Mixer State ---
     pub is_3d_mixer: bool,
@@ -143,6 +155,10 @@ impl Default for AudioComponentInstanceHostObject {
             rendered_frames: 0,
             render_underruns: 0,
             last_underrun_log: None,
+            decoded_buffer_cache: VecDeque::new(),
+            compressed_pending: Vec::new(),
+            compressed_pending_format: None,
+            compressed_emitted_pcm_bytes: 0,
             is_3d_mixer: false,
             mixer_buses: HashMap::new(),
         }

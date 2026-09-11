@@ -254,6 +254,17 @@ impl GlesOverrideVersion {
             Self::Metal => "Metal",
         }
     }
+
+    pub fn graphics_api(self) -> GraphicsApi {
+        match self {
+            Self::Default => GraphicsApi::Default,
+            Self::Gles10 => GraphicsApi::GLES10,
+            Self::Gles11 => GraphicsApi::GLES11,
+            Self::Gles20 => GraphicsApi::GLES20,
+            Self::Gles30 | Self::Gles31 | Self::Gles32 => GraphicsApi::GLES30,
+            Self::Metal => GraphicsApi::Metal,
+        }
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -524,10 +535,10 @@ impl Default for Options {
             battery_saver: false,
             ultra_battery_saver: false,
             frame_generation: false,
-            high_performance: false,
+            high_performance: true,
             force_max_clocks: false,
             rtcs: false,
-            force_composition: false,
+            force_composition: true,
             prefer_gles2_context: false,
             network_access: false,
             popup_errors: true,
@@ -800,7 +811,11 @@ impl Options {
         } else if let Some(value) = arg.strip_prefix("--anti-aliasing=") {
             self.anti_aliasing = parse_quality(value, "--anti-aliasing=", &[1, 2, 4, 8])?;
         } else if let Some(value) = arg.strip_prefix("--gles-override=") {
-            self.gles_override_version = GlesOverrideVersion::parse(value)?;
+            let override_version = GlesOverrideVersion::parse(value)?;
+            self.gles_override_version = override_version;
+            if override_version != GlesOverrideVersion::Default {
+                self.graphics_api = override_version.graphics_api();
+            }
         } else if let Some(value) = arg.strip_prefix("--graphics-api=") {
             let api = GraphicsApi::from_short_name(value)
                 .map_err(|_| "Unrecognized --graphics-api= value".to_string())?;
@@ -809,7 +824,11 @@ impl Options {
             }
             self.graphics_api = api;
         } else if let Some(value) = arg.strip_prefix("--gles-override-version=") {
-            self.gles_override_version = GlesOverrideVersion::parse(value)?;
+            let override_version = GlesOverrideVersion::parse(value)?;
+            self.gles_override_version = override_version;
+            if override_version != GlesOverrideVersion::Default {
+                self.graphics_api = override_version.graphics_api();
+            }
         } else if arg == "--angle-driver" {
             self.angle_driver = true;
         } else if arg == "--disable-angle-driver" {
@@ -848,12 +867,16 @@ impl Options {
             self.vsync = false;
         } else if arg == "--battery-saver" || arg == "--battery-saver=on" {
             self.battery_saver = true;
+            self.high_performance = false;
+            self.force_max_clocks = false;
         } else if arg == "--disable-battery-saver" || arg == "--battery-saver=off" {
             self.battery_saver = false;
             self.ultra_battery_saver = false;
         } else if arg == "--ultra-battery-saver" || arg == "--ultra-battery-saver=on" {
             self.ultra_battery_saver = true;
             self.battery_saver = true;
+            self.high_performance = false;
+            self.force_max_clocks = false;
         } else if arg == "--disable-ultra-battery-saver" || arg == "--ultra-battery-saver=off" {
             self.ultra_battery_saver = false;
         } else if arg == "--frame-generation" || arg == "--frame-generation=on" {
@@ -862,6 +885,8 @@ impl Options {
             self.frame_generation = false;
         } else if arg == "--high-performance" || arg == "--high-performance=on" {
             self.high_performance = true;
+            self.battery_saver = false;
+            self.ultra_battery_saver = false;
         } else if arg == "--disable-high-performance" || arg == "--high-performance=off" {
             self.high_performance = false;
             self.force_max_clocks = false;
@@ -979,7 +1004,10 @@ impl Options {
     }
 
     pub fn apply_power_profile(&mut self, display_rate: f64) {
-        if self.high_performance {
+        if self.ultra_battery_saver {
+            self.high_performance = false;
+            self.force_max_clocks = false;
+        } else if self.high_performance {
             self.battery_saver = false;
             self.ultra_battery_saver = false;
             self.vsync = false;
@@ -987,8 +1015,7 @@ impl Options {
             self.frame_generation = false;
             self.fps_limit = None;
             return;
-        }
-        if !self.ultra_battery_saver {
+        } else {
             return;
         }
         self.battery_saver = true;
@@ -1232,10 +1259,22 @@ mod tests {
     }
 
     #[test]
-    fn default_graphics_api_does_not_enable_a_translator() {
+    fn defaults_enable_requested_native_compatibility_modes() {
         let options = Options::default();
         assert_eq!(options.graphics_api, GraphicsApi::Default);
-        assert!(!options.metal_translator);
+        assert!(options.high_performance);
+        assert!(options.force_composition);
+        assert_eq!(options.metal_translator, cfg!(target_arch = "aarch64"));
+    }
+
+    #[test]
+    fn gles_override_selects_a_real_graphics_path() {
+        let mut options = Options::default();
+        options.parse_argument("--gles-override=gles2").unwrap();
+        assert_eq!(options.gles_override_version, GlesOverrideVersion::Gles20);
+        assert_eq!(options.graphics_api, GraphicsApi::GLES20);
+        options.parse_argument("--graphics-api=vulkan").unwrap();
+        assert_eq!(options.graphics_api, GraphicsApi::Vulkan);
     }
 
     #[test]

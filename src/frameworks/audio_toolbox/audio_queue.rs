@@ -106,11 +106,12 @@ struct AudioQueueHostObject {
     offline_render_format: Option<AudioStreamBasicDescription>,
 }
 
-struct DecodedAudioBuffer {
-    key: u64,
-    format: ALenum,
-    frequency: ALsizei,
-    data: Vec<u8>,
+#[derive(Clone)]
+pub(crate) struct DecodedAudioBuffer {
+    pub(crate) key: u64,
+    pub(crate) format: ALenum,
+    pub(crate) frequency: ALsizei,
+    pub(crate) data: Vec<u8>,
 }
 
 /// Track whether the audio queue is meant to be running, in order to handle
@@ -190,6 +191,7 @@ const kAudioQueueErr_InvalidProperty: OSStatus = -66684;
 /// `AudioQueueSetOfflineRenderFormat` when the queue is currently running.
 const kAudioQueueErr_QueueNotStopped: OSStatus = -66677;
 const AUDIO_QUEUE_TARGET_UNPROCESSED_BUFFERS: usize = 4;
+const AUDIO_QUEUE_STARTUP_BUFFER_COUNT: usize = 4;
 
 fn formats_can_share_output(
     left: &AudioStreamBasicDescription,
@@ -212,7 +214,13 @@ fn reuse_audio_queue(
     let compatible = State::get(&mut env.framework_state)
         .audio_queues
         .get(&queue_ref)
-        .is_some_and(|queue| !queue.is_input && formats_can_share_output(&queue.format, &format));
+        .is_some_and(|queue| {
+            !queue.is_input
+                && formats_can_share_output(&queue.format, &format)
+                && (queue.is_running == AudioQueueIsRunning::Stopped
+                    || (queue.callback_proc == callback_proc
+                        && queue.callback_user_data == callback_user_data))
+        });
     if !compatible {
         return false;
     }
@@ -247,6 +255,7 @@ fn reuse_audio_queue(
     }
     ns_run_loop::remove_audio_queue(env, old_run_loop, queue_ref);
     ns_run_loop::add_audio_queue(env, run_loop, queue_ref);
+    preallocate_output_buffers(env, queue_ref, AUDIO_QUEUE_STARTUP_BUFFER_COUNT);
     true
 }
 
@@ -378,6 +387,7 @@ pub fn AudioQueueNewOutput(
     state.audio_queues.insert(aq_ref, host_object);
     state.active_output = Some(aq_ref);
 
+    preallocate_output_buffers(env, aq_ref, AUDIO_QUEUE_STARTUP_BUFFER_COUNT);
     env.mem.write(out_aq, aq_ref);
 
     ns_run_loop::add_audio_queue(env, in_callback_run_loop, aq_ref);
@@ -1416,7 +1426,7 @@ fn normalise_decoded_audio(
     }
 }
 
-fn decode_compressed_buffer(
+pub(crate) fn decode_compressed_buffer(
     pending: &mut Vec<u8>,
     pending_format: &mut Option<u32>,
     emitted_pcm_bytes: &mut usize,
@@ -1491,7 +1501,7 @@ fn decode_compressed_buffer(
     }
 }
 
-fn decode_buffer_cached(
+pub(crate) fn decode_buffer_cached(
     cache: &mut VecDeque<DecodedAudioBuffer>,
     mem: &Mem,
     format: &AudioStreamBasicDescription,
@@ -2201,6 +2211,49 @@ fn notify_aq_property_listeners(
     }
 }
 
+fn preallocate_output_buffers(env: &mut Environment, in_aq: AudioQueueRef, count: usize) {
+    let Some(format) = State::get(&mut env.framework_state)
+        .audio_queues
+        .get(&in_aq)
+        .filter(|queue| !queue.is_input)
+        .map(|queue| queue.format)
+    else {
+        return;
+    };
+    let buffer_size = startup_buffer_size(&format);
+    let mut allocated = 0;
+    for _ in 0..count {
+        let audio_data = env.mem.alloc(buffer_size);
+        let buffer_ptr = env.mem.alloc_and_write(AudioQueueBuffer {
+            audio_data_bytes_capacity: buffer_size,
+            audio_data,
+            audio_data_byte_size: 0,
+            user_data: Ptr::null(),
+            packet_description_capacity: 0,
+            _packet_descriptions: Ptr::null(),
+            _packet_description_count: 0,
+        });
+        let Some(queue) = State::get(&mut env.framework_state)
+            .audio_queues
+            .get_mut(&in_aq)
+        else {
+            env.mem.free(audio_data);
+            env.mem.free(buffer_ptr.cast());
+            break;
+        };
+        queue.buffers.push(buffer_ptr);
+        allocated += 1;
+    }
+    if allocated != 0 {
+        log!(
+            "AudioQueueNewOutput: preallocated {} output buffers of {} bytes for queue {:?}",
+            allocated,
+            buffer_size,
+            in_aq
+        );
+    }
+}
+
 fn startup_buffer_size(format: &AudioStreamBasicDescription) -> u32 {
     if matches!(
         format.format_id,
@@ -2423,24 +2476,6 @@ pub fn AudioQueueStart(
             in_aq
         );
         return kAudioQueueErr_InvalidProperty;
-    }
-
-    let other_running_queues: Vec<AudioQueueRef> = {
-        let state = State::get(&mut env.framework_state);
-        state
-            .audio_queues
-            .iter()
-            .filter_map(|(queue_ref, queue)| {
-                (*queue_ref != in_aq
-                    && !queue.is_input
-                    && queue.is_running != AudioQueueIsRunning::Stopped)
-                    .then_some(*queue_ref)
-            })
-            .collect()
-    };
-    for other in other_running_queues {
-        log!("AudioQueueStart({:?}): stopping previous output queue {:?} to avoid competing OpenAL sources", in_aq, other);
-        let _ = AudioQueueStop(env, other, true);
     }
 
     if let Some(queue) = State::get(&mut env.framework_state)

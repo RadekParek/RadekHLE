@@ -19,7 +19,16 @@ pub fn available() -> bool {
 }
 
 fn native_library_path(name: &str) -> Option<std::path::PathBuf> {
-    let candidates = if cfg!(target_arch = "x86_64") {
+    let candidates = if cfg!(target_os = "android") {
+        vec![
+            format!("/data/local/tmp/radekhle/mesa/{name}"),
+            format!("/data/local/tmp/mesa/{name}"),
+            format!("/system/lib64/{name}"),
+            format!("/system/lib/{name}"),
+            format!("/vendor/lib64/egl/{name}"),
+            format!("/vendor/lib/egl/{name}"),
+        ]
+    } else if cfg!(target_arch = "x86_64") {
         vec![
             format!("/usr/lib/x86_64-linux-gnu/{name}"),
             format!("/usr/lib/{name}"),
@@ -45,22 +54,24 @@ pub fn configure(enabled: bool) -> bool {
     let egl = std::env::var_os("TOUCHHLE_LLVMPIPE_EGL")
         .map(std::path::PathBuf::from)
         .or_else(|| {
-            if cfg!(target_os = "android") {
-                None
-            } else {
-                native_library_path("libEGL_mesa.so.0")
-                    .or_else(|| native_library_path("libEGL.so.1"))
-            }
+            native_library_path("libEGL_mesa.so.0")
+                .or_else(|| native_library_path("libEGL_mesa.so"))
+                .or_else(|| {
+                    (!cfg!(target_os = "android"))
+                        .then(|| native_library_path("libEGL.so.1"))
+                        .flatten()
+                })
         });
     let gles = std::env::var_os("TOUCHHLE_LLVMPIPE_GLES")
         .map(std::path::PathBuf::from)
         .or_else(|| {
-            if cfg!(target_os = "android") {
-                None
-            } else {
-                native_library_path("libGLESv2_mesa.so.2")
-                    .or_else(|| native_library_path("libGLESv2.so.2"))
-            }
+            native_library_path("libGLESv2_mesa.so.2")
+                .or_else(|| native_library_path("libGLESv2_mesa.so"))
+                .or_else(|| {
+                    (!cfg!(target_os = "android"))
+                        .then(|| native_library_path("libGLESv2.so.2"))
+                        .flatten()
+                })
         });
     let (Some(egl), Some(gles)) = (egl, gles) else {
         log_once!("LLVMPipe fallback enabled but no native Mesa EGL/GLES libraries were found; set TOUCHHLE_LLVMPIPE_EGL and TOUCHHLE_LLVMPIPE_GLES to provide them");
@@ -76,7 +87,11 @@ pub fn configure(enabled: bool) -> bool {
     }
     sdl2::hint::set("SDL_OPENGL_ES_DRIVER", "1");
     std::env::set_var("GALLIUM_DRIVER", "llvmpipe");
-    log_once!("LLVMPipe fallback active: using configured Mesa EGL/GLES libraries");
+    std::env::set_var("MESA_LOADER_DRIVER_OVERRIDE", "llvmpipe");
+    std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
+    log_once!(
+        "LLVMPipe fallback active: using configured Mesa EGL/GLES libraries and the CPU rasterizer"
+    );
     true
 }
 

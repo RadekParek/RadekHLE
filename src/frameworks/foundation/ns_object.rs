@@ -214,10 +214,8 @@ pub const CLASSES: ClassExports = objc_classes! {
     match dyld.create_proc_address(mem, cpu, "_objc_msgSend") {
         Ok(guest_func) => guest_func.addr_with_thumb_bit(),
         Err(_) => {
-            log!("Error: _objc_msgSend not found! Returning dummy IMP.");
-            let ptr: crate::mem::MutPtr<u16> = mem.alloc(2).cast();
-            mem.write(ptr, 0x4770);
-            ptr.to_bits() | 1
+            log!("Warning: _objc_msgSend is unavailable; returning a null IMP.");
+            0
         }
     }
 }
@@ -512,8 +510,18 @@ pub const CLASSES: ClassExports = objc_classes! {
     env.objc.object_has_method(&env.mem, this, selector)
 }
 
-- (bool)conformsToProtocol:(id)_protocol {
-    true
+- (bool)conformsToProtocol:(id)protocol {
+    if protocol == nil {
+        return false;
+    }
+    let protocol_name = crate::objc::protocol_getName(env, protocol);
+    if protocol_name.is_null() {
+        return false;
+    }
+    let Ok(name) = env.mem.cstr_at_utf8(protocol_name) else {
+        return false;
+    };
+    matches!(name, "NSObject" | "NSCopying" | "NSMutableCopying")
 }
 
 // ИЗМЕНЕНО: Ищем _objc_msgSend через create_proc_address (без логов)
@@ -524,10 +532,8 @@ pub const CLASSES: ClassExports = objc_classes! {
     match dyld.create_proc_address(mem, cpu, "_objc_msgSend") {
         Ok(guest_func) => guest_func.addr_with_thumb_bit(),
         Err(_) => {
-            log!("Error: _objc_msgSend not found! Returning dummy IMP.");
-            let ptr: crate::mem::MutPtr<u16> = mem.alloc(2).cast();
-            mem.write(ptr, 0x4770);
-            ptr.to_bits() | 1
+            log!("Warning: _objc_msgSend is unavailable; returning a null IMP.");
+            0
         }
     }
 }
