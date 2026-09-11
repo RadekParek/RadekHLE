@@ -374,27 +374,19 @@ fn extract_custom_driver_archive(path: &std::path::Path) -> Result<std::path::Pa
     Ok(output)
 }
 
-pub fn configure_angle_driver(enabled: bool) -> bool {
-    if !enabled {
-        return false;
-    }
-
+fn angle_library_paths() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     let explicit_egl = std::env::var_os("TOUCHHLE_ANGLE_EGL").map(std::path::PathBuf::from);
     let explicit_gles = std::env::var_os("TOUCHHLE_ANGLE_GLES").map(std::path::PathBuf::from);
-    let (egl_path, gles_path) = if explicit_egl.is_some() || explicit_gles.is_some() {
-        let Some(egl) = explicit_egl else {
-            log!("ANGLE override requires both TOUCHHLE_ANGLE_EGL and TOUCHHLE_ANGLE_GLES");
-            return false;
-        };
-        let Some(gles) = explicit_gles else {
-            log!("ANGLE override requires both TOUCHHLE_ANGLE_EGL and TOUCHHLE_ANGLE_GLES");
-            return false;
-        };
-        (egl, gles)
-    } else if cfg!(target_os = "android") {
+    if explicit_egl.is_some() || explicit_gles.is_some() {
+        return explicit_egl.zip(explicit_gles);
+    }
+
+    if cfg!(target_os = "android") {
         let egl = [
             "/data/local/tmp/radekhle/angle/libEGL_angle.so",
             "/data/local/tmp/angle/libEGL_angle.so",
+            "/data/local/tmp/radekhle/angle/libEGL.so",
+            "/data/local/tmp/angle/libEGL.so",
             "/system/lib64/egl/libEGL_angle.so",
             "/system/lib/egl/libEGL_angle.so",
             "/system/lib64/libEGL_angle.so",
@@ -406,6 +398,8 @@ pub fn configure_angle_driver(enabled: bool) -> bool {
         let gles = [
             "/data/local/tmp/radekhle/angle/libGLESv2_angle.so",
             "/data/local/tmp/angle/libGLESv2_angle.so",
+            "/data/local/tmp/radekhle/angle/libGLESv2.so",
+            "/data/local/tmp/angle/libGLESv2.so",
             "/system/lib64/egl/libGLESv2_angle.so",
             "/system/lib/egl/libGLESv2_angle.so",
             "/system/lib64/libGLESv2_angle.so",
@@ -414,25 +408,43 @@ pub fn configure_angle_driver(enabled: bool) -> bool {
         .into_iter()
         .map(std::path::PathBuf::from)
         .find(|path| path.is_file());
-        let (Some(egl), Some(gles)) = (egl, gles) else {
-            log!("ANGLE requested, but no native Android ANGLE libraries were found; leaving SDL on the system GLES driver");
-            return false;
-        };
-        (egl, gles)
-    } else {
-        let (egl, gles) = if cfg!(target_os = "windows") {
-            ("libEGL.dll", "libGLESv2.dll")
-        } else if cfg!(target_os = "macos") {
-            ("libEGL.dylib", "libGLESv2.dylib")
-        } else {
-            ("libEGL.so", "libGLESv2.so")
-        };
-        (
-            std::path::PathBuf::from(egl),
-            std::path::PathBuf::from(gles),
-        )
-    };
+        return egl.zip(gles);
+    }
 
+    let (egl, gles) = if cfg!(target_os = "windows") {
+        ("libEGL.dll", "libGLESv2.dll")
+    } else if cfg!(target_os = "macos") {
+        ("libEGL.dylib", "libGLESv2.dylib")
+    } else {
+        ("libEGL.so", "libGLESv2.so")
+    };
+    Some((
+        std::path::PathBuf::from(egl),
+        std::path::PathBuf::from(gles),
+    ))
+}
+
+pub fn angle_driver_paths() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    angle_library_paths().filter(|(egl, gles)| angle_library_paths_are_usable(egl, gles))
+}
+
+pub fn disable_angle_driver() {
+    unsafe {
+        std::env::remove_var("SDL_VIDEO_EGL_DRIVER");
+        std::env::remove_var("SDL_VIDEO_GL_DRIVER");
+    }
+    log!("ANGLE driver disabled after SDL rejected the selected libraries; continuing with the platform GLES loader");
+}
+
+pub fn configure_angle_driver(enabled: bool) -> bool {
+    if !enabled {
+        return false;
+    }
+
+    let Some((egl_path, gles_path)) = angle_library_paths() else {
+        log!("ANGLE override requires both TOUCHHLE_ANGLE_EGL and TOUCHHLE_ANGLE_GLES");
+        return false;
+    };
     if !angle_library_paths_are_usable(&egl_path, &gles_path) {
         log!(
             "ANGLE libraries are not usable: EGL={} GLES={}",
@@ -447,7 +459,7 @@ pub fn configure_angle_driver(enabled: bool) -> bool {
     }
     sdl2::hint::set("SDL_OPENGL_ES_DRIVER", "1");
     log!(
-        "Native ANGLE driver active: EGL={}, GLES={}",
+        "ANGLE driver requested: EGL={}, GLES={}; SDL will validate the libraries before the window is created",
         egl_path.display(),
         gles_path.display()
     );
@@ -457,10 +469,11 @@ pub fn configure_angle_driver(enabled: bool) -> bool {
 fn angle_library_paths_are_usable(egl: &std::path::Path, gles: &std::path::Path) -> bool {
     if std::env::var_os("TOUCHHLE_ANGLE_EGL").is_some()
         || std::env::var_os("TOUCHHLE_ANGLE_GLES").is_some()
+        || cfg!(target_os = "android")
     {
         return egl.is_file() && gles.is_file();
     }
-    cfg!(not(target_os = "android")) || (egl.is_file() && gles.is_file())
+    true
 }
 
 /// Labels for [GLES] implementations and an abstraction for constructing them.

@@ -108,6 +108,13 @@ impl WgpuPresentation {
         log!("WGPU Vulkan presentation requested; forcing the native Vulkan window-surface path");
         Self::new_with_backends(window, wgpu::Backends::VULKAN, true)
     }
+    pub fn new_metal(window: &sdl2::video::Window) -> Result<Self, String> {
+        if !cfg!(target_os = "macos") && !cfg!(target_os = "ios") {
+            return Err("Metal is only available on Apple platforms".to_string());
+        }
+        log!("Metal presentation requested; forcing WGPU's native Metal backend");
+        Self::new_with_backends(window, wgpu::Backends::METAL, true)
+    }
 
     fn new_with_backends(
         window: &sdl2::video::Window,

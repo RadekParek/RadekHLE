@@ -15,3 +15,6 @@
 [submodule "vendor/libxml2"]
 	path = vendor/libxml2
 	url = https://github.com/GNOME/libxml2.git
+[submodule "vendor/oboe"]
+	path = vendor/oboe
+	url = https://github.com/google/oboe.git

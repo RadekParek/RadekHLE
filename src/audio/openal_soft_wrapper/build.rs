@@ -100,6 +100,15 @@ fn main() {
             build.define("ALSOFT_REQUIRE_ALSA", "ON");
         }
 
+        if os.eq_ignore_ascii_case("android") {
+            let oboe_source = workspace_root.join("vendor/oboe");
+            if oboe_source.join("CMakeLists.txt").is_file() {
+                build.define("OBOE_SOURCE", oboe_source);
+                build.define("ALSOFT_BACKEND_OBOE", "ON");
+                println!("cargo:warning=Building OpenAL Soft with the vendored Oboe native AAudio backend");
+            }
+        }
+
         let openal_soft_out = build.build();
 
         link_search(&openal_soft_out.join("lib"));

@@ -801,27 +801,30 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
         window_options.initial_orientation = orientation;
         match graphics_backend {
             A64GraphicsBackend::OpenGLESCompatibility => {
-                window_options.graphics_api = if options.metal_translator {
-                    crate::options::GraphicsApi::TranslatorGLES30
+                if options.graphics_api == crate::options::GraphicsApi::Software {
+                    window_options.graphics_api = crate::options::GraphicsApi::Software;
+                    window_options.prefer_gles2_context = true;
+                    log!(
+                        "ARM64 software graphics selection preserved; the host CPU OpenGL path will be tried first; reason={graphics_reason}",
+                    );
                 } else {
-                    crate::options::GraphicsApi::GLES20
-                };
-                window_options.prefer_gles2_context = true;
-                log!(
-                    "ARM64 automatic graphics fallback: using {} for the guest GLES path; reason={graphics_reason}",
-                    if options.metal_translator { "the existing GLES1→GLES3 translator" } else { "a direct GLES2 compatibility context" },
-                );
+                    window_options.graphics_api = if options.metal_translator {
+                        crate::options::GraphicsApi::TranslatorGLES30
+                    } else {
+                        crate::options::GraphicsApi::GLES20
+                    };
+                    window_options.prefer_gles2_context = true;
+                    log!(
+                        "ARM64 automatic graphics fallback: using {} for the guest GLES path; reason={graphics_reason}",
+                        if options.metal_translator { "the existing GLES1→GLES3 translator" } else { "a direct GLES2 compatibility context" },
+                    );
+                }
             }
             A64GraphicsBackend::MetalCompatibility => {
-                window_options.graphics_api = if options.metal_translator {
-                    crate::options::GraphicsApi::TranslatorGLES30
-                } else {
-                    crate::options::GraphicsApi::GLES20
-                };
+                window_options.graphics_api = crate::options::GraphicsApi::Metal;
                 window_options.prefer_gles2_context = true;
                 log!(
-                    "ARM64 Metal compatibility: guest Metal is routed to the host GLES presentation surface; {}; reason={graphics_reason}",
-                    if options.metal_translator { "the GLES1→GLES3 translator is enabled" } else { "the translator is disabled" },
+                    "ARM64 Metal selection: requesting the native Metal presentation backend where the host provides it; GLES remains the compatibility fallback; reason={graphics_reason}",
                 );
             }
         }

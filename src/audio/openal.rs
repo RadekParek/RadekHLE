@@ -118,9 +118,9 @@ fn ensure_openal_backend_available() {
     } else if requested_backend == "aaudio" {
         if cfg!(target_os = "android") {
             unsafe {
-                std::env::set_var("ALSOFT_DRIVERS", "opensl");
+                std::env::set_var("ALSOFT_DRIVERS", "oboe,opensl");
             }
-            log!("AAudio was selected; bundled OpenAL Soft has no AAudio driver, using its Android OpenSL ES compatibility backend");
+            log!("AAudio selected: OpenAL Soft will use its native Oboe/AAudio backend, with OpenSL ES as the device-level fallback");
             return;
         }
         log!(
