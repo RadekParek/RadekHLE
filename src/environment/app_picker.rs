@@ -644,7 +644,7 @@ const CLASSES: ClassExports = objc_classes! {
 }
 - (())highPerformance:(id)switch {
     let switch_state: bool = msg![env; switch isOn];
-    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).high_performance = Some(switch_state);
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).high_performance = Some(crate::options::DEFAULT_HIGH_PERFORMANCE);
 }
 - (())forceMaxClocks:(id)switch {
     let switch_state: bool = msg![env; switch isOn];
@@ -1089,7 +1089,7 @@ fn app_picker_inner(
     let mut quick_options_frame_pacing = true;
     let mut quick_options_fps_limit: Option<f64> = None;
     let mut quick_options_frame_generation = false;
-    let mut quick_options_high_performance = true;
+    let mut quick_options_high_performance = crate::options::DEFAULT_HIGH_PERFORMANCE;
     let mut quick_options_force_max_clocks = false;
     let mut quick_options_vsync = false;
     let mut quick_options_battery_saver = false;
@@ -3235,7 +3235,7 @@ fn setup_quick_options(
         RowKind::Label("GLES override version"),
         RowKind::GlesOverrideDropdown,
         RowKind::Label("High performance mode"),
-        RowKind::Switch("highPerformance:", true),
+        RowKind::Switch("highPerformance:", crate::options::DEFAULT_HIGH_PERFORMANCE),
         RowKind::Label("Force max clocks (Adreno)"),
         RowKind::Switch("forceMaxClocks:", false),
         RowKind::Label("Shader compatibility fixes"),

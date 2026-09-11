@@ -33,6 +33,9 @@ pub enum Button {
 /// Highest iOS version currently exposed by the emulator compatibility layer.
 pub const LATEST_IOS_VERSION: (i32, i32, i32) = (26, 6, 0);
 
+/// The app-picker power switch starts in the same state as the runtime default.
+pub const DEFAULT_HIGH_PERFORMANCE: bool = true;
+
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Arm64Backend {
     Auto,
@@ -535,7 +538,7 @@ impl Default for Options {
             battery_saver: false,
             ultra_battery_saver: false,
             frame_generation: false,
-            high_performance: true,
+            high_performance: DEFAULT_HIGH_PERFORMANCE,
             force_max_clocks: false,
             rtcs: false,
             force_composition: true,

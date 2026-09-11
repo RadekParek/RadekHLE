@@ -62,7 +62,11 @@ public class MainActivity extends SDLActivity {
         updatePerformanceHintSession(enabled, maxClocks);
         if (Build.VERSION.SDK_INT >= 30 && enabled) {
             float refreshRate = getWindow().getWindowManager().getDefaultDisplay().getRefreshRate();
-            if (refreshRate > 0.0f) getWindow().setPreferredRefreshRate(refreshRate);
+            if (refreshRate > 0.0f) {
+                android.view.WindowManager.LayoutParams attributes = getWindow().getAttributes();
+                attributes.preferredRefreshRate = refreshRate;
+                getWindow().setAttributes(attributes);
+            }
         }
         Log.i(TAG, "Native sustained-performance hint "
                 + (enabled ? "enabled" : "disabled")
