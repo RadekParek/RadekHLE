@@ -459,7 +459,7 @@ impl Environment {
             };
             Some(Box::new(window::Window::new(
                 &format!(
-                    "{} (RadekHLE 7.0 {}{}{})",
+                    "{} (RadekHLE 8.0 {}{}{})",
                     bundle.display_name(),
                     super::branding(),
                     if super::branding().is_empty() {
@@ -862,7 +862,7 @@ impl Environment {
         assert!(!options.headless);
         let window = Some(Box::new(window::Window::new(
             &format!(
-                "RadekHLE 7.0 {}{}{}",
+                "RadekHLE 8.0 {}{}{}",
                 super::branding(),
                 if super::branding().is_empty() {
                     ""
@@ -1761,6 +1761,29 @@ impl Environment {
             if matches!(error, cpu::CpuError::UndefinedInstruction) {
                 let pc = self.cpu.regs()[cpu::Cpu::PC];
                 let lr = self.cpu.regs()[cpu::Cpu::LR];
+
+                // A zero-filled fetch immediately above the Mach-O page-zero
+                // reservation is a null function-pointer call, not a real
+                // framework instruction. Return to the caller without sending
+                // it through the generic UDF workaround, which otherwise logs
+                // the event as a crash and may repeat it.
+                let null_code_limit = self
+                    .mem
+                    .null_segment_size()
+                    .saturating_add(mem::PAGE_SIZE);
+                let fetched_instruction: u32 =
+                    self.mem.read(mem::ConstPtr::<u32>::from_bits(pc));
+                if pc < null_code_limit && fetched_instruction == 0 && lr != 0 {
+                    log_once_fmt!(
+                        "Recovered zero-filled low-address code fetch at {:#x}; returning to LR ({:#x})",
+                        pc,
+                        lr
+                    );
+                    self.cpu.branch(GuestFunction::from_addr_with_thumb_bit(lr));
+                    self.udf_bypass_last = None;
+                    self.udf_bypass_count = 0;
+                    return;
+                }
 
                 // Potato Story Android hard fallback:
                 //

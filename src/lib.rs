@@ -127,7 +127,7 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
     crate::perf::configure_from_environment();
     crate::perf::reset();
     echo!(
-        "RadekHLE 7.0 {}{}{} git_sha={}",
+        "RadekHLE 8.0 {}{}{} git_sha={}",
         branding(),
         if branding().is_empty() { "" } else { " " },
         VERSION,

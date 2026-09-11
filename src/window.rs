@@ -16,8 +16,9 @@ use crate::gles::present::present_frame;
 use crate::gles::wgpu::WgpuPresentation;
 use crate::gles::{
     create_gles1_ctx_no_parent_stack, create_gles1_gles3_translator_ctx_no_parent_stack,
+    create_host_gles1_ctx_no_parent_stack,
     create_gles1_translator_ctx_no_parent_stack, create_gles2_ctx_no_parent_stack, GLESContext,
-    SoftwareGLESContext, GLES,
+    GLES,
 };
 use crate::image::Image;
 use crate::matrix::Matrix;
@@ -1295,9 +1296,12 @@ impl Window {
         );
         let custom_driver_active =
             crate::gles::configure_custom_driver(options.custom_driver.as_deref());
-        crate::gles::configure_angle_driver(options.angle_driver && !custom_driver_active);
+        let angle_driver_active =
+            crate::gles::configure_angle_driver(options.angle_driver && !custom_driver_active);
         let llvmpipe_active = crate::gles::configure_llvmpipe_fallback(
-            (options.llvmpipe_fallback || options.software_rendering) && !custom_driver_active,
+            (options.llvmpipe_fallback || options.software_rendering)
+                && !custom_driver_active
+                && !angle_driver_active,
         );
         let native_cpu_renderer = options.software_rendering && llvmpipe_active;
         let software_presentation =
@@ -1332,7 +1336,7 @@ impl Window {
             sdl2::hint::set("SDL_RENDER_VSYNC", "0");
         }
 
-        if env::consts::OS == "android" && !software_presentation {
+        if env::consts::OS == "android" {
             // SDL needs the host context profile before creating the window.
             // A GLES1 window cannot later create the GLES2 context required by
             // the fixed-function translator on Android.
@@ -1348,7 +1352,7 @@ impl Window {
                         | crate::options::GraphicsApi::Wgpu
                         | crate::options::GraphicsApi::Vulkan
                 ) || (matches!(options.graphics_api, crate::options::GraphicsApi::Default)
-                    && (options.prefer_gles2_context || options.angle_driver || llvmpipe_active));
+                    && (options.prefer_gles2_context || angle_driver_active || llvmpipe_active));
 
             if use_gles2 {
                 let version = if matches!(
@@ -1543,8 +1547,7 @@ impl Window {
         // because SDL2 won't let us use more than one graphics API in the same
         // window, and we also need OpenGL ES for the app's own rendering.
         if software_presentation {
-            log!("Software rendering enabled: skipping host GL context creation; presentation uses CPU pixels and SDL only");
-            return window;
+            log!("Software rendering enabled: retaining host GL context creation for SDL and compatibility paths; presentation uses CPU pixels");
         }
 
         if matches!(
@@ -1573,7 +1576,26 @@ impl Window {
             }
         }
 
-        let mut gl_ins = match options.graphics_api {
+        let mut gl_ins = if software_presentation && options.software_rendering {
+            if matches!(
+                options.graphics_api,
+                crate::options::GraphicsApi::Translator
+                    | crate::options::GraphicsApi::TranslatorGLES30
+                    | crate::options::GraphicsApi::GLES20
+                    | crate::options::GraphicsApi::GLES30
+                    | crate::options::GraphicsApi::Metal
+                    | crate::options::GraphicsApi::Wgpu
+                    | crate::options::GraphicsApi::Vulkan
+            ) || options.prefer_gles2_context
+                || angle_driver_active
+                || llvmpipe_active
+            {
+                create_gles2_ctx_no_parent_stack(&mut window)
+            } else {
+                create_host_gles1_ctx_no_parent_stack(&mut window)
+            }
+        } else {
+            match options.graphics_api {
             crate::options::GraphicsApi::Translator => {
                 create_gles1_translator_ctx_no_parent_stack(&mut window)
             }
@@ -1586,21 +1608,21 @@ impl Window {
             crate::options::GraphicsApi::GLES10 | crate::options::GraphicsApi::GLES11 => {
                 create_gles1_ctx_no_parent_stack(&mut window, options)
             }
-            crate::options::GraphicsApi::Software => Box::new(
-                SoftwareGLESContext::new(&mut window)
-                    .expect("Could not create software GLES context"),
-            ),
+            crate::options::GraphicsApi::Software => {
+                create_host_gles1_ctx_no_parent_stack(&mut window)
+            },
             crate::options::GraphicsApi::Metal
             | crate::options::GraphicsApi::Wgpu
             | crate::options::GraphicsApi::Vulkan => create_gles2_ctx_no_parent_stack(&mut window),
             crate::options::GraphicsApi::Default => {
                 if llvmpipe_active {
                     create_gles1_translator_ctx_no_parent_stack(&mut window)
-                } else if options.prefer_gles2_context || options.angle_driver {
+                } else if options.prefer_gles2_context || angle_driver_active {
                     create_gles2_ctx_no_parent_stack(&mut window)
                 } else {
                     create_gles1_ctx_no_parent_stack(&mut window, options)
                 }
+            }
             }
         };
         {
@@ -3030,9 +3052,9 @@ impl Window {
                 // Also show FPS in the window title so it's visible when the
                 // app is running fullscreen or without console.
                 let base_title = if crate::branding().is_empty() {
-                    format!("RadekHLE 7.0 {}", crate::VERSION)
+                    format!("RadekHLE 8.0 {}", crate::VERSION)
                 } else {
-                    format!("RadekHLE 7.0 {} {}", crate::branding(), crate::VERSION)
+                    format!("RadekHLE 8.0 {} {}", crate::branding(), crate::VERSION)
                 };
                 let title = format!("{} - FPS: {:.1}", base_title, fps);
                 // Ignore any error setting the title.
@@ -3383,7 +3405,7 @@ pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
         messagebox::MessageBoxFlag::ERROR,
         &mbox,
         "touchHLE crashed!",
-        &format!("RadekHLE 7.0 crashed with the following error: {error_message}"),
+        &format!("RadekHLE 8.0 crashed with the following error: {error_message}"),
         window.map(|win| &win.window),
         None,
     ) else {

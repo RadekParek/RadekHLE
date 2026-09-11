@@ -99,7 +99,7 @@ pub use gles_generic::GLES;
 pub use software::SoftwareGLESContext;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 static TRANSLATOR_TRACE_EVENTS: AtomicU32 = AtomicU32::new(0);
 static TRANSLATOR_TRACE_ENV: OnceLock<bool> = OnceLock::new();
@@ -110,6 +110,7 @@ static GL_CALL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static TEXTURE_UPSCALER: AtomicU8 = AtomicU8::new(1);
 static ANTI_ALIASING: AtomicU8 = AtomicU8::new(1);
 static MEMORY_MANAGEMENT: AtomicU8 = AtomicU8::new(1);
+static LAST_ORTHO_MATRIX: OnceLock<Mutex<Option<[f32; 16]>>> = OnceLock::new();
 
 pub(crate) fn configure_quality_options(
     texture_upscaler: u8,
@@ -405,6 +406,57 @@ fn extract_custom_driver_archive(path: &std::path::Path) -> Result<std::path::Pa
     Ok(output)
 }
 
+#[cfg(target_os = "android")]
+fn preload_angle_library(
+    path: &std::path::Path,
+    kind: &str,
+    allow_basename: bool,
+) -> Result<std::path::PathBuf, String> {
+    use std::ffi::{CStr, CString};
+
+    let mut candidates = vec![path.to_path_buf()];
+    if allow_basename {
+        if let Some(name) = path.file_name() {
+            let basename = std::path::PathBuf::from(name);
+            if basename != path {
+                candidates.push(basename);
+            }
+        }
+    }
+
+    let mut last_error = String::from("unknown Android linker error");
+    for candidate in candidates {
+        let c_path = CString::new(candidate.to_string_lossy().as_bytes())
+            .map_err(|_| format!("ANGLE {} path contains an embedded NUL", kind))?;
+        let handle = unsafe { libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_GLOBAL) };
+        if !handle.is_null() {
+            return Ok(candidate);
+        }
+        let detail = unsafe {
+            let error = libc::dlerror();
+            if error.is_null() {
+                "unknown Android linker error".to_string()
+            } else {
+                CStr::from_ptr(error).to_string_lossy().into_owned()
+            }
+        };
+        last_error = format!("{}: {}", candidate.display(), detail);
+    }
+
+    Err(format!("ANGLE {} library could not be loaded: {}", kind, last_error))
+}
+
+#[cfg(target_os = "android")]
+fn preload_angle_libraries(
+    egl: &std::path::Path,
+    gles: &std::path::Path,
+    allow_basename: bool,
+) -> Result<(std::path::PathBuf, std::path::PathBuf), String> {
+    let egl = preload_angle_library(egl, "EGL", allow_basename)?;
+    let gles = preload_angle_library(gles, "GLES", allow_basename)?;
+    Ok((egl, gles))
+}
+
 pub fn configure_angle_driver(enabled: bool) -> bool {
     if !enabled {
         return false;
@@ -412,14 +464,13 @@ pub fn configure_angle_driver(enabled: bool) -> bool {
 
     let explicit_egl = std::env::var_os("TOUCHHLE_ANGLE_EGL").map(std::path::PathBuf::from);
     let explicit_gles = std::env::var_os("TOUCHHLE_ANGLE_GLES").map(std::path::PathBuf::from);
-    let (egl_path, gles_path) = if explicit_egl.is_some() || explicit_gles.is_some() {
+    let explicit_override = explicit_egl.is_some() || explicit_gles.is_some();
+    let (mut egl_path, mut gles_path) = if explicit_override {
         let Some(egl) = explicit_egl else {
-            log!("ANGLE override requires both TOUCHHLE_ANGLE_EGL and TOUCHHLE_ANGLE_GLES");
-            return false;
+            panic!("ANGLE override requires both TOUCHHLE_ANGLE_EGL and TOUCHHLE_ANGLE_GLES");
         };
         let Some(gles) = explicit_gles else {
-            log!("ANGLE override requires both TOUCHHLE_ANGLE_EGL and TOUCHHLE_ANGLE_GLES");
-            return false;
+            panic!("ANGLE override requires both TOUCHHLE_ANGLE_EGL and TOUCHHLE_ANGLE_GLES");
         };
         (egl, gles)
     } else if cfg!(target_os = "android") {
@@ -433,7 +484,8 @@ pub fn configure_angle_driver(enabled: bool) -> bool {
         ]
         .into_iter()
         .map(std::path::PathBuf::from)
-        .find(|path| path.is_file());
+        .find(|path| path.is_file())
+        .expect("ANGLE was selected, but no Android libEGL_angle.so was found");
         let gles = [
             "/data/local/tmp/radekhle/angle/libGLESv2_angle.so",
             "/data/local/tmp/angle/libGLESv2_angle.so",
@@ -444,11 +496,8 @@ pub fn configure_angle_driver(enabled: bool) -> bool {
         ]
         .into_iter()
         .map(std::path::PathBuf::from)
-        .find(|path| path.is_file());
-        let (Some(egl), Some(gles)) = (egl, gles) else {
-            log!("ANGLE requested, but no native Android ANGLE libraries were found; leaving SDL on the system GLES driver");
-            return false;
-        };
+        .find(|path| path.is_file())
+        .expect("ANGLE was selected, but no Android libGLESv2_angle.so was found");
         (egl, gles)
     } else {
         let (egl, gles) = if cfg!(target_os = "windows") {
@@ -465,12 +514,19 @@ pub fn configure_angle_driver(enabled: bool) -> bool {
     };
 
     if !angle_library_paths_are_usable(&egl_path, &gles_path) {
-        log!(
-            "ANGLE libraries are not usable: EGL={} GLES={}",
+        panic!(
+            "ANGLE was selected, but its EGL/GLES libraries are not usable: EGL={} GLES={}",
             egl_path.display(),
             gles_path.display()
         );
-        return false;
+    }
+    unsafe {
+        std::env::set_var("ANGLE_DEFAULT_PLATFORM", "vulkan");
+    }
+    #[cfg(target_os = "android")]
+    {
+        (egl_path, gles_path) = preload_angle_libraries(&egl_path, &gles_path, !explicit_override)
+            .unwrap_or_else(|error| panic!("ANGLE was selected but could not be loaded: {}", error));
     }
     unsafe {
         std::env::set_var("SDL_VIDEO_EGL_DRIVER", &egl_path);
@@ -478,7 +534,7 @@ pub fn configure_angle_driver(enabled: bool) -> bool {
     }
     sdl2::hint::set("SDL_OPENGL_ES_DRIVER", "1");
     log!(
-        "Native ANGLE driver active: EGL={}, GLES={}",
+        "Native ANGLE Vulkan driver active: EGL={}, GLES={}",
         egl_path.display(),
         gles_path.display()
     );
@@ -743,16 +799,30 @@ pub fn create_gles2_ctx_no_parent_stack(
     }
 }
 
-/// Same as [create_gles1_ctx], but without calling
-/// [Environment::on_parent_stack_in_coroutine]. Only should be called by
-/// functions not inside a coroutine that can't use [Environment].
+pub fn create_host_gles1_ctx_no_parent_stack(
+    window: &mut crate::window::Window,
+) -> Box<dyn GLESContext> {
+    assert!(window.on_main_stack());
+    log!("Creating the host OpenGL ES 1.1 context for internal presentation");
+    for implementation in [GLESImplementation::GLES1Native, GLESImplementation::GLES1OnGL2] {
+        log!("Trying: {}", implementation.description());
+        match implementation.construct(window) {
+            Ok(ctx) => {
+                log!("=> Success!");
+                return ctx;
+            }
+            Err(error) => log!("=> Failed: {}.", error),
+        }
+    }
+    panic!("Couldn't create the host OpenGL ES 1.1 context for internal presentation!");
+}
+
 pub fn create_gles1_ctx_no_parent_stack(
     window: &mut crate::window::Window,
     options: &crate::options::Options,
 ) -> Box<dyn GLESContext> {
     assert!(window.on_main_stack());
     log!("Creating an OpenGL ES 1.1 context:");
-    configure_angle_driver(options.angle_driver);
     if options.software_rendering && !llvmpipe_fallback_available() {
         log!("Using the built-in CPU-only software OpenGL ES 1.1 rasterizer because no native LLVMPipe driver is available");
         return Box::new(
@@ -780,8 +850,16 @@ pub fn create_gles1_ctx_no_parent_stack(
     }
     gles1_ctx.expect("Couldn't create OpenGL ES 1.1 context!")
 }
-
 pub(crate) fn log_ortho_matrix_details(matrix: &[f32; 16], label: &str) {
+    let mut last_matrix = LAST_ORTHO_MATRIX
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap();
+    if last_matrix.as_ref().is_some_and(|previous| previous == matrix) {
+        return;
+    }
+    *last_matrix = Some(*matrix);
+
     let scale_x = matrix[0];
     let scale_y = matrix[5];
     let scale_z = matrix[10];
