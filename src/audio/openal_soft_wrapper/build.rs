@@ -118,8 +118,14 @@ fn main() {
         // Some Linux systems.
         link_search(&openal_soft_out.join("lib64"));
         if oboe_enabled {
+            // Oboe is built as a separate static archive by OpenAL Soft's
+            // vendored CMake project. Its install path includes the Android ABI.
+            link_search(&openal_soft_out.join("lib/arm64-v8a"));
             link_search(&openal_soft_out.join("build"));
             link_search(&openal_soft_out.join("build/lib"));
+            link_search(&openal_soft_out.join("build/oboe"));
+            println!("cargo:rustc-link-lib=static=oboe");
+            println!("cargo:rustc-link-lib=dylib=log");
         }
 
         // Some dependencies of OpenAL Soft.
