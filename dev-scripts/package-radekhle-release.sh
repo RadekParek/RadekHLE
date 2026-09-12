@@ -1,5 +1,5 @@
 #!/bin/sh
-# Package RadekHLE9.9 release zips and write release notes for action-gh-release.
+# Package RadekHLE9.0 release zips and write release notes for action-gh-release.
 set -eu
 
 VERSION="$1"
@@ -63,7 +63,7 @@ rm -rf release
 mkdir -p release
 
 {
-    printf '%s\n\n' "RadekHLE9.9 ${VERSION}"
+    printf '%s\n\n' "RadekHLE9.0 ${VERSION}"
     if [ "${FORCE_RADEKHLE_RELEASE:-}" = "true" ]; then
         printf '%s\n\n' "_Manual release — changelog shows the latest 5 commits._"
     fi
@@ -102,7 +102,7 @@ mkdir -p release
 cd "$ROOT/dev-scripts"
 ./prepare-release.sh --prepare-files
 
-prefix="RadekHLE9.9"
+prefix="RadekHLE9.0"
 
 ./prepare-release.sh --create-zip-macos "$ROOT/artifacts/macos/radekhle.dmg" \
     -o "$ROOT/release/${prefix}_macOS_x86_64.zip"

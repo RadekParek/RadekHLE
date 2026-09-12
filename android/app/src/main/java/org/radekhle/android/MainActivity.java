@@ -17,7 +17,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 
 public class MainActivity extends SDLActivity {
-    private static final String TAG = "RadekHLE9.9";
+    private static final String TAG = "RadekHLE9.0";
     private static final int GAME_FOLDER_REQUEST = 4711;
     private static final int CUSTOM_DRIVER_REQUEST = 4712;
     private static final int ADD_IPA_REQUEST = 4713;
@@ -131,11 +131,11 @@ public class MainActivity extends SDLActivity {
         new Thread(() -> {
             int copied = copySelectedFolder(treeUri);
 
-            Log.i(TAG, "Imported " + copied + " files from the selected game folder; restarting RadekHLE9.9 to rescan all games.");
+            Log.i(TAG, "Imported " + copied + " files from the selected game folder; restarting RadekHLE9.0 to rescan all games.");
             if (mSingleton != null) {
                 mSingleton.runOnUiThread(() -> mSingleton.recreate());
             }
-        }, "RadekHLE9.9-game-import").start();
+        }, "RadekHLE9.0-game-import").start();
     }
 
     private static int copySelectedFolder(Uri treeUri) {
@@ -244,7 +244,7 @@ public class MainActivity extends SDLActivity {
             if (copyDocumentUri(uri, destination)) {
                 Log.i(TAG, "Imported game: " + name + "; keeping the native app picker alive so Rust can rescan it.");
             }
-        }, "RadekHLE9.9-game-import").start();
+        }, "RadekHLE9.0-game-import").start();
     }
 
     private static void importSelectedCustomDriver(Uri uri) {
@@ -266,7 +266,7 @@ public class MainActivity extends SDLActivity {
                     mSingleton.runOnUiThread(() -> mSingleton.recreate());
                 }
             }
-        }, "RadekHLE9.9-custom-driver-import").start();
+        }, "RadekHLE9.0-custom-driver-import").start();
     }
 
     private static String selectedDocumentName(Uri uri) {

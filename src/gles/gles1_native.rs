@@ -801,7 +801,7 @@ impl GLES for GLES1Native<'_> {
         // before uploading. The decision is based on the
         // `GL_EXTENSIONS` string queried at context creation; see
         // [`GLES1NativeContext::pvrtc_native`].
-        if !self.pvrtc_native && !payload.is_empty() {
+        if crate::gles::should_decode_pvrtc() && !self.pvrtc_native && !payload.is_empty() {
             if try_decode_pvrtc(
                 self,
                 target,

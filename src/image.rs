@@ -230,11 +230,14 @@ impl Image {
                 };
 
                 let rgba = &mut self.pixels_mut()[y_usize * w_usize * 4 + x_usize * 4..][..4];
-                for channel in rgba.iter_mut() {
-                    *channel = (*channel as f32 * icon_opacity * (1.0 - sheen_opacity)
-                        + 255.0 * icon_opacity * sheen_opacity)
-                        as u8;
+                let original_alpha = rgba[3] as f32 / 255.0;
+                let new_alpha = (original_alpha * icon_opacity).clamp(0.0, 1.0);
+                for channel in &mut rgba[..3] {
+                    *channel = (*channel as f32 * (1.0 - sheen_opacity)
+                        + 255.0 * new_alpha * sheen_opacity)
+                        .clamp(0.0, 255.0) as u8;
                 }
+                rgba[3] = (new_alpha * 255.0).round() as u8;
             }
         }
     }
@@ -358,4 +361,16 @@ pub fn decode_pvrtc_with_alpha(
         }
     }
     rgba8_data
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Image;
+
+    #[test]
+    fn rounded_icons_keep_transparent_pixels_transparent() {
+        let mut image = Image::from_pixels(2, 2, [255, 0, 0, 0].repeat(4));
+        image.round_corners(1.0, true, true);
+        assert!(image.pixels().chunks_exact(4).all(|pixel| pixel[3] == 0));
+    }
 }

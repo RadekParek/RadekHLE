@@ -3068,9 +3068,9 @@ impl Window {
                 // Also show FPS in the window title so it's visible when the
                 // app is running fullscreen or without console.
                 let base_title = if crate::branding().is_empty() {
-                    format!("RadekHLE9.9 {}", crate::VERSION)
+                    format!("RadekHLE9.0 {}", crate::VERSION)
                 } else {
-                    format!("RadekHLE9.9 {} {}", crate::branding(), crate::VERSION)
+                    format!("RadekHLE9.0 {} {}", crate::branding(), crate::VERSION)
                 };
                 let title = format!("{} - FPS: {:.1}", base_title, fps);
                 // Ignore any error setting the title.
@@ -3421,7 +3421,7 @@ pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
         messagebox::MessageBoxFlag::ERROR,
         &mbox,
         "touchHLE crashed!",
-        &format!("RadekHLE9.9 crashed with the following error: {error_message}"),
+        &format!("RadekHLE9.0 crashed with the following error: {error_message}"),
         window.map(|win| &win.window),
         None,
     ) else {

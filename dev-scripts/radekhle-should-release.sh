@@ -1,5 +1,5 @@
 #!/bin/sh
-# Decide whether to publish a RadekHLE9.9 release and which v1.0.x tag to use.
+# Decide whether to publish a RadekHLE9.0 release and which v1.0.x tag to use.
 # A release is due every 5 commits on HEAD since the latest v1.0.* tag, or since
 # the commit that introduced radekhle release automation when no tag exists yet.
 set -eu

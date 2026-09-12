@@ -149,13 +149,13 @@ pub fn configure(enabled: bool) -> bool {
         });
     let (Some(egl), Some(gles)) = (egl, gles) else {
         log_once!(
-            "Native Android CPU rasterizer libraries were not found; using RadekHLE9.9's built-in CPU rasterizer"
+            "Native Android CPU rasterizer libraries were not found; using RadekHLE9.0's built-in CPU rasterizer"
         );
         return false;
     };
     if !library_spec_is_loadable(&egl) || !library_spec_is_loadable(&gles) {
         log_once!(
-            "Configured native CPU rasterizer libraries were not found; using RadekHLE9.9's built-in CPU rasterizer"
+            "Configured native CPU rasterizer libraries were not found; using RadekHLE9.0's built-in CPU rasterizer"
         );
         return false;
     }
@@ -297,14 +297,14 @@ impl SoftwareState {
         let width = width.max(1) as usize;
         let height = height.max(1) as usize;
         let mut strings = HashMap::new();
-        strings.insert(gl::VENDOR, CString::new("RadekHLE9.9").unwrap());
+        strings.insert(gl::VENDOR, CString::new("RadekHLE9.0").unwrap());
         strings.insert(
             gl::RENDERER,
-            CString::new("RadekHLE9.9 CPU rasterizer").unwrap(),
+            CString::new("RadekHLE9.0 CPU rasterizer").unwrap(),
         );
         strings.insert(
             gl::VERSION,
-            CString::new("OpenGL ES 3.0 RadekHLE9.9 CPU rasterizer").unwrap(),
+            CString::new("OpenGL ES 3.0 RadekHLE9.0 CPU rasterizer").unwrap(),
         );
         strings.insert(
             gl::EXTENSIONS,
@@ -806,7 +806,7 @@ impl GLES for SoftwareGLES<'_> {
     }
 
     unsafe fn driver_description(&self) -> String {
-        "OpenGL ES 3.0 / RadekHLE9.9 / CPU rasterizer".to_owned()
+        "OpenGL ES 3.0 / RadekHLE9.0 / CPU rasterizer".to_owned()
     }
     unsafe fn GetError(&mut self) -> GLenum {
         let value = self.state.error;

@@ -459,7 +459,7 @@ impl Environment {
             };
             Some(Box::new(window::Window::new(
                 &format!(
-                    "{} (RadekHLE9.9 {}{}{})",
+                    "{} (RadekHLE9.0 {}{}{})",
                     bundle.display_name(),
                     super::branding(),
                     if super::branding().is_empty() {
@@ -862,7 +862,7 @@ impl Environment {
         assert!(!options.headless);
         let window = Some(Box::new(window::Window::new(
             &format!(
-                "RadekHLE9.9 {}{}{}",
+                "RadekHLE9.0 {}{}{}",
                 super::branding(),
                 if super::branding().is_empty() {
                     ""

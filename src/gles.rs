@@ -116,7 +116,7 @@ struct OrthoLogState {
 }
 
 static LAST_ORTHO_LOG: OnceLock<Mutex<Option<OrthoLogState>>> = OnceLock::new();
-static PVRTC_DECODING: AtomicU8 = AtomicU8::new(1);
+static PVRTC_DECODING: AtomicU8 = AtomicU8::new(0);
 
 pub(crate) fn configure_quality_options(
     texture_upscaler: u8,

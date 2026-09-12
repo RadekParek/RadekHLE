@@ -307,6 +307,8 @@ struct AppPickerDelegateHostObject {
     quick_options_show: bool,
     quick_options_hide: bool,
     settings_category: Option<usize>,
+    custom_driver_menu_toggle: bool,
+    custom_driver_selected: Option<i32>,
     scale_hack_default: bool,
     scale_hack1: bool,
     scale_hack_half: bool,
@@ -316,7 +318,6 @@ struct AppPickerDelegateHostObject {
     scale_hack4: bool,
     custom_resolution: bool,
     custom_resolution_custom: bool,
-    custom_driver: Option<bool>,
     custom_driver_folder: bool,
     custom_resolution_apply: bool,
     custom_resolution_cancel: bool,
@@ -440,6 +441,16 @@ const CLASSES: ClassExports = objc_classes! {
 - (())settingsSystem {
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).settings_category = Some(2);
 }
+- (())settingsVideoDisplay {
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).settings_category = Some(3);
+}
+- (())customDriverToggle {
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).custom_driver_menu_toggle = true;
+}
+- (())customDriverSelected:(id)sender {
+    let tag: NSInteger = msg![env; sender tag];
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).custom_driver_selected = Some(tag as i32);
+}
 - (())scaleHackDefault {
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).scale_hack_default = true;
 }
@@ -466,10 +477,6 @@ const CLASSES: ClassExports = objc_classes! {
 }
 - (())customResolutionCustom {
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).custom_resolution_custom = true;
-}
-- (())customDriver:(id)switch {
-    let switch_state: bool = msg![env; switch isOn];
-    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).custom_driver = Some(switch_state);
 }
 - (())openCustomDriverFolder {
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).custom_driver_folder = true;
@@ -1004,7 +1011,7 @@ fn app_picker_inner(
         let text = ns_string::from_rust_string(
             env,
             format!(
-                "RadekHLE9.9 {}{}{}",
+                "RadekHLE9.0 {}{}{}",
                 crate::branding(),
                 if crate::branding().is_empty() {
                     ""
@@ -1134,7 +1141,7 @@ fn app_picker_inner(
     let mut quick_options_arm64_fallback = crate::options::Arm64Fallback::Interpreter;
     let mut quick_options_llvmpipe_fallback = false;
     let mut quick_options_metal_translator = cfg!(target_arch = "aarch64");
-    let mut quick_options_custom_driver = false;
+    let mut quick_options_custom_driver: Option<PathBuf> = None;
     let mut quick_options_anisotropic_filtering = 1u8;
     let mut quick_options_texture_upscaler = 1u8;
     let mut quick_options_no_texture_compression = false;
@@ -1480,6 +1487,7 @@ fn app_picker_inner(
                 quick_options_stuff.texture_filtering_menu,
                 quick_options_stuff.memory_management_menu,
                 quick_options_stuff.audio_backend_menu,
+                quick_options_stuff.custom_driver_menu,
                 quick_options_stuff.custom_resolution_menu,
                 quick_options_stuff.custom_resolution_editor,
             ];
@@ -1942,14 +1950,27 @@ fn app_picker_inner(
         } else if let Some(enabled) = std::mem::take(&mut host_obj.low_audio_quality) {
             quick_options_low_audio_quality = enabled;
             () = msg![env; (quick_options_stuff.low_audio_quality_switch) setOn:enabled];
-        } else if let Some(enabled) = std::mem::take(&mut host_obj.custom_driver) {
-            quick_options_custom_driver = enabled;
-            if enabled {
-                let drivers_dir = paths::user_data_base_path().join("touchHLE_custom_drivers");
-                if let Err(error) = std::fs::create_dir_all(&drivers_dir) {
-                    echo!("Couldn't create custom-driver folder: {}", error);
-                }
+        } else if let Some(index) = std::mem::take(&mut host_obj.custom_driver_selected) {
+            if index < 0 {
+                quick_options_custom_driver = None;
+            } else if let Some(path) = quick_options_stuff.custom_driver_paths.get(index as usize) {
+                quick_options_custom_driver = Some(path.clone());
             }
+            let title = quick_options_custom_driver
+                .as_ref()
+                .map(|path| format!("Selected: {}", custom_driver_label(path)))
+                .unwrap_or_else(|| "No custom driver".to_string());
+            let title = ns_string::from_rust_string(env, title);
+            () = msg![env; (quick_options_stuff.custom_driver_btn) setTitle:title forState:UIControlStateNormal];
+            () = msg![env; (quick_options_stuff.custom_driver_menu) setHidden:true];
+            release(env, title);
+        } else if std::mem::take(&mut host_obj.custom_driver_menu_toggle) {
+            toggle_settings_dropdown(
+                env,
+                quick_options_stuff.main_view,
+                quick_options_stuff.custom_driver_menu,
+                quick_options_stuff.custom_driver_btn,
+            );
         } else if std::mem::take(&mut host_obj.custom_driver_folder) {
             match paths::url_for_opening_custom_driver() {
                 Ok(url) => {
@@ -2150,8 +2171,8 @@ fn app_picker_inner(
         }
         .to_string(),
     );
-    if quick_options_custom_driver {
-        option_args.push("--custom-driver=touchHLE_custom_drivers".to_string());
+    if let Some(path) = &quick_options_custom_driver {
+        option_args.push(format!("--custom-driver={}", path.display()));
     } else {
         option_args.push("--disable-custom-driver".to_string());
     }
@@ -3022,8 +3043,8 @@ fn change_copyright_page(
 struct QuickOptionsStuff {
     main_view: id,
     settings_backdrop: id,
-    settings_category_buttons: [id; 3],
-    settings_category_views: [Vec<id>; 3],
+    settings_category_buttons: [id; 4],
+    settings_category_views: [Vec<id>; 4],
     ios_version_btn: id,
     ios_version_menu: id,
     ios_version_items: Vec<id>,
@@ -3042,6 +3063,9 @@ struct QuickOptionsStuff {
     audio_backend_btn: id,
     audio_backend_menu: id,
     audio_backend_items: Vec<id>,
+    custom_driver_btn: id,
+    custom_driver_menu: id,
+    custom_driver_paths: Vec<PathBuf>,
     quality_buttons: Vec<Vec<id>>,
     scale_hack_buttons: [id; 7],
     custom_resolution_button: id,
@@ -3214,10 +3238,20 @@ fn setup_quick_options(
     () = msg![env; subtitle setTextColor:black];
     () = msg![env; main_view addSubview:subtitle];
 
-    let category_titles = ["Runtime", "Graphics", "System"];
-    let category_selectors = ["settingsRuntime", "settingsGraphics", "settingsSystem"];
-    let category_button_width = (main_frame.size.width - 56.0 * ui_scale) / 3.0;
-    let mut settings_category_buttons = [nil; 3];
+    let category_titles = [
+        "Performance",
+        "Graphics",
+        "Compatibility",
+        "Video & display",
+    ];
+    let category_selectors = [
+        "settingsRuntime",
+        "settingsGraphics",
+        "settingsSystem",
+        "settingsVideoDisplay",
+    ];
+    let category_button_width = (main_frame.size.width - 66.0 * ui_scale) / 4.0;
+    let mut settings_category_buttons = [nil; 4];
     for (index, (title, selector_name)) in category_titles
         .iter()
         .zip(category_selectors.iter())
@@ -3237,6 +3271,8 @@ fn setup_quick_options(
         () = msg![env; button setFrame:frame];
         let text = ns_string::get_static_str(env, title);
         () = msg![env; button setTitle:text forState:UIControlStateNormal];
+        let title_color: id = msg_class![env; UIColor blackColor];
+        () = msg![env; button setTitleColor:title_color forState:UIControlStateNormal];
         let font = picker_font(env, 13.0 * ui_scale);
         let label: id = msg![env; button titleLabel];
         () = msg![env; label setFont:font];
@@ -3310,41 +3346,67 @@ fn setup_quick_options(
         TextureFilteringDropdown,
         MemoryManagementDropdown,
         AudioBackendDropdown,
+        CustomDriverDropdown,
         Switch(&'static str, bool),
     }
     let rows = [
         RowKind::Category(0),
-        RowKind::Label("iOS version"),
-        RowKind::IosVersionDropdown,
-        RowKind::Label("Audio backend"),
-        RowKind::AudioBackendDropdown,
-        RowKind::Label("Core audio"),
-        RowKind::Switch("coreAudio:", false),
-        RowKind::Label("Lower audio quality"),
-        RowKind::Switch("lowAudioQuality:", false),
+        RowKind::Label("High performance mode"),
+        RowKind::Switch("highPerformance:", crate::options::DEFAULT_HIGH_PERFORMANCE),
+        RowKind::Label("Force max clocks (Adreno)"),
+        RowKind::Switch("forceMaxClocks:", false),
+        RowKind::Label("Frame pacing"),
+        RowKind::Switch("framePacing:", true),
+        RowKind::Label("FPS limit"),
+        RowKind::Buttons(&[
+            ("Dynamic", "fpsLimitDynamic"),
+            ("30", "fpsLimit30"),
+            ("60", "fpsLimit60"),
+            ("120", "fpsLimit120"),
+        ]),
+        RowKind::Label("Vsync"),
+        RowKind::Switch("vsync:", false),
+        RowKind::Label("Frame generation"),
+        RowKind::Switch("frameGeneration:", false),
+        RowKind::Label("Battery saver"),
+        RowKind::Switch("batterySaver:", false),
+        RowKind::Label("Ultra battery saver"),
+        RowKind::Switch("ultraBatterySaver:", false),
+        RowKind::Label("Memory management"),
+        RowKind::MemoryManagementDropdown,
+        RowKind::Label("ARM64 JIT (off = interpreter)"),
+        RowKind::Switch("arm64Backend:", false),
+        RowKind::Label("Interpreter fallback"),
+        RowKind::Switch("arm64Fallback:", false),
         RowKind::Category(1),
         RowKind::Label("Graphics API"),
         RowKind::GraphicsApiDropdown,
         RowKind::Label("GLES override version"),
         RowKind::GlesOverrideDropdown,
-        RowKind::Label("High performance mode"),
-        RowKind::Switch("highPerformance:", crate::options::DEFAULT_HIGH_PERFORMANCE),
-        RowKind::Label("Force max clocks (Adreno)"),
-        RowKind::Switch("forceMaxClocks:", false),
+        RowKind::Label("ANGLE driver"),
+        RowKind::Switch("angleDriver:", false),
+        RowKind::Label("Custom driver"),
+        RowKind::Buttons(&[("Add custom driver", "openCustomDriverFolder")]),
+        RowKind::Label("Installed custom drivers"),
+        RowKind::CustomDriverDropdown,
+        RowKind::Label("LLVMPipe fallback"),
+        RowKind::Switch("llvmpipeFallback:", false),
+        RowKind::Label("Metal translator (ARM64)"),
+        RowKind::Switch("metalTranslator:", cfg!(target_arch = "aarch64")),
         RowKind::Label("Shader compatibility fixes"),
         RowKind::Switch("shaderCompatibilityFixes:", true),
         RowKind::Label("Fix incomplete textures"),
         RowKind::Switch("fixTextureMinFilter:", cfg!(target_os = "android")),
-        RowKind::Label("Force Core Animation composition"),
-        RowKind::Switch("forceComposition:", false),
-        RowKind::Label("Custom driver"),
-        RowKind::Switch("customDriver:", false),
-        RowKind::Label("Custom driver files"),
-        RowKind::Buttons(&[("Select ZIP file", "openCustomDriverFolder")]),
-        RowKind::Label("Vsync"),
-        RowKind::Switch("vsync:", false),
-        RowKind::Label("Frame generation"),
-        RowKind::Switch("frameGeneration:", false),
+        RowKind::Label("Texture filtering"),
+        RowKind::TextureFilteringDropdown,
+        RowKind::Label("PVRTC decoding"),
+        RowKind::Buttons(&[
+            ("Software", "pvrtcDecodingSoftware"),
+            ("Automatic", "pvrtcDecodingAuto"),
+            ("Host driver", "pvrtcDecodingDriver"),
+        ]),
+        RowKind::Label("No texture compression"),
+        RowKind::Switch("noTextureCompression:", false),
         RowKind::Label("Anisotropic filtering"),
         RowKind::Buttons(&[
             ("1×", "anisotropicFiltering1"),
@@ -3367,36 +3429,33 @@ fn setup_quick_options(
             ("3×", "textureUpscaler3"),
             ("4×", "textureUpscaler4"),
         ]),
-        RowKind::Label("Texture filtering"),
-        RowKind::TextureFilteringDropdown,
-        RowKind::Label("PVRTC decoding"),
-        RowKind::Buttons(&[
-            ("Software", "pvrtcDecodingSoftware"),
-            ("Automatic", "pvrtcDecodingAuto"),
-            ("Host driver", "pvrtcDecodingDriver"),
-        ]),
-        RowKind::Label("No texture compression"),
-        RowKind::Switch("noTextureCompression:", false),
         RowKind::Category(2),
-        RowKind::Label("Battery saver"),
-        RowKind::Switch("batterySaver:", false),
-        RowKind::Label("Ultra battery saver"),
-        RowKind::Switch("ultraBatterySaver:", false),
-        RowKind::Label("Memory management"),
-        RowKind::MemoryManagementDropdown,
-        RowKind::Label("ARM64 JIT (off = interpreter)"),
-        RowKind::Switch("arm64Backend:", false),
-        RowKind::Label("Interpreter fallback"),
-        RowKind::Switch("arm64Fallback:", false),
-        RowKind::Label("LLVMPipe fallback"),
-        RowKind::Switch("llvmpipeFallback:", false),
-        RowKind::Label("Metal translator (ARM64)"),
-        RowKind::Switch("metalTranslator:", cfg!(target_arch = "aarch64")),
+        RowKind::Label("iOS version"),
+        RowKind::IosVersionDropdown,
+        RowKind::Label("Device model"),
+        RowKind::DeviceDropdown,
+        RowKind::Label("Audio backend"),
+        RowKind::AudioBackendDropdown,
+        RowKind::Label("Core audio"),
+        RowKind::Switch("coreAudio:", false),
+        RowKind::Label("Lower audio quality"),
+        RowKind::Switch("lowAudioQuality:", false),
+        RowKind::Label("Network access"),
+        RowKind::Switch("network:", true),
+        RowKind::Label("RTCS"),
+        RowKind::Switch("rtcs:", false),
         RowKind::Label("Game folder"),
         RowKind::Buttons(&[
             ("Open folder", "openFileManager"),
             ("Refresh", "refreshApps"),
         ]),
+        RowKind::Label("Force 32-bit"),
+        RowKind::Switch("force32Bit:", false),
+        RowKind::Label("Force 64-bit"),
+        RowKind::Switch("force64Bit:", false),
+        RowKind::Label("Use analog sticks for tilt controls"),
+        RowKind::Switch("analogStickTiltControls:", true),
+        RowKind::Category(3),
         RowKind::Label("Scale hack"),
         RowKind::Buttons(&[
             ("Default", "scaleHackDefault"),
@@ -3407,7 +3466,7 @@ fn setup_quick_options(
             ("3×", "scaleHack3"),
             ("4×", "scaleHack4"),
         ]),
-        RowKind::Label("Custom Resolution"),
+        RowKind::Label("Custom resolution"),
         RowKind::Buttons(&[("Custom", "customResolution")]),
         RowKind::Label("Orientation"),
         RowKind::Buttons(&[
@@ -3424,46 +3483,18 @@ fn setup_quick_options(
             ("90°", "renderRotationPlus90"),
             ("180°", "renderRotationPlus180"),
         ]),
-        RowKind::Label("Revert X axis"),
-        RowKind::Switch("revertXAxis:", false),
-        RowKind::Label("Revert Y axis"),
-        RowKind::Switch("revertYAxis:", false),
         RowKind::Label("Fullscreen (stretched)"),
         RowKind::Switch("fullscreenStretched:", false),
-        RowKind::Label("Device model"),
-        RowKind::DeviceDropdown,
-        RowKind::Label("Network access"),
-        RowKind::Switch("network:", true),
-        RowKind::Label("RTCS"),
-        RowKind::Switch("rtcs:", false),
-        RowKind::Label("ANGLE driver"),
-        RowKind::Switch("angleDriver:", false),
+        RowKind::Label("Force Core Animation composition"),
+        RowKind::Switch("forceComposition:", false),
+        RowKind::Label("Show HUD"),
+        RowKind::Switch("showFPS:", true),
         RowKind::Label("Enable log file"),
         RowKind::Switch("logFile:", true),
         RowKind::Label("Verbose logging"),
         RowKind::Switch("verboseLogging:", false),
         RowKind::Label("Trace GL errors"),
         RowKind::Switch("traceGLErrors:", false),
-        RowKind::Label("Fast memory"),
-        RowKind::Switch("fastMemory:", true),
-        RowKind::Label("Force 32-bit"),
-        RowKind::Switch("force32Bit:", false),
-        RowKind::Label("Force 64-bit"),
-        RowKind::Switch("force64Bit:", false),
-        RowKind::Label("Frame pacing"),
-        RowKind::Switch("framePacing:", true),
-        RowKind::Label("FPS limit"),
-        RowKind::Buttons(&[
-            ("Dynamic", "fpsLimitDynamic"),
-            ("30", "fpsLimit30"),
-            ("60", "fpsLimit60"),
-            ("120", "fpsLimit120"),
-        ]),
-        RowKind::Label("Show HUD"),
-        RowKind::Switch("showFPS:", true),
-        RowKind::Label("Use analog sticks for tilt controls"),
-        RowKind::Switch("analogStickTiltControls:", true),
-        // ---- (divider for stuff skipped below)
         RowKind::Label("Fullscreen (override)"),
         RowKind::Switch("fullscreen:", false),
     ];
@@ -3519,12 +3550,15 @@ fn setup_quick_options(
     let mut device_model_menu: id = nil;
     let mut device_model_items: Vec<id> = Vec::new();
     let mut device_model_thumb: id = nil;
-    let mut settings_category_views: [Vec<id>; 3] = std::array::from_fn(|_| Vec::new());
+    let mut custom_driver_btn: id = nil;
+    let mut custom_driver_menu: id = nil;
+    let mut custom_driver_paths: Vec<PathBuf> = Vec::new();
+    let mut settings_category_views: [Vec<id>; 4] = std::array::from_fn(|_| Vec::new());
     let mut settings_category = 0usize;
-    let mut category_row_indices = [0usize; 3];
+    let mut category_row_indices = [0usize; 4];
     for row in rows.iter() {
         if let RowKind::Category(category) = *row {
-            settings_category = category.min(2);
+            settings_category = category.min(3);
             continue;
         }
         let row_index = category_row_indices[settings_category];
@@ -3724,6 +3758,20 @@ fn setup_quick_options(
                 audio_backend_menu = dropdown.1;
                 audio_backend_items = dropdown.2;
                 settings_category_views[settings_category].push(audio_backend_btn);
+            }
+            RowKind::CustomDriverDropdown => {
+                let dropdown = make_custom_driver_dropdown(
+                    env,
+                    delegate,
+                    main_view,
+                    main_frame.size,
+                    row_center,
+                );
+                custom_driver_btn = dropdown.0;
+                custom_driver_menu = dropdown.1;
+                let _ = dropdown.2;
+                custom_driver_paths = dropdown.3;
+                settings_category_views[settings_category].push(custom_driver_btn);
             }
             RowKind::Category(_) => unreachable!(),
             RowKind::Switch(selector_name, default_state) => {
@@ -3995,6 +4043,7 @@ fn setup_quick_options(
         texture_filtering_menu,
         memory_management_menu,
         audio_backend_menu,
+        custom_driver_menu,
         resolution_menu,
         editor,
     ];
@@ -4029,6 +4078,9 @@ fn setup_quick_options(
         audio_backend_btn,
         audio_backend_menu,
         audio_backend_items,
+        custom_driver_btn,
+        custom_driver_menu,
+        custom_driver_paths,
         quality_buttons,
         scale_hack_buttons: scale_hack_buttons.unwrap_or([nil; 7]),
         custom_resolution_button,
@@ -4223,8 +4275,8 @@ fn set_settings_menu_background(env: &mut Environment, menu: id) {
 
 fn select_settings_category(
     env: &mut Environment,
-    views: &[Vec<id>; 3],
-    buttons: &[id; 3],
+    views: &[Vec<id>; 4],
+    buttons: &[id; 4],
     menus: &[id],
     selected: usize,
 ) {
@@ -4285,6 +4337,122 @@ fn update_settings_dropdown<T>(
         release(env, title);
         () = msg![env; button layoutSubviews];
     }
+}
+
+fn custom_driver_paths() -> Vec<PathBuf> {
+    let directory = paths::user_data_base_path().join("touchHLE_custom_drivers");
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_dir()
+                || path.extension().is_some_and(|extension| {
+                    extension.eq_ignore_ascii_case("zip")
+                        || extension.eq_ignore_ascii_case("so")
+                        || extension.eq_ignore_ascii_case("dylib")
+                        || extension.eq_ignore_ascii_case("dll")
+                })
+        })
+        .collect();
+    paths.sort();
+    paths
+}
+
+fn custom_driver_label(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("custom driver")
+        .to_string()
+}
+
+fn make_custom_driver_dropdown(
+    env: &mut Environment,
+    delegate: id,
+    main_view: id,
+    main_view_size: CGSize,
+    row_center: CGFloat,
+) -> (id, id, Vec<id>, Vec<PathBuf>) {
+    let ui_scale = picker_ui_scale(main_view_size);
+    let button_frame = CGRect {
+        origin: CGPoint {
+            x: main_view_size.width * 0.42,
+            y: row_center - 17.0 * ui_scale,
+        },
+        size: CGSize {
+            width: main_view_size.width * 0.55,
+            height: 34.0 * ui_scale,
+        },
+    };
+    let button: id = msg_class![env; UIButton buttonWithType:UIButtonTypeCustom];
+    () = msg![env; button setFrame:button_frame];
+    let title = ns_string::get_static_str(env, "No custom driver");
+    () = msg![env; button setTitle:title forState:UIControlStateNormal];
+    let black: id = msg_class![env; UIColor blackColor];
+    () = msg![env; button setTitleColor:black forState:UIControlStateNormal];
+    let gray = settings_menu_gray(env);
+    () = msg![env; button setBackgroundColor:gray];
+    let selector = env.objc.lookup_selector("customDriverToggle").unwrap();
+    () = msg![env; button addTarget:delegate action:selector forControlEvents:UIControlEventTouchUpInside];
+    () = msg![env; main_view addSubview:button];
+
+    let paths = custom_driver_paths();
+    let item_height = 32.0 * ui_scale;
+    let menu_frame = CGRect {
+        origin: CGPoint {
+            x: button_frame.origin.x,
+            y: button_frame.origin.y + button_frame.size.height + 4.0 * ui_scale,
+        },
+        size: CGSize {
+            width: button_frame.size.width,
+            height: item_height * paths.len().max(1) as CGFloat,
+        },
+    };
+    let menu: id = msg_class![env; UIView alloc];
+    let menu: id = msg![env; menu initWithFrame:menu_frame];
+    () = msg![env; menu setBackgroundColor:gray];
+    () = msg![env; menu setHidden:true];
+    () = msg![env; main_view addSubview:menu];
+
+    let mut items = Vec::new();
+    let item_paths = if paths.is_empty() {
+        vec![PathBuf::new()]
+    } else {
+        paths.clone()
+    };
+    let selector = env.objc.lookup_selector("customDriverSelected:").unwrap();
+    for (index, path) in item_paths.iter().enumerate() {
+        let item: id = msg_class![env; UIButton buttonWithType:UIButtonTypeCustom];
+        let frame = CGRect {
+            origin: CGPoint {
+                x: 4.0 * ui_scale,
+                y: index as CGFloat * item_height,
+            },
+            size: CGSize {
+                width: menu_frame.size.width - 8.0 * ui_scale,
+                height: item_height - 2.0 * ui_scale,
+            },
+        };
+        () = msg![env; item setFrame:frame];
+        let label = if paths.is_empty() {
+            "No custom drivers installed".to_string()
+        } else {
+            custom_driver_label(path)
+        };
+        let label = ns_string::from_rust_string(env, label);
+        () = msg![env; item setTitle:label forState:UIControlStateNormal];
+        () = msg![env; item setTitleColor:black forState:UIControlStateNormal];
+        let item_background = settings_menu_gray(env);
+        () = msg![env; item setBackgroundColor:item_background];
+        () = msg![env; item setTag:(if paths.is_empty() { -1 } else { index as NSInteger })];
+        () = msg![env; item addTarget:delegate action:selector forControlEvents:UIControlEventTouchUpInside];
+        () = msg![env; menu addSubview:item];
+        items.push(item);
+        release(env, label);
+    }
+    (button, menu, items, paths)
 }
 
 fn make_graphics_api_dropdown(

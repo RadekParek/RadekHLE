@@ -826,7 +826,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             }
         }
         Some(Box::new(crate::window::Window::new(
-            "RadekHLE9.9 ARM64",
+            "RadekHLE9.0 ARM64",
             None,
             None,
             &window_options,
