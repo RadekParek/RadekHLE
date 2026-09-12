@@ -1294,6 +1294,7 @@ impl Window {
             options.anti_aliasing,
             options.memory_management as u8,
         );
+        crate::gles::configure_pvrtc_decoding(options.pvrtc_decoding);
         let custom_driver_active =
             crate::gles::configure_custom_driver(options.custom_driver.as_deref());
         let angle_driver_active =
@@ -1632,8 +1633,8 @@ impl Window {
                 && cfg!(target_os = "android")
                 && !driver_description.to_ascii_uppercase().contains("ANGLE")
             {
-                panic!(
-                    "Android system ANGLE was requested, but the platform selected this driver instead: {}",
+                log!(
+                    "ANGLE was requested, but Android selected {}; continuing with the selected native driver",
                     driver_description
                 );
             }

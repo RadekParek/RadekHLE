@@ -66,22 +66,26 @@ impl GLESContext for GLES1NativeContext {
         gles11::load_with(|s| window.gl_get_proc_address(s));
         self.is_loaded = true;
         if !self.pvrtc_native_checked {
-            self.pvrtc_native = unsafe { detect_pvrtc_support() };
+            let mode = crate::gles::pvrtc_decoding_mode();
+            self.pvrtc_native = match mode {
+                crate::options::PvrtcDecoding::Software => false,
+                crate::options::PvrtcDecoding::Driver => true,
+                crate::options::PvrtcDecoding::Auto => unsafe { detect_pvrtc_support() },
+            };
             self.pvrtc_native_checked = true;
-            log!(
-                "GLES1Native: GL_IMG_texture_compression_pvrtc {} (PVRTC textures will \
-                 be {} on this driver)",
-                if self.pvrtc_native {
-                    "advertised by host driver"
-                } else {
-                    "NOT advertised by host driver"
-                },
-                if self.pvrtc_native {
-                    "uploaded directly"
-                } else {
-                    "software-decoded to RGBA before upload"
-                },
-            );
+            match mode {
+                crate::options::PvrtcDecoding::Software => {
+                    log!("GLES1Native: PVRTC software decoding forced by settings")
+                }
+                crate::options::PvrtcDecoding::Driver => {
+                    log!("GLES1Native: PVRTC host-driver upload forced by settings")
+                }
+                crate::options::PvrtcDecoding::Auto => log!(
+                    "GLES1Native: GL_IMG_texture_compression_pvrtc {} (PVRTC textures will {} on this driver)",
+                    if self.pvrtc_native { "advertised by host driver" } else { "not advertised by host driver" },
+                    if self.pvrtc_native { "be uploaded directly" } else { "be software-decoded to RGBA before upload" },
+                ),
+            }
         }
         Box::new(GLES1Native {
             _gl_lifetime: PhantomData,
@@ -107,7 +111,11 @@ impl GLESContext for GLES1NativeContext {
         gles11::load_with(loader_fn);
         self.is_loaded = true;
         if !self.pvrtc_native_checked {
-            self.pvrtc_native = detect_pvrtc_support();
+            self.pvrtc_native = match crate::gles::pvrtc_decoding_mode() {
+                crate::options::PvrtcDecoding::Software => false,
+                crate::options::PvrtcDecoding::Driver => true,
+                crate::options::PvrtcDecoding::Auto => detect_pvrtc_support(),
+            };
             self.pvrtc_native_checked = true;
         }
         Box::new(GLES1Native {

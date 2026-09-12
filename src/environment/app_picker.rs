@@ -369,6 +369,7 @@ struct AppPickerDelegateHostObject {
     gles_override_version: Option<crate::options::GlesOverrideVersion>,
     texture_filtering_toggle: bool,
     texture_filtering: Option<crate::options::TextureFiltering>,
+    pvrtc_decoding: Option<crate::options::PvrtcDecoding>,
     memory_management_toggle: bool,
     memory_management: Option<crate::options::MemoryManagement>,
     arm64_backend: Option<crate::options::Arm64Backend>,
@@ -691,6 +692,9 @@ const CLASSES: ClassExports = objc_classes! {
     let switch_state: bool = msg![env; switch isOn];
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).no_texture_compression = Some(switch_state);
 }
+- (())pvrtcDecodingSoftware { env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).pvrtc_decoding = Some(crate::options::PvrtcDecoding::Software); }
+- (())pvrtcDecodingAuto { env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).pvrtc_decoding = Some(crate::options::PvrtcDecoding::Auto); }
+- (())pvrtcDecodingDriver { env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).pvrtc_decoding = Some(crate::options::PvrtcDecoding::Driver); }
 - (())antiAliasing:(id)sender {
     let tag: NSInteger = msg![env; sender tag];
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).anti_aliasing = Some(tag as u8);
@@ -1113,13 +1117,13 @@ fn app_picker_inner(
     let mut quick_options_graphics_api = crate::options::GraphicsApi::Default;
     let mut quick_options_audio_backend = crate::options::AudioBackend::Default;
     let mut quick_options_texture_filtering = crate::options::TextureFiltering::Default;
+    let mut quick_options_pvrtc_decoding = crate::options::PvrtcDecoding::default();
     let mut quick_options_memory_management = crate::options::MemoryManagement::Balanced;
     let mut quick_options_gles_override = crate::options::GlesOverrideVersion::Default;
     let mut quick_options_arm64_backend = crate::options::Arm64Backend::Interpreter;
     let mut quick_options_arm64_fallback = crate::options::Arm64Fallback::Interpreter;
     let mut quick_options_llvmpipe_fallback = false;
     let mut quick_options_metal_translator = cfg!(target_arch = "aarch64");
-    let mut quick_options_software_rendering = false;
     let mut quick_options_custom_driver = false;
     let mut quick_options_anisotropic_filtering = 1u8;
     let mut quick_options_texture_upscaler = 1u8;
@@ -1168,6 +1172,20 @@ fn app_picker_inner(
                 .iter()
                 .position(|choice| *choice == value)
                 .unwrap_or(0);
+            update_quick_option_buttons(env, buttons, selected);
+        }
+    }
+    fn update_pvrtc_decoding_buttons(
+        env: &mut Environment,
+        groups: &[Vec<id>],
+        value: crate::options::PvrtcDecoding,
+    ) {
+        let selected = match value {
+            crate::options::PvrtcDecoding::Software => 0,
+            crate::options::PvrtcDecoding::Auto => 1,
+            crate::options::PvrtcDecoding::Driver => 2,
+        };
+        if let Some(buttons) = groups.get(3) {
             update_quick_option_buttons(env, buttons, selected);
         }
     }
@@ -1292,6 +1310,11 @@ fn app_picker_inner(
         2,
         &[1, 2, 3, 4],
         quick_options_texture_upscaler,
+    );
+    update_pvrtc_decoding_buttons(
+        env,
+        &quick_options_stuff.quality_buttons,
+        quick_options_pvrtc_decoding,
     );
     () = msg![env; (quick_options_stuff.no_texture_compression_switch)
         setOn:quick_options_no_texture_compression];
@@ -1517,6 +1540,13 @@ fn app_picker_inner(
                 value as usize,
             );
             () = msg![env; (quick_options_stuff.texture_filtering_menu) setHidden:true];
+        } else if let Some(value) = std::mem::take(&mut host_obj.pvrtc_decoding) {
+            quick_options_pvrtc_decoding = value;
+            update_pvrtc_decoding_buttons(
+                env,
+                &quick_options_stuff.quality_buttons,
+                value,
+            );
         } else if std::mem::take(&mut host_obj.memory_management_toggle) {
             toggle_settings_dropdown(
                 env,
@@ -1887,8 +1917,6 @@ fn app_picker_inner(
         } else if let Some(enabled) = std::mem::take(&mut host_obj.low_audio_quality) {
             quick_options_low_audio_quality = enabled;
             () = msg![env; (quick_options_stuff.low_audio_quality_switch) setOn:enabled];
-        } else if let Some(enabled) = std::mem::take(&mut host_obj.software_rendering) {
-            quick_options_software_rendering = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.custom_driver) {
             quick_options_custom_driver = enabled;
             if enabled {
@@ -2097,9 +2125,6 @@ fn app_picker_inner(
         }
         .to_string(),
     );
-    if quick_options_software_rendering {
-        option_args.push("--software-rendering".to_string());
-    }
     if quick_options_custom_driver {
         option_args.push("--custom-driver=touchHLE_custom_drivers".to_string());
     } else {
@@ -2139,6 +2164,10 @@ fn app_picker_inner(
         }
         .to_string(),
     );
+    option_args.push(format!(
+        "--pvrtc-decoding={}",
+        quick_options_pvrtc_decoding.short_name()
+    ));
     option_args.push(
         if quick_options_no_texture_compression {
             "--no-texture-compression"
@@ -2158,9 +2187,7 @@ fn app_picker_inner(
             crate::options::GraphicsApi::GLES30 => "gles3.0",
             crate::options::GraphicsApi::Wgpu => "wgpu",
             crate::options::GraphicsApi::Vulkan => "vulkan",
-            crate::options::GraphicsApi::Software => {
-                unreachable!("software rendering is standalone")
-            }
+            crate::options::GraphicsApi::Software => "software",
             crate::options::GraphicsApi::Metal => "metal",
             crate::options::GraphicsApi::Default => unreachable!(),
         };
@@ -3252,8 +3279,6 @@ fn setup_quick_options(
         RowKind::Buttons(&[("Select ZIP file", "openCustomDriverFolder")]),
         RowKind::Label("Vsync"),
         RowKind::Switch("vsync:", false),
-        RowKind::Label("Software rendering (CPU only)"),
-        RowKind::Switch("softwareRendering:", false),
         RowKind::Label("Frame generation"),
         RowKind::Switch("frameGeneration:", false),
         RowKind::Label("Anisotropic filtering"),
@@ -3280,6 +3305,12 @@ fn setup_quick_options(
         ]),
         RowKind::Label("Texture filtering"),
         RowKind::TextureFilteringDropdown,
+        RowKind::Label("PVRTC decoding"),
+        RowKind::Buttons(&[
+            ("Software", "pvrtcDecodingSoftware"),
+            ("Automatic", "pvrtcDecodingAuto"),
+            ("Host driver", "pvrtcDecodingDriver"),
+        ]),
         RowKind::Label("No texture compression"),
         RowKind::Switch("noTextureCompression:", false),
         RowKind::Label("Battery saver"),
@@ -3503,7 +3534,8 @@ fn setup_quick_options(
                     }
                     Some("anisotropicFiltering1")
                     | Some("textureUpscaler1")
-                    | Some("antiAliasing1") => {
+                    | Some("antiAliasing1")
+                    | Some("pvrtcDecodingSoftware") => {
                         quality_buttons.push(controls.clone());
                     }
                     _ => {}
@@ -4041,6 +4073,10 @@ const GRAPHICS_API_ENTRIES: &[(&str, crate::options::GraphicsApi)] = &[
     ),
     ("WGPU presentation", crate::options::GraphicsApi::Wgpu),
     ("Vulkan presentation", crate::options::GraphicsApi::Vulkan),
+    (
+        "Software rendering (CPU only)",
+        crate::options::GraphicsApi::Software,
+    ),
 ];
 
 fn settings_menu_gray(env: &mut Environment) -> id {

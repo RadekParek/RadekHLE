@@ -111,6 +111,7 @@ static TEXTURE_UPSCALER: AtomicU8 = AtomicU8::new(1);
 static ANTI_ALIASING: AtomicU8 = AtomicU8::new(1);
 static MEMORY_MANAGEMENT: AtomicU8 = AtomicU8::new(1);
 static LAST_ORTHO_MATRIX: OnceLock<Mutex<Option<[f32; 16]>>> = OnceLock::new();
+static PVRTC_DECODING: AtomicU8 = AtomicU8::new(1);
 
 pub(crate) fn configure_quality_options(
     texture_upscaler: u8,
@@ -120,6 +121,31 @@ pub(crate) fn configure_quality_options(
     TEXTURE_UPSCALER.store(texture_upscaler.clamp(1, 4), Ordering::Relaxed);
     ANTI_ALIASING.store(anti_aliasing.clamp(1, 8), Ordering::Relaxed);
     MEMORY_MANAGEMENT.store(memory_management.min(2), Ordering::Relaxed);
+}
+pub(crate) fn configure_pvrtc_decoding(mode: crate::options::PvrtcDecoding) {
+    PVRTC_DECODING.store(
+        match mode {
+            crate::options::PvrtcDecoding::Auto => 0,
+            crate::options::PvrtcDecoding::Software => 1,
+            crate::options::PvrtcDecoding::Driver => 2,
+        },
+        Ordering::Relaxed,
+    );
+}
+
+pub(crate) fn pvrtc_decoding_mode() -> crate::options::PvrtcDecoding {
+    match PVRTC_DECODING.load(Ordering::Relaxed) {
+        1 => crate::options::PvrtcDecoding::Software,
+        2 => crate::options::PvrtcDecoding::Driver,
+        _ => crate::options::PvrtcDecoding::Auto,
+    }
+}
+
+pub(crate) fn should_decode_pvrtc() -> bool {
+    !matches!(
+        pvrtc_decoding_mode(),
+        crate::options::PvrtcDecoding::Driver
+    )
 }
 
 pub(crate) fn texture_upscaler() -> u8 {
@@ -406,6 +432,28 @@ fn extract_custom_driver_archive(path: &std::path::Path) -> Result<std::path::Pa
     Ok(output)
 }
 
+fn find_android_adreno_driver() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let roots = [
+        "/vendor/lib64/egl",
+        "/vendor/lib64",
+        "/system/lib64/egl",
+        "/system/lib64",
+        "/vendor/lib/egl",
+        "/vendor/lib",
+        "/system/lib/egl",
+        "/system/lib",
+    ];
+    for root in roots {
+        let directory = std::path::Path::new(root);
+        let egl = directory.join("libEGL_adreno.so");
+        let gles = directory.join("libGLESv2_adreno.so");
+        if egl.is_file() && gles.is_file() {
+            return Some((egl, gles));
+        }
+    }
+    None
+}
+
 pub fn configure_angle_driver(enabled: bool) -> bool {
     if !enabled {
         return false;
@@ -439,13 +487,25 @@ pub fn configure_angle_driver(enabled: bool) -> bool {
             gles_path.display()
         );
     } else if cfg!(target_os = "android") {
-        unsafe {
-            std::env::remove_var("SDL_VIDEO_EGL_DRIVER");
-            std::env::remove_var("SDL_VIDEO_GL_DRIVER");
+        if let Some((egl_path, gles_path)) = find_android_adreno_driver() {
+            unsafe {
+                std::env::set_var("SDL_VIDEO_EGL_DRIVER", &egl_path);
+                std::env::set_var("SDL_VIDEO_GL_DRIVER", &gles_path);
+            }
+            log!(
+                "ANGLE override requested; forcing the native Android Adreno driver: EGL={}, GLES={}",
+                egl_path.display(),
+                gles_path.display()
+            );
+        } else {
+            unsafe {
+                std::env::remove_var("SDL_VIDEO_EGL_DRIVER");
+                std::env::remove_var("SDL_VIDEO_GL_DRIVER");
+            }
+            log!(
+                "ANGLE override requested; Adreno libraries are not directly visible, using Android's native system GLES loader"
+            );
         }
-        log!(
-            "Android system ANGLE requested with Vulkan backend; using Android's system GLES loader"
-        );
     } else {
         let (egl_path, gles_path) = if cfg!(target_os = "windows") {
             ("libEGL.dll", "libGLESv2.dll")

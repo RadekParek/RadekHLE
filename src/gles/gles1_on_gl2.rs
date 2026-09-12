@@ -2566,7 +2566,7 @@ impl GLES for GLES1OnGL2<'_> {
         // IMG_texture_compression_pvrtc (only on Imagination/Apple GPUs)
         // TODO: It would be more efficient to use hardware decoding where
         // available (I just don't have a suitable device to try this on)
-        if try_decode_pvrtc(
+        if crate::gles::should_decode_pvrtc() && try_decode_pvrtc(
             self,
             target,
             level,

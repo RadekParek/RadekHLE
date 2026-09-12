@@ -2608,7 +2608,7 @@ impl GLES for GLES1OnGLES3<'_> {
     ) {
         if !data.is_null() && image_size > 0 {
             let payload = std::slice::from_raw_parts(data.cast::<u8>(), image_size as usize);
-            if try_decode_pvrtc(
+            if crate::gles::should_decode_pvrtc() && try_decode_pvrtc(
                 self,
                 target,
                 level,

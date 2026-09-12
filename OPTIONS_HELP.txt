@@ -283,8 +283,8 @@ Graphics driver options:
     --graphics-api=<value>
         Select the host graphics API compatibility path. Values include default,
         translator, translator-gles3, gles1.0, gles1.1, gles2.0, gles3.0, wgpu,
-        vulkan, and metal. Software rendering is selected independently with
-        --software-rendering.
+        vulkan, metal, and software. Software selects the CPU-only guest renderer
+        while retaining a native host context for presentation.
 
     --anisotropic-filtering=<1|2|4|8|16>
         Set the maximum anisotropic texture-filtering level. 1 disables the
@@ -300,11 +300,10 @@ Graphics driver options:
 
 Debugging options:
     --angle-driver
-        Prefer ANGLE's EGL/GLES loader for OpenGL ES. The packaged build must
-        provide ANGLE libraries and may override their paths with the
-        TOUCHHLE_ANGLE_EGL and TOUCHHLE_ANGLE_GLES environment variables.
-        If no ANGLE libraries are available, touchHLE keeps using the host
-        loader and records that fact in the log instead of pretending ANGLE is active.
+        On Android, request the native system ANGLE Vulkan path and prefer the
+        native Adreno libraries when they are visible. On other platforms, use
+        the configured ANGLE libraries. TOUCHHLE_ANGLE_EGL and
+        TOUCHHLE_ANGLE_GLES may override the library paths.
 
     --disable-angle-driver
         Disable the ANGLE driver override and use the normal host OpenGL ES driver.
@@ -466,6 +465,9 @@ Other options:
     --allow-network-access / --disable-network-access
         Allow or deny apps running in touchHLE access to the Internet and local network.
         Network access is enabled by default.
+
+    --pvrtc-decoding=<auto|software|driver>
+        Choose whether PVRTC textures use the host driver or are decoded to RGBA by touchHLE. The default is software decoding for compatibility with Android Adreno drivers.
 
     --ignore-gl-errors
         Ignore host OpenGL errors as queried by glGetError function.

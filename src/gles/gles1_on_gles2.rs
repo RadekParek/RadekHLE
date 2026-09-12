@@ -2311,6 +2311,7 @@ impl GLES for GLES1OnGLES2<'_> {
     ) {
         if !data.is_null()
             && image_size > 0
+            && crate::gles::should_decode_pvrtc()
             && try_decode_pvrtc(
                 self,
                 target,

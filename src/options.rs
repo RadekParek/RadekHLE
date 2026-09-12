@@ -179,6 +179,37 @@ impl TextureFiltering {
         }
     }
 }
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PvrtcDecoding {
+    Software,
+    Auto,
+    Driver,
+}
+
+impl Default for PvrtcDecoding {
+    fn default() -> Self {
+        Self::Software
+    }
+}
+
+impl PvrtcDecoding {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "software" | "cpu" | "decode" => Ok(Self::Software),
+            "auto" | "automatic" => Ok(Self::Auto),
+            "driver" | "native" => Ok(Self::Driver),
+            _ => Err(format!("Invalid PVRTC decoding mode {value:?}")),
+        }
+    }
+
+    pub fn short_name(self) -> &'static str {
+        match self {
+            Self::Software => "software",
+            Self::Auto => "auto",
+            Self::Driver => "driver",
+        }
+    }
+}
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum MemoryManagement {
@@ -478,6 +509,7 @@ pub struct Options {
     pub anisotropic_filtering: u8,
     pub texture_upscaler: u8,
     pub texture_filtering: TextureFiltering,
+    pub pvrtc_decoding: PvrtcDecoding,
     pub no_texture_compression: bool,
     pub memory_management: MemoryManagement,
     pub anti_aliasing: u8,
@@ -556,6 +588,7 @@ impl Default for Options {
             anisotropic_filtering: 1,
             texture_upscaler: 1,
             texture_filtering: TextureFiltering::Default,
+            pvrtc_decoding: PvrtcDecoding::default(),
             no_texture_compression: false,
             memory_management: MemoryManagement::Balanced,
             anti_aliasing: 1,
@@ -805,6 +838,8 @@ impl Options {
             self.texture_upscaler = parse_quality(value, "--texture-upscaler=", &[1, 2, 3, 4])?;
         } else if let Some(value) = arg.strip_prefix("--texture-filtering=") {
             self.texture_filtering = TextureFiltering::parse(value)?;
+        } else if let Some(value) = arg.strip_prefix("--pvrtc-decoding=") {
+            self.pvrtc_decoding = PvrtcDecoding::parse(value)?;
         } else if arg == "--no-texture-compression" {
             self.no_texture_compression = true;
         } else if arg == "--allow-texture-compression" {
@@ -822,10 +857,11 @@ impl Options {
         } else if let Some(value) = arg.strip_prefix("--graphics-api=") {
             let api = GraphicsApi::from_short_name(value)
                 .map_err(|_| "Unrecognized --graphics-api= value".to_string())?;
-            if api == GraphicsApi::Software {
-                return Err("Software rendering is controlled by --software-rendering".to_string());
-            }
             self.graphics_api = api;
+            if api == GraphicsApi::Software {
+                self.software_rendering = true;
+                self.software_presentation = true;
+            }
         } else if let Some(value) = arg.strip_prefix("--gles-override-version=") {
             let override_version = GlesOverrideVersion::parse(value)?;
             self.gles_override_version = override_version;
@@ -1121,6 +1157,20 @@ mod tests {
         assert!(!options.frame_pacing_enabled());
         assert!(!options.vsync);
         assert_eq!(options.fps_limit, None);
+    }
+
+    #[test]
+    fn parses_software_graphics_and_pvrtc_modes() {
+        let mut options = Options::default();
+        options.parse_argument("--graphics-api=software").unwrap();
+        assert_eq!(options.graphics_api, GraphicsApi::Software);
+        assert!(options.software_rendering);
+        assert!(options.software_presentation);
+
+        options.parse_argument("--pvrtc-decoding=driver").unwrap();
+        assert_eq!(options.pvrtc_decoding, PvrtcDecoding::Driver);
+        options.parse_argument("--pvrtc-decoding=software").unwrap();
+        assert_eq!(options.pvrtc_decoding, PvrtcDecoding::Software);
     }
 
     #[test]

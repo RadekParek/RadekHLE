@@ -769,7 +769,7 @@ impl GLES for GLES2Native<'_> {
         // software-decode PVRTC to plain RGBA when the host can't do it.
         if !self.pvrtc_native && !data.is_null() && image_size > 0 {
             let payload = std::slice::from_raw_parts(data.cast::<u8>(), image_size as usize);
-            if try_decode_pvrtc(
+            if crate::gles::should_decode_pvrtc() && try_decode_pvrtc(
                 self,
                 target,
                 level,
