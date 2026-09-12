@@ -1,5 +1,5 @@
 #!/bin/sh
-# Package RadekHLE release zips and write release notes for action-gh-release.
+# Package RadekHLE9.9 release zips and write release notes for action-gh-release.
 set -eu
 
 VERSION="$1"

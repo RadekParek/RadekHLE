@@ -1,8 +1,8 @@
 #!/bin/sh
 set -e
 
-# Bundles the RadekHLE executable with the basic set of files needed for
-# RadekHLE to run (the same ones found in the macOS .app bundle or Android APK).
+# Bundles the RadekHLE9.9 executable with the basic set of files needed for
+# RadekHLE9.9 to run (the same ones found in the macOS .app bundle or Android APK).
 # This does not prepare a full release.
 
 if [[ $# == 1 ]]; then

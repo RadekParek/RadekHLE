@@ -29,4 +29,4 @@ Only run software you have obtained legally.
 
 ## Credits
 
-RadekHLE builds on touchHLE and the open-source projects listed by the upstream project, including Dynarmic, SDL, OpenAL Soft, Symphonia, rust-macho, and the Rust ecosystem. See `--copyright` and the notices in the bundled libraries for the complete licence information.
+RadekHLE9.9 builds on touchHLE and the open-source projects listed by the upstream project, including Dynarmic, SDL, OpenAL Soft, Symphonia, rust-macho, and the Rust ecosystem. See `--copyright` and the notices in the bundled libraries for the complete licence information.
