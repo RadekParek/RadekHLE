@@ -604,7 +604,7 @@ impl DeviceFamily {
     /// matches an arbitrary host screen of `(width, height)` physical pixels.
     pub fn pick_for_screen(width: u32, height: u32) -> DeviceFamily {
         if width == 0 || height == 0 {
-            return DeviceFamily::iPhone3GS;
+            return DeviceFamily::iPhone17ProMax;
         }
         let (short, long) = if width <= height {
             (width as f32, height as f32)
@@ -612,12 +612,19 @@ impl DeviceFamily {
             (height as f32, width as f32)
         };
         let host_ratio = short / long;
-        const CANDIDATES: [DeviceFamily; 5] = [
-            DeviceFamily::iPhone3GS,
-            DeviceFamily::iPhone4,
-            DeviceFamily::iPhone5,
-            DeviceFamily::iPad2,
-            DeviceFamily::iPad3,
+        const CANDIDATES: [DeviceFamily; 12] = [
+            DeviceFamily::iPhone17ProMax,
+            DeviceFamily::iPhone17Pro,
+            DeviceFamily::iPhone17,
+            DeviceFamily::iPhone16ProMax,
+            DeviceFamily::iPhone16Pro,
+            DeviceFamily::iPhone16,
+            DeviceFamily::iPhone15ProMax,
+            DeviceFamily::iPhone15Pro,
+            DeviceFamily::iPhone15,
+            DeviceFamily::iPhone14ProMax,
+            DeviceFamily::iPhone14Pro,
+            DeviceFamily::iPhone14,
         ];
         let mut best = DeviceFamily::iPhone3GS;
         let mut best_dist = f32::INFINITY;
@@ -3363,6 +3370,24 @@ impl Window {
 }
 
 pub fn open_url(env: &mut Environment, url: &str) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let command = match url {
+            "touchhle://game-folder" => Some(GAME_FOLDER_COMMAND),
+            "touchhle://custom-driver" => Some(CUSTOM_DRIVER_COMMAND),
+            _ => None,
+        };
+        if let Some(command) = command {
+            let result = env
+                .on_parent_stack_in_coroutine(|_, _| unsafe { SDL_AndroidSendMessage(command, 0) });
+            if result == 0 {
+                return Ok(());
+            }
+            return Err(format!(
+                "Android picker command failed with return code {result}"
+            ));
+        }
+    }
     env.on_parent_stack_in_coroutine(|_, _| sdl2::url::open_url(url).map_err(|e| e.to_string()))
 }
 
@@ -3370,6 +3395,10 @@ pub fn open_url(env: &mut Environment, url: &str) -> Result<(), String> {
 const ADD_IPA_COMMAND: u32 = 0x8000;
 #[cfg(target_os = "android")]
 const PERFORMANCE_MODE_COMMAND: u32 = 0x8001;
+#[cfg(target_os = "android")]
+const GAME_FOLDER_COMMAND: u32 = 0x8002;
+#[cfg(target_os = "android")]
+const CUSTOM_DRIVER_COMMAND: u32 = 0x8003;
 
 #[cfg(target_os = "android")]
 unsafe extern "C" {

@@ -23,6 +23,8 @@ public class MainActivity extends SDLActivity {
     private static final int ADD_IPA_REQUEST = 4713;
     private static final int ADD_IPA_MESSAGE = 0x8000;
     private static final int PERFORMANCE_MODE_MESSAGE = 0x8001;
+    private static final int GAME_FOLDER_MESSAGE = 0x8002;
+    private static final int CUSTOM_DRIVER_MESSAGE = 0x8003;
     private Object performanceHintSession;
 
     @Override
@@ -43,6 +45,14 @@ public class MainActivity extends SDLActivity {
         if (message == PERFORMANCE_MODE_MESSAGE) {
             int flags = data instanceof Integer ? (Integer) data : 0;
             runOnUiThread(() -> applyPerformanceMode(flags));
+            return true;
+        }
+        if (message == GAME_FOLDER_MESSAGE) {
+            runOnUiThread(MainActivity::openGameFolderPicker);
+            return true;
+        }
+        if (message == CUSTOM_DRIVER_MESSAGE) {
+            runOnUiThread(MainActivity::openCustomDriverPicker);
             return true;
         }
         return super.onUnhandledMessage(message, data);
@@ -117,6 +127,24 @@ public class MainActivity extends SDLActivity {
         picker.addCategory(Intent.CATEGORY_OPENABLE);
         picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         launchFilePicker(picker, ADD_IPA_REQUEST);
+    }
+
+    private static void openGameFolderPicker() {
+        Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+            | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+            | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+        launchFilePicker(picker, GAME_FOLDER_REQUEST);
+    }
+
+    private static void openCustomDriverPicker() {
+        Intent picker = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        picker.setType("*/*");
+        picker.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/zip", "application/x-zip-compressed", "application/octet-stream"});
+        picker.addCategory(Intent.CATEGORY_OPENABLE);
+        picker.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        launchFilePicker(picker, CUSTOM_DRIVER_REQUEST);
     }
 
     private static File gameFolderTarget() {

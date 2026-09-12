@@ -14,7 +14,8 @@ use crate::frameworks::core_graphics::{CGFloat, CGPoint, CGRect, CGSize};
 use crate::frameworks::foundation::NSInteger;
 use crate::mem::SafeRead;
 use crate::objc::{
-    id, impl_HostObject_with_superclass, msg, nil, objc_classes, ClassExports, NSZonePtr, SEL,
+    id, impl_HostObject_with_superclass, msg, msg_class, nil, objc_classes, ClassExports,
+    NSZonePtr, SEL,
 };
 
 type UIScrollViewIndicatorStyle = NSInteger;
@@ -40,6 +41,8 @@ pub struct UIScrollViewHostObject {
     bounces: bool,
     paging_enabled: bool,
     directional_lock_enabled: bool,
+    snap_target: Option<CGPoint>,
+    snap_steps_remaining: u8,
     minimum_zoom_scale: CGFloat,
     maximum_zoom_scale: CGFloat,
     zoom_scale: CGFloat,
@@ -101,6 +104,8 @@ impl Default for UIScrollViewHostObject {
             bounces: true,
             paging_enabled: false,
             directional_lock_enabled: false,
+            snap_target: None,
+            snap_steps_remaining: 0,
             minimum_zoom_scale: 1.0,
             maximum_zoom_scale: 1.0,
             zoom_scale: 1.0,
@@ -423,6 +428,39 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (())touchesEnded:(id)_touches withEvent:(id)_event {
+    let paging_enabled = env.objc.borrow::<UIScrollViewHostObject>(this).paging_enabled;
+    if paging_enabled {
+        let bounds: CGRect = msg![env; this bounds];
+        let content_size: CGSize = msg![env; this contentSize];
+        let offset: CGPoint = msg![env; this contentOffset];
+        let page_width = bounds.size.width.max(1.0);
+        let max_offset = (content_size.width - page_width).max(0.0);
+        let target_x = (offset.x / page_width).round() * page_width;
+        let target = CGPoint {
+            x: target_x.clamp(0.0, max_offset),
+            y: 0.0,
+        };
+        if (target.x - offset.x).abs() > 0.5 {
+            {
+                let host = env.objc.borrow_mut::<UIScrollViewHostObject>(this);
+                host.snap_target = Some(target);
+                host.snap_steps_remaining = 8;
+            }
+            let selector = env.objc.register_host_selector(
+                "_touchHLE_scrollViewSnap:".to_string(),
+                &mut env.mem,
+            );
+            let _: id = msg_class![env;
+                NSTimer scheduledTimerWithTimeInterval:(1.0_f64 / 60.0_f64)
+                                               target:this
+                                             selector:selector
+                                             userInfo:nil
+                                              repeats:true
+            ];
+            return;
+        }
+    }
+
     let delegate: id = msg![env; this delegate];
     if delegate != nil {
         let sel: SEL = env.objc.register_host_selector(
@@ -434,6 +472,58 @@ pub const CLASSES: ClassExports = objc_classes! {
         if responds {
             () = msg![env; delegate scrollViewDidEndDecelerating:this];
         }
+    }
+}
+
+- (())_touchHLE_scrollViewSnap:(id)timer {
+    let (Some(target), remaining) = ({
+        let host = env.objc.borrow::<UIScrollViewHostObject>(this);
+        (host.snap_target, host.snap_steps_remaining)
+    }) else {
+        () = msg![env; timer invalidate];
+        return;
+    };
+    let offset: CGPoint = msg![env; this contentOffset];
+    let next = if remaining <= 1 {
+        target
+    } else {
+        CGPoint {
+            x: offset.x + (target.x - offset.x) * 0.32,
+            y: offset.y + (target.y - offset.y) * 0.32,
+        }
+    };
+    {
+        let host = env.objc.borrow_mut::<UIScrollViewHostObject>(this);
+        host.snap_steps_remaining = remaining.saturating_sub(1);
+        if remaining <= 1 {
+            host.snap_target = None;
+        }
+    }
+    () = msg![env; this setContentOffset:next];
+
+    let delegate: id = msg![env; this delegate];
+    if delegate != nil {
+        let scroll_sel: SEL = env.objc.register_host_selector(
+            "scrollViewDidScroll:".to_string(),
+            &mut env.mem,
+        );
+        let responds: bool = msg![env; delegate respondsToSelector:scroll_sel];
+        if responds {
+            () = msg![env; delegate scrollViewDidScroll:this];
+        }
+        if remaining <= 1 {
+            let end_sel: SEL = env.objc.register_host_selector(
+                "scrollViewDidEndDecelerating:".to_string(),
+                &mut env.mem,
+            );
+            let responds: bool = msg![env; delegate respondsToSelector:end_sel];
+            if responds {
+                () = msg![env; delegate scrollViewDidEndDecelerating:this];
+            }
+        }
+    }
+    if remaining <= 1 {
+        () = msg![env; timer invalidate];
     }
 }
 

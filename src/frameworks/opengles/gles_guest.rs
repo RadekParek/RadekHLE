@@ -3552,11 +3552,12 @@ fn glGetShaderInfoLog(
     });
 }
 fn glGetProgramiv(env: &mut Environment, program: GLuint, pname: GLenum, params: MutPtr<GLint>) {
-    log!(
-        "[GLES] glGetProgramiv called with program={}, pname=0x{:x}",
+    log_once_fmt!(
+        "[GLES] glGetProgramiv is active (first program={}, pname=0x{:x}); repeated query logging is suppressed",
         program,
         pname
     );
+
     with_ctx_and_mem(env, |gles, mem| unsafe {
         let mut val: GLint = 0;
         gles.GetProgramiv(program, pname, &mut val);

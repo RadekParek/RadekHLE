@@ -107,11 +107,22 @@ fn enumerate_apps(apps_dir: &Path) -> Result<Vec<AppInfo>, std::io::Error> {
                 }) {
                     Ok(ok) => ok,
                     Err(e) => {
-                        log!(
-                            "Warning: couldn't open app bundle {}: {} (skipping)",
-                            app_path.display(),
-                            e
-                        );
+                        if app_path
+                            .extension()
+                            .is_some_and(|extension| extension.eq_ignore_ascii_case("ipa"))
+                            && e.to_string().contains("invalid Zip archive")
+                        {
+                            log_once_fmt!(
+                                "Warning: skipping incomplete or corrupted IPA {} (replace it with a complete copy)",
+                                app_path.display()
+                            );
+                        } else {
+                            log!(
+                                "Warning: couldn't open app bundle {}: {} (skipping)",
+                                app_path.display(),
+                                e
+                            );
+                        }
                         continue;
                     }
                 };
@@ -299,6 +310,7 @@ fn ios_version_label(value: Option<(i32, i32, i32)>) -> String {
 #[derive(Default)]
 struct AppPickerDelegateHostObject {
     icon_tapped: id,
+    icon_scroll_page: Option<usize>,
     add_ipa: bool,
     copyright_show: bool,
     copyright_hide: bool,
@@ -411,6 +423,25 @@ const CLASSES: ClassExports = objc_classes! {
     // used within the app picker, so it can't be abused. :)
     let host_obj = env.objc.borrow_mut::<AppPickerDelegateHostObject>(this);
     host_obj.icon_tapped = sender;
+}
+
+- (())scrollViewDidScroll:(id)scroll_view {
+    const ICON_SCROLL_TAG: NSInteger = 0x5248;
+    let tag: NSInteger = msg![env; scroll_view tag];
+    if tag != ICON_SCROLL_TAG {
+        return;
+    }
+    let bounds: CGRect = msg![env; scroll_view bounds];
+    if bounds.size.width <= 0.0 {
+        return;
+    }
+    let offset: CGPoint = msg![env; scroll_view contentOffset];
+    let page = (offset.x / bounds.size.width).round().max(0.0) as usize;
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).icon_scroll_page = Some(page);
+}
+
+- (())scrollViewDidEndDecelerating:(id)scroll_view {
+    msg![env; this scrollViewDidScroll:scroll_view]
 }
 
 - (())copyrightInfoShow {
@@ -662,7 +693,7 @@ const CLASSES: ClassExports = objc_classes! {
 }
 - (())highPerformance:(id)switch {
     let switch_state: bool = msg![env; switch isOn];
-    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).high_performance = Some(crate::options::DEFAULT_HIGH_PERFORMANCE);
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).high_performance = Some(switch_state);
 }
 - (())forceMaxClocks:(id)switch {
     let switch_state: bool = msg![env; switch isOn];
@@ -1134,7 +1165,7 @@ fn app_picker_inner(
     let mut quick_options_graphics_api = crate::options::GraphicsApi::Default;
     let mut quick_options_audio_backend = crate::options::AudioBackend::Default;
     let mut quick_options_texture_filtering = crate::options::TextureFiltering::Default;
-    let mut quick_options_pvrtc_decoding = crate::options::PvrtcDecoding::default();
+    let mut quick_options_pvrtc_decoding = crate::options::PvrtcDecoding::Auto;
     let mut quick_options_memory_management = crate::options::MemoryManagement::Balanced;
     let mut quick_options_gles_override = crate::options::GlesOverrideVersion::Default;
     let mut quick_options_arm64_backend = crate::options::Arm64Backend::Interpreter;
@@ -1396,44 +1427,47 @@ fn app_picker_inner(
     // process exits.
     let app_path = loop {
         run_run_loop_single_iteration(env, main_run_loop);
-        let host_obj = env.objc.borrow_mut::<AppPickerDelegateHostObject>(delegate);
-        let icon_tapped = std::mem::take(&mut host_obj.icon_tapped);
+        let (icon_scroll_page, icon_tapped) = {
+            let host_obj = env.objc.borrow_mut::<AppPickerDelegateHostObject>(delegate);
+            (
+                std::mem::take(&mut host_obj.icon_scroll_page),
+                std::mem::take(&mut host_obj.icon_tapped),
+            )
+        };
+        if let Some(page) = icon_scroll_page {
+            current_page = page.min(
+                icon_grid_stuff
+                    .as_ref()
+                    .map_or(0, |grid| grid.pages.len().saturating_sub(1)),
+            );
+            if let Some(grid) = icon_grid_stuff.as_ref() {
+                let page: NSInteger = current_page as NSInteger;
+                () = msg![env; (grid.page_control) setCurrentPage:page];
+            }
+        }
         if icon_tapped != nil {
             match icon_grid_stuff.as_ref().unwrap().icon_map.get(&icon_tapped) {
                 Some(&TappedIcon::App(app_idx)) => {
-                    // Provide visual feedback that the app has been picked
-                    // (it may take a while for the splash screen to appear etc)
                     () = msg![env; icon_tapped setAlpha:(0.5 as CGFloat)];
-                    // Redraw screen, even if this makes the next frame early
-                    // (the app picker will never be redrawn after this).
                     crate::frameworks::core_animation::recomposite_if_necessary(
                         env, /* force: */ true,
                     );
-                    // Ensure touchHLE is responsive from the OS perspective,
-                    // otherwise screen redraw might not show up? (Unclear if
-                    // this explanation is correct.)
                     run_run_loop_single_iteration(env, main_run_loop);
 
                     let app_path = &apps.as_ref().unwrap()[app_idx].path;
                     echo!("Picked: {}", app_path.display());
                     break app_path.clone();
                 }
-                Some(&TappedIcon::ChangePage(page_idx)) => {
-                    current_page = page_idx;
-                    update_icon_grid(
-                        env,
-                        icon_grid_stuff.as_mut().unwrap(),
-                        apps.as_mut().unwrap(),
-                        page_idx,
-                    );
-                }
                 Some(&TappedIcon::AddIpa) => {
-                    host_obj.add_ipa = true;
+                    env.objc
+                        .borrow_mut::<AppPickerDelegateHostObject>(delegate)
+                        .add_ipa = true;
                 }
-                None => (), // Tapped on a black space
+                None => (),
             }
             continue;
         }
+        let host_obj = env.objc.borrow_mut::<AppPickerDelegateHostObject>(delegate);
         if std::mem::take(&mut host_obj.add_ipa) {
             awaited_ipa = Some(IpaWatch {
                 last_seen: list_top_level_ipa_files(&apps_dir),
@@ -1504,6 +1538,7 @@ fn app_picker_inner(
                 Ok(new_apps) if !new_apps.is_empty() => {
                     apps = Ok(new_apps);
                     if let Some(icon_grid) = icon_grid_stuff.as_mut() {
+                        remove_icon_grid(env, icon_grid);
                         *icon_grid = make_icon_grid(
                             env,
                             delegate,
@@ -1926,6 +1961,7 @@ fn app_picker_inner(
             () = msg![env; (quick_options_stuff.frame_generation_switch) setOn:enabled];
         } else if let Some(enabled) = std::mem::take(&mut host_obj.high_performance) {
             quick_options_high_performance = enabled;
+            () = msg![env; (quick_options_stuff.high_performance_switch) setOn:enabled];
             if !enabled {
                 quick_options_force_max_clocks = false;
             }
@@ -1933,6 +1969,7 @@ fn app_picker_inner(
             quick_options_force_max_clocks = enabled;
             if enabled {
                 quick_options_high_performance = true;
+                () = msg![env; (quick_options_stuff.high_performance_switch) setOn:true];
             }
         } else if let Some(fullscreen) = std::mem::take(&mut host_obj.fullscreen) {
             quick_options_fullscreen = match fullscreen {
@@ -2375,17 +2412,20 @@ fn picker_font(env: &mut Environment, size: CGFloat) -> id {
 
 enum TappedIcon {
     App(usize),
-    ChangePage(usize),
     AddIpa,
 }
+
+const ICON_SCROLL_TAG: NSInteger = 0x5248;
 
 struct IconGridStuff {
     icon_buttons_and_labels: Vec<(id, id)>,
     placeholder_icon: Option<id>,
-    prev_icon: Option<id>,
-    next_icon: Option<id>,
     plus_icon: Option<id>,
     pages: Vec<std::ops::Range<usize>>,
+    slots_per_page: usize,
+    icon_scroll_view: id,
+    page_control: id,
+    page_width: CGFloat,
     icon_map: HashMap<id, TappedIcon>,
 }
 
@@ -2411,6 +2451,8 @@ fn make_icon_grid(
     } else {
         4
     };
+    let slots_per_page = num_cols * num_rows;
+    let pages = compute_pages(slots_per_page, total_app_count);
     let label_size = CGSize {
         width: icon_size.width + 14.0 * ui_scale,
         height: 22.0 * ui_scale,
@@ -2422,104 +2464,146 @@ fn make_icon_grid(
         x: (app_frame.size.width - icon_grid_width) / 2.0,
         y: 16.0 * ui_scale,
     };
+    let grid_height = (app_frame.size.height - 220.0 * ui_scale).max(300.0 * ui_scale);
+    let page_width = app_frame.size.width;
+    let scroll_frame = CGRect {
+        origin: CGPoint { x: 0.0, y: 0.0 },
+        size: CGSize {
+            width: page_width,
+            height: grid_height,
+        },
+    };
+    let icon_scroll_view: id = msg_class![env; UIScrollView alloc];
+    let icon_scroll_view: id = msg![env; icon_scroll_view initWithFrame:scroll_frame];
+    () = msg![env; icon_scroll_view setTag:ICON_SCROLL_TAG];
+    () = msg![env; icon_scroll_view setDelegate:delegate];
+    () = msg![env; icon_scroll_view setPagingEnabled:true];
+    () = msg![env; icon_scroll_view setDirectionalLockEnabled:true];
+    () = msg![env; icon_scroll_view setScrollEnabled:true];
+    () = msg![env; icon_scroll_view setBounces:true];
+    () = msg![env; icon_scroll_view setAlwaysBounceHorizontal:(pages.len() > 1)];
+    () = msg![env; icon_scroll_view setAlwaysBounceVertical:false];
+    () = msg![env; icon_scroll_view setShowsHorizontalScrollIndicator:false];
+    () = msg![env; icon_scroll_view setShowsVerticalScrollIndicator:false];
+    () = msg![env; icon_scroll_view setContentSize:(CGSize {
+        width: page_width * pages.len() as CGFloat,
+        height: grid_height,
+    })];
+    () = msg![env; main_view addSubview:icon_scroll_view];
+
+    let page_control: id = msg_class![env; UIPageControl alloc];
+    let page_control: id = msg![env; page_control initWithFrame:(CGRect {
+        origin: CGPoint {
+            x: 0.0,
+            y: (grid_height - 28.0 * ui_scale).max(0.0),
+        },
+        size: CGSize {
+            width: page_width,
+            height: 28.0 * ui_scale,
+        },
+    })];
+    let page_count: NSInteger = pages.len() as NSInteger;
+    () = msg![env; page_control setNumberOfPages:page_count];
+    () = msg![env; page_control setCurrentPage:0];
+    () = msg![env; page_control setHidesForSinglePage:true];
+    () = msg![env; page_control setUserInteractionEnabled:false];
+    let inactive: id = msg_class![env; UIColor lightGrayColor];
+    let active: id = msg_class![env; UIColor darkGrayColor];
+    () = msg![env; page_control setPageIndicatorTintColor:inactive];
+    () = msg![env; page_control setCurrentPageIndicatorTintColor:active];
+    () = msg![env; main_view addSubview:page_control];
 
     let icon_tapped_sel = env.objc.lookup_selector("iconTapped:").unwrap();
-
     let mut icon_buttons_and_labels = Vec::new();
+    for page in 0..pages.len() {
+        for slot in 0..slots_per_page {
+            let col = slot % num_cols;
+            let row = slot / num_cols;
+            let icon_frame = CGRect {
+                origin: CGPoint {
+                    x: page_width * page as CGFloat
+                        + (icon_grid_origin.x + (col as CGFloat) * (icon_size.width + icon_gap_x))
+                            .round(),
+                    y: (icon_grid_origin.y + (row as CGFloat) * (icon_size.height + icon_gap_y))
+                        .round(),
+                },
+                size: icon_size,
+            };
+            let icon_button: id = msg_class![env; UIButton buttonWithType:UIButtonTypeCustom];
+            () = msg![env; icon_button setFrame:icon_frame];
+            let image_view: id = msg![env; icon_button imageView];
+            let bounds: CGRect = msg![env; icon_button bounds];
+            let inset = ICON_IMAGE_INSET * ui_scale;
+            () = msg![env; image_view setFrame:(CGRect {
+                origin: CGPoint { x: inset, y: inset },
+                size: CGSize {
+                    width: (bounds.size.width - inset * 2.0).max(1.0),
+                    height: (bounds.size.height - inset * 2.0).max(1.0),
+                },
+            })];
+            let layer: id = msg![env; image_view layer];
+            let gravity = ns_string::get_static_str(env, "resizeAspect");
+            () = msg![env; layer setContentsGravity:gravity];
+            () = msg![env; icon_button addTarget:delegate
+                                          action:icon_tapped_sel
+                                forControlEvents:UIControlEventTouchUpInside];
+            () = msg![env; icon_scroll_view addSubview:icon_button];
 
-    for i in 0..(num_cols * num_rows) {
-        let col = i % num_cols;
-        let row = i / num_cols;
-
-        // Rounding is needed here to avoid a blurry or offset image.
-        let icon_frame = CGRect {
-            origin: CGPoint {
-                x: (icon_grid_origin.x + (col as CGFloat) * (icon_size.width + icon_gap_x)).round(),
-                y: (icon_grid_origin.y + (row as CGFloat) * (icon_size.height + icon_gap_y))
-                    .round(),
-            },
-            size: icon_size,
-        };
-        let icon_button: id = msg_class![env; UIButton buttonWithType:UIButtonTypeCustom];
-        () = msg![env; icon_button setFrame:icon_frame];
-        let image_view: id = msg![env; icon_button imageView];
-        let bounds: CGRect = msg![env; icon_button bounds];
-        let inset = ICON_IMAGE_INSET * ui_scale;
-        () = msg![env; image_view setFrame:(CGRect {
-            origin: CGPoint { x: inset, y: inset },
-            size: CGSize {
-                width: (bounds.size.width - inset * 2.0).max(1.0),
-                height: (bounds.size.height - inset * 2.0).max(1.0),
-            },
-        })];
-        let layer: id = msg![env; image_view layer];
-        let gravity = ns_string::get_static_str(env, "resizeAspect");
-        () = msg![env; layer setContentsGravity:gravity];
-        () = msg![env; icon_button addTarget:delegate
-                                      action:icon_tapped_sel
-                            forControlEvents:UIControlEventTouchUpInside];
-        () = msg![env; main_view addSubview:icon_button];
-
-        // Rounding is needed here to avoid blurry text.
-        let label_frame = CGRect {
-            origin: CGPoint {
-                x: (icon_frame.origin.x - (label_size.width - icon_size.width) / 2.0).round(),
-                y: (icon_frame.origin.y + icon_size.height + 4.0 * ui_scale).round(),
-            },
-            size: label_size,
-        };
-        let label: id = msg_class![env; UILabel alloc];
-        let label: id = msg![env; label initWithFrame:label_frame];
-        () = msg![env; label setTextAlignment:UITextAlignmentCenter];
-        let font_size: CGFloat = (11.0 * ui_scale).max(8.0);
-        let font: id = picker_font(env, font_size);
-        () = msg![env; label setFont:font];
-        () = msg![env; label setNumberOfLines:2];
-        () = msg![env; label setAdjustsFontSizeToFitWidth:true];
-        () = msg![env; label setMinimumFontSize:8.0];
-        let text_color: id = if have_wallpaper {
-            msg_class![env; UIColor whiteColor]
-        } else {
-            msg_class![env; UIColor lightGrayColor]
-        };
-        () = msg![env; label setTextColor:text_color];
-        let bg_color: id = msg_class![env; UIColor clearColor];
-        () = msg![env; label setBackgroundColor:bg_color];
-        () = msg![env; main_view addSubview:label];
-
-        icon_buttons_and_labels.push((icon_button, label));
+            let label_frame = CGRect {
+                origin: CGPoint {
+                    x: (icon_frame.origin.x - (label_size.width - icon_size.width) / 2.0).round(),
+                    y: (icon_frame.origin.y + icon_size.height + 4.0 * ui_scale).round(),
+                },
+                size: label_size,
+            };
+            let label: id = msg_class![env; UILabel alloc];
+            let label: id = msg![env; label initWithFrame:label_frame];
+            () = msg![env; label setTextAlignment:UITextAlignmentCenter];
+            let font = picker_font(env, (11.0 * ui_scale).max(9.0));
+            () = msg![env; label setFont:font];
+            () = msg![env; label setNumberOfLines:2];
+            () = msg![env; label setAdjustsFontSizeToFitWidth:true];
+            () = msg![env; label setMinimumFontSize:8.0];
+            let text_color: id = if have_wallpaper {
+                msg_class![env; UIColor whiteColor]
+            } else {
+                msg_class![env; UIColor lightGrayColor]
+            };
+            () = msg![env; label setTextColor:text_color];
+            let clear: id = msg_class![env; UIColor clearColor];
+            () = msg![env; label setBackgroundColor:clear];
+            () = msg![env; icon_scroll_view addSubview:label];
+            icon_buttons_and_labels.push((icon_button, label));
+        }
     }
-
-    // TODO: Use UIScrollView pagination and UIPageControl once available.
-    let pages = compute_pages(icon_buttons_and_labels.len(), total_app_count);
 
     IconGridStuff {
         icon_buttons_and_labels,
         placeholder_icon: None,
-        prev_icon: None,
-        next_icon: None,
         plus_icon: None,
         pages,
+        slots_per_page,
+        icon_scroll_view,
+        page_control,
+        page_width,
         icon_map: HashMap::new(),
     }
 }
 
 fn compute_pages(total_slots: usize, total_app_count: usize) -> Vec<std::ops::Range<usize>> {
+    let capacity = total_slots.max(1);
     if total_app_count == 0 {
         return vec![0..0];
     }
-
     let mut pages = Vec::new();
     let mut start = 0;
     while start < total_app_count {
-        let page_idx = pages.len();
-        let reserved = usize::from(page_idx != 0) + usize::from(page_idx == 0);
-        let mut app_slots = total_slots.saturating_sub(reserved).max(1);
-        let remaining = total_app_count - start;
-        if remaining > app_slots {
-            app_slots = app_slots.saturating_sub(1).max(1);
-        }
-        let end = (start + app_slots).min(total_app_count);
+        let page_capacity = if pages.is_empty() {
+            capacity.saturating_sub(1).max(1)
+        } else {
+            capacity
+        };
+        let end = (start + page_capacity).min(total_app_count);
         pages.push(start..end);
         start = end;
     }
@@ -2594,81 +2678,75 @@ fn update_icon_grid(
     page_idx: usize,
 ) {
     icon_grid_stuff.icon_map.clear();
-
-    let app_idx_range = icon_grid_stuff.pages[page_idx].clone();
-    let have_prev_icon = page_idx != 0;
-    let have_next_icon = app_idx_range.end != apps.len();
-
+    let selected_page = page_idx.min(icon_grid_stuff.pages.len().saturating_sub(1));
     let mut icon_iter = icon_grid_stuff.icon_buttons_and_labels.iter();
 
-    if have_prev_icon {
-        let &(icon_button, label) = icon_iter.next().unwrap();
-        let image = *icon_grid_stuff.prev_icon.get_or_insert_with(|| {
-            make_icon_from_glyph(env, '←', 50.0, -9.0, (0.25, 0.25, 0.25, 1.0))
-        });
-        () = msg![env; icon_button setImage:image forState:UIControlStateNormal];
-        () = msg![env; label setText:(ns_string::get_static_str(env, ""))];
-        icon_grid_stuff
-            .icon_map
-            .insert(icon_button, TappedIcon::ChangePage(page_idx - 1));
-    }
-    if page_idx == 0 {
-        let &(icon_button, label) = icon_iter.next().unwrap();
-        let image = *icon_grid_stuff.plus_icon.get_or_insert_with(|| {
-            make_icon_from_glyph(env, '+', 50.0, -6.0, (0.25, 0.25, 0.25, 1.0))
-        });
-        () = msg![env; icon_button setImage:image forState:UIControlStateNormal];
-        () = msg![env; label setText:(ns_string::get_static_str(env, "Add game"))];
-        icon_grid_stuff
-            .icon_map
-            .insert(icon_button, TappedIcon::AddIpa);
-    }
+    for page in 0..icon_grid_stuff.pages.len() {
+        let app_range = icon_grid_stuff.pages[page].clone();
+        for slot in 0..icon_grid_stuff.slots_per_page {
+            let &(icon_button, label) = icon_iter.next().unwrap();
+            () = msg![env; icon_button setImage:nil forState:UIControlStateNormal];
+            let empty = ns_string::get_static_str(env, "");
+            () = msg![env; label setText:empty];
 
-    for app_idx in app_idx_range.clone() {
-        let app = &mut apps[app_idx];
+            if page == 0 && slot == 0 {
+                let image = *icon_grid_stuff.plus_icon.get_or_insert_with(|| {
+                    make_icon_from_glyph(env, '+', 50.0, -6.0, (0.25, 0.25, 0.25, 1.0))
+                });
+                () = msg![env; icon_button setImage:image forState:UIControlStateNormal];
+                let title = ns_string::get_static_str(env, "Add game");
+                () = msg![env; label setText:title];
+                icon_grid_stuff
+                    .icon_map
+                    .insert(icon_button, TappedIcon::AddIpa);
+                continue;
+            }
 
-        let &(icon_button, label) = icon_iter.next().unwrap();
-
-        if let Some(icon) = app.icon.take() {
-            let image = cg_image::from_image(env, icon);
-            let image: id = msg_class![env; UIImage imageWithCGImage:image];
-            app.icon_ui_image = Some(image);
+            let app_slot = if page == 0 {
+                slot.saturating_sub(1)
+            } else {
+                slot
+            };
+            let Some(app_idx) = app_range
+                .start
+                .checked_add(app_slot)
+                .filter(|index| *index < app_range.end)
+            else {
+                continue;
+            };
+            let app = &mut apps[app_idx];
+            if let Some(icon) = app.icon.take() {
+                let image = cg_image::from_image(env, icon);
+                let image: id = msg_class![env; UIImage imageWithCGImage:image];
+                app.icon_ui_image = Some(image);
+            }
+            let image = app.icon_ui_image.unwrap_or_else(|| {
+                *icon_grid_stuff.placeholder_icon.get_or_insert_with(|| {
+                    make_icon_from_glyph(env, '?', 40.0, 0.0, (0.5, 0.5, 0.5, 1.0))
+                })
+            });
+            () = msg![env; icon_button setImage:image forState:UIControlStateNormal];
+            let text = *app
+                .display_name_ns_string
+                .get_or_insert_with(|| ns_string::from_rust_string(env, app.display_name.clone()));
+            () = msg![env; label setText:text];
+            icon_grid_stuff
+                .icon_map
+                .insert(icon_button, TappedIcon::App(app_idx));
         }
-
-        let image = app.icon_ui_image.unwrap_or_else(|| {
-            *icon_grid_stuff.placeholder_icon.get_or_insert_with(|| {
-                make_icon_from_glyph(env, '?', 40.0, 0.0, (0.5, 0.5, 0.5, 1.0))
-            })
-        });
-        () = msg![env; icon_button setImage:image forState:UIControlStateNormal];
-
-        let text = *app
-            .display_name_ns_string
-            .get_or_insert_with(|| ns_string::from_rust_string(env, app.display_name.clone()));
-        () = msg![env; label setText:text];
-
-        icon_grid_stuff
-            .icon_map
-            .insert(icon_button, TappedIcon::App(app_idx));
     }
 
-    if have_next_icon {
-        let &(icon_button, label) = icon_iter.next().unwrap();
-        let image = *icon_grid_stuff.next_icon.get_or_insert_with(|| {
-            make_icon_from_glyph(env, '→', 50.0, -9.0, (0.25, 0.25, 0.25, 1.0))
-        });
-        () = msg![env; icon_button setImage:image forState:UIControlStateNormal];
-        () = msg![env; label setText:(ns_string::get_static_str(env, ""))];
-        icon_grid_stuff
-            .icon_map
-            .insert(icon_button, TappedIcon::ChangePage(page_idx + 1));
-    }
+    () = msg![env; (icon_grid_stuff.icon_scroll_view) setContentOffset:(CGPoint {
+        x: icon_grid_stuff.page_width * selected_page as CGFloat,
+        y: 0.0,
+    })];
+    let page: NSInteger = selected_page as NSInteger;
+    () = msg![env; (icon_grid_stuff.page_control) setCurrentPage:page];
+}
 
-    // There may be remaining spaces might need to be blanked.
-    for &(icon_button, label) in icon_iter {
-        () = msg![env; icon_button setImage:nil forState:UIControlStateNormal];
-        () = msg![env; label setText:(ns_string::get_static_str(env, ""))];
-    }
+fn remove_icon_grid(env: &mut Environment, icon_grid_stuff: &IconGridStuff) {
+    () = msg![env; (icon_grid_stuff.icon_scroll_view) removeFromSuperview];
+    () = msg![env; (icon_grid_stuff.page_control) removeFromSuperview];
 }
 
 fn make_app_launcher_grid(
@@ -3077,6 +3155,7 @@ struct QuickOptionsStuff {
     orientation_buttons: [id; 4],
     render_rotation_buttons: [id; 5],
     frame_generation_switch: id,
+    high_performance_switch: id,
     fps_limit_buttons: [id; 4],
     low_audio_quality_switch: id,
     no_texture_compression_switch: id,
@@ -3192,7 +3271,7 @@ fn setup_quick_options(
     () = msg![env; super_view addSubview:main_view];
 
     let ui_scale = picker_ui_scale(app_frame.size);
-    let divider = 112.0 * ui_scale;
+    let divider = 160.0 * ui_scale;
 
     let header_frame = CGRect {
         origin: CGPoint {
@@ -3238,19 +3317,14 @@ fn setup_quick_options(
     () = msg![env; subtitle setTextColor:black];
     () = msg![env; main_view addSubview:subtitle];
 
-    let category_titles = [
-        "Performance",
-        "Graphics",
-        "Compatibility",
-        "Video & display",
-    ];
+    let category_titles = ["Performance", "Graphics", "Compatibility", "Display"];
     let category_selectors = [
         "settingsRuntime",
         "settingsGraphics",
         "settingsSystem",
         "settingsVideoDisplay",
     ];
-    let category_button_width = (main_frame.size.width - 66.0 * ui_scale) / 4.0;
+    let category_button_width = (main_frame.size.width - 46.0 * ui_scale) / 2.0;
     let mut settings_category_buttons = [nil; 4];
     for (index, (title, selector_name)) in category_titles
         .iter()
@@ -3260,12 +3334,13 @@ fn setup_quick_options(
         let button: id = msg_class![env; UIButton buttonWithType:UIButtonTypeCustom];
         let frame = CGRect {
             origin: CGPoint {
-                x: 18.0 * ui_scale + index as CGFloat * (category_button_width + 10.0 * ui_scale),
-                y: 68.0 * ui_scale,
+                x: 18.0 * ui_scale
+                    + (index % 2) as CGFloat * (category_button_width + 10.0 * ui_scale),
+                y: 68.0 * ui_scale + (index / 2) as CGFloat * 42.0 * ui_scale,
             },
             size: CGSize {
                 width: category_button_width,
-                height: 36.0 * ui_scale,
+                height: 34.0 * ui_scale,
             },
         };
         () = msg![env; button setFrame:frame];
@@ -3273,9 +3348,10 @@ fn setup_quick_options(
         () = msg![env; button setTitle:text forState:UIControlStateNormal];
         let title_color: id = msg_class![env; UIColor blackColor];
         () = msg![env; button setTitleColor:title_color forState:UIControlStateNormal];
-        let font = picker_font(env, 14.0 * ui_scale);
+        let font = picker_font(env, 13.0 * ui_scale);
         let label: id = msg![env; button titleLabel];
         () = msg![env; label setFont:font];
+        () = msg![env; label setNumberOfLines:1];
         () = msg![env; label setAdjustsFontSizeToFitWidth:true];
         () = msg![env; button layoutSubviews];
         () = msg![env; button addTarget:delegate
@@ -3354,7 +3430,7 @@ fn setup_quick_options(
         RowKind::Category(0),
         RowKind::Label("High performance mode"),
         RowKind::Switch("highPerformance:", crate::options::DEFAULT_HIGH_PERFORMANCE),
-        RowKind::Label("Force max clocks (Adreno)"),
+        RowKind::Label("Maximum clocks hint (Adreno)"),
         RowKind::Switch("forceMaxClocks:", false),
         RowKind::Label("Frame pacing"),
         RowKind::Switch("framePacing:", true),
@@ -3367,8 +3443,6 @@ fn setup_quick_options(
         ]),
         RowKind::Label("Vsync"),
         RowKind::Switch("vsync:", false),
-        RowKind::Label("Frame generation"),
-        RowKind::Switch("frameGeneration:", false),
         RowKind::Label("Battery saver"),
         RowKind::Switch("batterySaver:", false),
         RowKind::Label("Ultra battery saver"),
@@ -3457,6 +3531,8 @@ fn setup_quick_options(
         RowKind::Label("Use analog sticks for tilt controls"),
         RowKind::Switch("analogStickTiltControls:", true),
         RowKind::Category(3),
+        RowKind::Label("Frame generation"),
+        RowKind::Switch("frameGeneration:", false),
         RowKind::Label("Scale hack"),
         RowKind::Buttons(&[
             ("Default", "scaleHackDefault"),
@@ -3523,6 +3599,7 @@ fn setup_quick_options(
     let mut vsync_switch: id = nil;
     let mut battery_saver_switch: id = nil;
     let mut ultra_battery_saver_switch: id = nil;
+    let mut high_performance_switch: id = nil;
     let mut verbose_logging_switch: id = nil;
     let mut fix_texture_min_filter_switch: id = nil;
     let mut force_composition_switch: id = nil;
@@ -3592,7 +3669,7 @@ fn setup_quick_options(
                 let clear: id = msg_class![env; UIColor clearColor];
                 () = msg![env; label setBackgroundColor:clear];
                 () = msg![env; label setAdjustsFontSizeToFitWidth:true];
-                () = msg![env; label setMinimumFontSize:8.0];
+                () = msg![env; label setMinimumFontSize:9.0];
                 () = msg![env; main_view addSubview:label];
                 settings_category_views[settings_category].push(label);
             }
@@ -3604,23 +3681,36 @@ fn setup_quick_options(
                     main_frame.size,
                     row_center,
                     buttons,
-                    /* font_size: */ Some(10.0),
+                    /* font_size: */ Some(10.5),
                 );
                 let margin = 6.0 * ui_scale;
                 let controls_width = main_frame.size.width * 0.56;
                 let controls_x = main_frame.size.width * 0.42;
-                let button_width = (controls_width - margin * (controls.len() as CGFloat + 1.0))
-                    / controls.len() as CGFloat;
+                let columns = if controls.len() > 6 {
+                    (controls.len() + 1) / 2
+                } else {
+                    controls.len()
+                };
+                let rows = controls.len().div_ceil(columns.max(1));
+                let button_width = (controls_width - margin * (columns as CGFloat + 1.0))
+                    / columns.max(1) as CGFloat;
+                let button_height = if rows > 1 { 25.0 } else { 30.0 } * ui_scale;
+                let row_gap = if rows > 1 { 4.0 } else { 0.0 } * ui_scale;
                 for (index, &button) in controls.iter().enumerate() {
                     settings_category_views[settings_category].push(button);
+                    let row = index / columns.max(1);
+                    let column = index % columns.max(1);
+                    let row_block_height = rows as CGFloat * button_height
+                        + rows.saturating_sub(1) as CGFloat * row_gap;
                     let button_frame = CGRect {
                         origin: CGPoint {
-                            x: controls_x + margin + index as CGFloat * (button_width + margin),
-                            y: row_center - 15.0 * ui_scale,
+                            x: controls_x + margin + column as CGFloat * (button_width + margin),
+                            y: row_center - row_block_height / 2.0
+                                + row as CGFloat * (button_height + row_gap),
                         },
                         size: CGSize {
                             width: button_width,
-                            height: 30.0 * ui_scale,
+                            height: button_height,
                         },
                     };
                     () = msg![env; button setFrame:button_frame];
@@ -3798,6 +3888,9 @@ fn setup_quick_options(
                 settings_category_views[settings_category].push(switch);
                 if selector_name == "frameGeneration:" {
                     frame_generation_switch = switch;
+                }
+                if selector_name == "highPerformance:" {
+                    high_performance_switch = switch;
                 }
                 if selector_name == "lowAudioQuality:" {
                     low_audio_quality_switch = switch;
@@ -4102,6 +4195,7 @@ fn setup_quick_options(
         orientation_buttons: orientation_buttons.unwrap_or([nil; 4]),
         render_rotation_buttons: render_rotation_buttons.unwrap_or([nil; 5]),
         frame_generation_switch,
+        high_performance_switch,
         fps_limit_buttons: fps_limit_buttons.unwrap_or([nil; 4]),
         low_audio_quality_switch,
         no_texture_compression_switch,
@@ -4255,6 +4349,10 @@ fn settings_menu_selected_green(env: &mut Environment) -> id {
     msg_class![env; UIColor colorWithRed:0.20 green:0.55 blue:0.30 alpha:1.0]
 }
 
+fn settings_category_gray(env: &mut Environment) -> id {
+    msg_class![env; UIColor colorWithRed:0.88 green:0.88 blue:0.90 alpha:1.0]
+}
+
 fn update_graphics_api_dropdown(
     env: &mut Environment,
     button: id,
@@ -4292,7 +4390,7 @@ fn select_settings_category(
 ) {
     let selected = selected.min(views.len().saturating_sub(1));
     let selected_color = settings_menu_selected_green(env);
-    let unselected_color = settings_menu_gray(env);
+    let unselected_color = settings_category_gray(env);
     let white: id = msg_class![env; UIColor whiteColor];
     let black: id = msg_class![env; UIColor blackColor];
     for (index, &button) in buttons.iter().enumerate() {

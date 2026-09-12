@@ -84,6 +84,9 @@ fn configure_surface(
 
 impl WgpuPresentation {
     pub fn new(window: &sdl2::video::Window) -> Result<Self, String> {
+        if cfg!(target_os = "android") {
+            return Err("Android SDL owns this native window through EGL/GLES; WGPU must use the existing GLES presentation path instead of attempting a Vulkan surface".to_string());
+        }
         let (backends, use_surface) = if cfg!(target_os = "android") {
             log!("WGPU Android presentation will try the native window surface first; GLES remains the fallback if the device rejects it");
             (wgpu::Backends::VULKAN | wgpu::Backends::GL, true)
@@ -105,7 +108,10 @@ impl WgpuPresentation {
     }
 
     pub fn new_vulkan(window: &sdl2::video::Window) -> Result<Self, String> {
-        log!("WGPU Vulkan presentation requested; forcing the native Vulkan window-surface path");
+        if cfg!(target_os = "android") {
+            return Err("Android SDL owns this native window through EGL/GLES; Vulkan cannot attach a second native surface without a separate Vulkan window".to_string());
+        }
+        log!("WGPU Vulkan presentation requested; using the native Vulkan window-surface path");
         Self::new_with_backends(window, wgpu::Backends::VULKAN, true)
     }
 

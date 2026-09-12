@@ -6,9 +6,14 @@
 //! `UIPageControl`.
 
 use super::ui_control::UIControlHostObject;
+use crate::frameworks::core_graphics::cg_context::{
+    CGContextFillEllipseInRect, CGContextSetRGBFillColor,
+};
+use crate::frameworks::core_graphics::{CGFloat, CGPoint, CGRect, CGSize};
 use crate::frameworks::foundation::NSInteger;
+use crate::frameworks::uikit::ui_graphics::UIGraphicsGetCurrentContext;
 use crate::objc::{
-    id, impl_HostObject_with_superclass, msg_class, nil, objc_classes, release, retain,
+    id, impl_HostObject_with_superclass, msg, msg_class, nil, objc_classes, release, retain,
     ClassExports, NSZonePtr,
 };
 
@@ -83,12 +88,12 @@ pub const CLASSES: ClassExports = objc_classes! {
     log_dbg!("UIPageControl setNumberOfPages:{}", number_of_pages);
     let host = env.objc.borrow_mut::<UIPageControlHostObject>(this);
     host.number_of_pages = number_of_pages;
-    // Clamp current page to valid range.
     if number_of_pages == 0 {
         host.current_page = 0;
     } else if host.current_page >= number_of_pages {
         host.current_page = number_of_pages - 1;
     }
+    () = msg![env; this setNeedsDisplay];
 }
 
 // MARK: - Current page
@@ -106,6 +111,57 @@ pub const CLASSES: ClassExports = objc_classes! {
         current_page.max(0).min(n - 1)
     };
     env.objc.borrow_mut::<UIPageControlHostObject>(this).current_page = clamped;
+    () = msg![env; this setNeedsDisplay];
+}
+
+- (())drawRect:(CGRect)_rect {
+    let context = UIGraphicsGetCurrentContext(env);
+    if context.is_null() {
+        return;
+    }
+    let bounds: CGRect = msg![env; this bounds];
+    let (number_of_pages, current_page, hidden) = {
+        let host = env.objc.borrow::<UIPageControlHostObject>(this);
+        (host.number_of_pages, host.current_page, host.hides_for_single_page)
+    };
+    if hidden && number_of_pages <= 1 {
+        return;
+    }
+    let number_of_pages = number_of_pages.max(0) as usize;
+    if number_of_pages == 0 {
+        return;
+    }
+    let active_diameter: CGFloat = 8.0;
+    let inactive_diameter: CGFloat = 6.0;
+    let gap: CGFloat = 7.0;
+    let total_width = if number_of_pages == 1 {
+        active_diameter
+    } else {
+        active_diameter + (number_of_pages.saturating_sub(1) as CGFloat) * (inactive_diameter + gap)
+    };
+    let mut x = (bounds.size.width - total_width) / 2.0;
+    let y = (bounds.size.height - active_diameter) / 2.0;
+    for index in 0..number_of_pages {
+        let active = index as NSInteger == current_page;
+        let diameter = if active { active_diameter } else { inactive_diameter };
+        let colour = if active { (0.18, 0.18, 0.22) } else { (0.58, 0.58, 0.62) };
+        CGContextSetRGBFillColor(env, context, colour.0, colour.1, colour.2, 1.0);
+        CGContextFillEllipseInRect(
+            env,
+            context,
+            CGRect {
+                origin: CGPoint {
+                    x,
+                    y: y + (active_diameter - diameter) / 2.0,
+                },
+                size: CGSize {
+                    width: diameter,
+                    height: diameter,
+                },
+            },
+        );
+        x += diameter + gap;
+    }
 }
 
 // MARK: - Display options
