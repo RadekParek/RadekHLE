@@ -3,6 +3,8 @@ package org.radekhle.android;
 import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Build;
+import android.os.Process;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.util.Log;
@@ -15,16 +17,18 @@ import java.io.InputStream;
 import java.io.OutputStream;
 
 public class MainActivity extends SDLActivity {
-    private static final String TAG = "RadekHLE";
+    private static final String TAG = "RadekHLE9.9";
     private static final int GAME_FOLDER_REQUEST = 4711;
     private static final int CUSTOM_DRIVER_REQUEST = 4712;
     private static final int ADD_IPA_REQUEST = 4713;
     private static final int ADD_IPA_MESSAGE = 0x8000;
     private static final int PERFORMANCE_MODE_MESSAGE = 0x8001;
+    private Object performanceHintSession;
 
     @Override
     protected String[] getLibraries() {
         return new String[]{
+            "c++_shared",
             "SDL2",
             "radekhle"
         };
@@ -47,13 +51,57 @@ public class MainActivity extends SDLActivity {
     private void applyPerformanceMode(int flags) {
         boolean highPerformance = (flags & 1) != 0;
         boolean maxClocks = (flags & 2) != 0;
-        if (android.os.Build.VERSION.SDK_INT >= 24) {
-            getWindow().setSustainedPerformanceMode(highPerformance || maxClocks);
+        boolean enabled = highPerformance || maxClocks;
+        if (Build.VERSION.SDK_INT >= 24) {
+            getWindow().setSustainedPerformanceMode(enabled);
+        }
+        if (enabled) {
+            getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        } else {
+            getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
+        updatePerformanceHintSession(enabled, maxClocks);
+        if (Build.VERSION.SDK_INT >= 30 && enabled) {
+            float refreshRate = getWindow().getWindowManager().getDefaultDisplay().getRefreshRate();
+            if (refreshRate > 0.0f) {
+                android.view.WindowManager.LayoutParams attributes = getWindow().getAttributes();
+                attributes.preferredRefreshRate = refreshRate;
+                getWindow().setAttributes(attributes);
+            }
         }
         Log.i(TAG, "Native sustained-performance hint "
-                + ((highPerformance || maxClocks) ? "enabled" : "disabled")
+                + (enabled ? "enabled" : "disabled")
                 + "; max-clocks request=" + maxClocks
-                + " (the device governor remains in control of actual clock rates)");
+                + " (Android governors still control the actual CPU/GPU clocks)");
+    }
+
+    private void updatePerformanceHintSession(boolean enabled, boolean maxClocks) {
+        if (Build.VERSION.SDK_INT < 31) return;
+        try {
+            if (!enabled) {
+                if (performanceHintSession != null) {
+                    performanceHintSession.getClass().getMethod("close").invoke(performanceHintSession);
+                    performanceHintSession = null;
+                }
+                return;
+            }
+            if (performanceHintSession == null) {
+                Object manager = getSystemService("performance_hint");
+                if (manager != null) {
+                    performanceHintSession = manager.getClass()
+                            .getMethod("createHintSession", int[].class, long.class)
+                            .invoke(manager, new int[]{Process.myTid()}, maxClocks ? 8_333_333L : 16_666_667L);
+                }
+            }
+            if (performanceHintSession != null) {
+                performanceHintSession.getClass()
+                        .getMethod("updateTargetWorkDuration", long.class)
+                        .invoke(performanceHintSession, maxClocks ? 8_333_333L : 16_666_667L);
+            }
+        } catch (Exception ex) {
+            Log.w(TAG, "Android performance hint session is unavailable", ex);
+            performanceHintSession = null;
+        }
     }
 
     private static void openIpaPicker() {
@@ -83,11 +131,11 @@ public class MainActivity extends SDLActivity {
         new Thread(() -> {
             int copied = copySelectedFolder(treeUri);
 
-            Log.i(TAG, "Imported " + copied + " files from the selected game folder; restarting RadekHLE to rescan all games.");
+            Log.i(TAG, "Imported " + copied + " files from the selected game folder; restarting RadekHLE9.9 to rescan all games.");
             if (mSingleton != null) {
                 mSingleton.runOnUiThread(() -> mSingleton.recreate());
             }
-        }, "RadekHLE-game-import").start();
+        }, "RadekHLE9.9-game-import").start();
     }
 
     private static int copySelectedFolder(Uri treeUri) {
@@ -98,10 +146,18 @@ public class MainActivity extends SDLActivity {
         }
         String documentId = DocumentsContract.getTreeDocumentId(treeUri);
         Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, documentId);
-        return copyDocumentChildren(childrenUri, treeUri, target);
+        String selectedName = selectedDocumentName(treeUri);
+        boolean selectedBundle = isGamePackageName(selectedName);
+        return copyDocumentChildren(childrenUri, treeUri, target, selectedBundle);
     }
 
-    private static int copyDocumentChildren(Uri childrenUri, Uri treeUri, File target) {
+    private static boolean isGamePackageName(String name) {
+        if (name == null) return false;
+        String lower = name.toLowerCase(java.util.Locale.ROOT);
+        return lower.endsWith(".ipa") || lower.endsWith(".app") || lower.endsWith(".zip");
+    }
+
+    private static int copyDocumentChildren(Uri childrenUri, Uri treeUri, File target, boolean copyAll) {
         String[] projection = {
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
             DocumentsContract.Document.COLUMN_DISPLAY_NAME,
@@ -118,11 +174,15 @@ public class MainActivity extends SDLActivity {
                 String name = cursor.getString(nameColumn);
                 String mimeType = cursor.getString(mimeColumn);
                 if (name == null || name.isEmpty() || name.equals(".") || name.equals("..")) continue;
+                if (!copyAll && !isGamePackageName(name)) {
+                    Log.i(TAG, "Skipping non-game entry in selected folder: " + name);
+                    continue;
+                }
                 File destination = new File(target, name);
                 if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mimeType)) {
                     if (destination.isDirectory() || destination.mkdirs()) {
                         Uri childUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, documentId);
-                        copied += copyDocumentChildren(childUri, treeUri, destination);
+                        copied += copyDocumentChildren(childUri, treeUri, destination, true);
                     } else {
                         Log.e(TAG, "Couldn't create imported game directory: " + destination);
                     }
@@ -184,7 +244,7 @@ public class MainActivity extends SDLActivity {
             if (copyDocumentUri(uri, destination)) {
                 Log.i(TAG, "Imported game: " + name + "; keeping the native app picker alive so Rust can rescan it.");
             }
-        }, "RadekHLE-game-import").start();
+        }, "RadekHLE9.9-game-import").start();
     }
 
     private static void importSelectedCustomDriver(Uri uri) {
@@ -206,7 +266,7 @@ public class MainActivity extends SDLActivity {
                     mSingleton.runOnUiThread(() -> mSingleton.recreate());
                 }
             }
-        }, "RadekHLE-custom-driver-import").start();
+        }, "RadekHLE9.9-custom-driver-import").start();
     }
 
     private static String selectedDocumentName(Uri uri) {
@@ -214,7 +274,7 @@ public class MainActivity extends SDLActivity {
                 new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
             if (cursor != null && cursor.moveToFirst()) return cursor.getString(0);
         } catch (Exception ex) {
-            Log.e(TAG, "Couldn't read selected custom driver name", ex);
+            Log.e(TAG, "Couldn't read selected document name", ex);
         }
         return null;
     }

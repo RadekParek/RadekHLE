@@ -8,34 +8,117 @@ use std::ffi::{c_void, CStr, CString};
 use std::marker::PhantomData;
 use std::path::Path;
 
-pub fn available() -> bool {
-    let Some(egl) = std::env::var_os("TOUCHHLE_LLVMPIPE_EGL") else {
-        return false;
-    };
-    let Some(gles) = std::env::var_os("TOUCHHLE_LLVMPIPE_GLES") else {
-        return false;
-    };
-    Path::new(&egl).is_file() && Path::new(&gles).is_file()
+fn library_spec_is_loadable(path: &Path) -> bool {
+    path.is_file()
+        || (path
+            .parent()
+            .is_some_and(|parent| parent.as_os_str().is_empty())
+            && !path.as_os_str().is_empty())
 }
 
-fn native_library_path(name: &str) -> Option<std::path::PathBuf> {
-    let candidates = if cfg!(target_arch = "x86_64") {
-        vec![
-            format!("/usr/lib/x86_64-linux-gnu/{name}"),
-            format!("/usr/lib/{name}"),
-        ]
+pub fn available() -> bool {
+    let egl = std::env::var_os("TOUCHHLE_LLVMPIPE_EGL")
+        .or_else(|| std::env::var_os("SDL_VIDEO_EGL_DRIVER"));
+    let gles = std::env::var_os("TOUCHHLE_LLVMPIPE_GLES")
+        .or_else(|| std::env::var_os("SDL_VIDEO_GL_DRIVER"));
+    match (egl, gles) {
+        (Some(egl), Some(gles))
+            if library_spec_is_loadable(Path::new(&egl))
+                && library_spec_is_loadable(Path::new(&gles)) =>
+        {
+            true
+        }
+        _ => {
+            let egl = native_library_path(&[
+                "libEGL_swiftshader.so",
+                "libEGL_mesa.so.0",
+                "libEGL_mesa.so",
+                "libEGL.so.1",
+                "libEGL.so",
+            ]);
+            let gles = native_library_path(&[
+                "libGLESv2_swiftshader.so",
+                "libGLESv2_mesa.so.2",
+                "libGLESv2_mesa.so",
+                "libGLESv2.so.2",
+                "libGLESv2.so",
+            ]);
+            egl.is_some() && gles.is_some()
+        }
+    }
+}
+
+fn find_library_below(root: &Path, name: &str, depth: u8) -> Option<std::path::PathBuf> {
+    let entries = std::fs::read_dir(root).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() && path.file_name().is_some_and(|file| file == name) {
+            return Some(path);
+        }
+        if depth > 0 && path.is_dir() {
+            if let Some(found) = find_library_below(&path, name, depth - 1) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn native_library_path(names: &[&str]) -> Option<std::path::PathBuf> {
+    let mut roots = Vec::new();
+    if cfg!(target_os = "android") {
+        let base = crate::paths::user_data_base_path();
+        roots.extend([
+            base.join("mesa"),
+            base.join("llvmpipe"),
+            base.join("drivers/mesa"),
+            std::path::PathBuf::from("/data/local/tmp/radekhle/mesa"),
+            std::path::PathBuf::from("/data/local/tmp/mesa"),
+        ]);
+        for root in roots.iter() {
+            for name in names {
+                if let Some(path) = find_library_below(root, name, 3) {
+                    return Some(path);
+                }
+            }
+        }
+        let system_names = names
+            .iter()
+            .copied()
+            .filter(|name| name.contains("_mesa") || name.contains("_swiftshader"));
+        for root in [
+            std::path::Path::new("/system/lib64"),
+            std::path::Path::new("/system/lib"),
+            std::path::Path::new("/system_ext/lib64"),
+            std::path::Path::new("/system_ext/lib"),
+            std::path::Path::new("/apex/com.android.angle/lib64"),
+            std::path::Path::new("/apex/com.android.angle/lib"),
+            std::path::Path::new("/vendor/lib64/egl"),
+            std::path::Path::new("/vendor/lib/egl"),
+        ] {
+            for name in system_names.clone() {
+                if let Some(path) = find_library_below(root, name, 2) {
+                    return Some(path);
+                }
+            }
+        }
+        return None;
+    }
+
+    if cfg!(target_arch = "x86_64") {
+        roots.push(std::path::PathBuf::from("/usr/lib/x86_64-linux-gnu"));
     } else if cfg!(target_arch = "aarch64") {
-        vec![
-            format!("/usr/lib/aarch64-linux-gnu/{name}"),
-            format!("/usr/lib/{name}"),
-        ]
-    } else {
-        vec![format!("/usr/lib/{name}")]
-    };
-    candidates
-        .into_iter()
-        .map(std::path::PathBuf::from)
-        .find(|path| path.is_file())
+        roots.push(std::path::PathBuf::from("/usr/lib/aarch64-linux-gnu"));
+    }
+    roots.push(std::path::PathBuf::from("/usr/lib"));
+    for root in roots {
+        for name in names {
+            if let Some(path) = find_library_below(&root, name, 1) {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 pub fn configure(enabled: bool) -> bool {
@@ -45,38 +128,48 @@ pub fn configure(enabled: bool) -> bool {
     let egl = std::env::var_os("TOUCHHLE_LLVMPIPE_EGL")
         .map(std::path::PathBuf::from)
         .or_else(|| {
-            if cfg!(target_os = "android") {
-                None
-            } else {
-                native_library_path("libEGL_mesa.so.0")
-                    .or_else(|| native_library_path("libEGL.so.1"))
-            }
+            native_library_path(&[
+                "libEGL_swiftshader.so",
+                "libEGL_mesa.so.0",
+                "libEGL_mesa.so",
+                "libEGL.so.1",
+                "libEGL.so",
+            ])
         });
     let gles = std::env::var_os("TOUCHHLE_LLVMPIPE_GLES")
         .map(std::path::PathBuf::from)
         .or_else(|| {
-            if cfg!(target_os = "android") {
-                None
-            } else {
-                native_library_path("libGLESv2_mesa.so.2")
-                    .or_else(|| native_library_path("libGLESv2.so.2"))
-            }
+            native_library_path(&[
+                "libGLESv2_swiftshader.so",
+                "libGLESv2_mesa.so.2",
+                "libGLESv2_mesa.so",
+                "libGLESv2.so.2",
+                "libGLESv2.so",
+            ])
         });
     let (Some(egl), Some(gles)) = (egl, gles) else {
-        log_once!("LLVMPipe fallback enabled but no native Mesa EGL/GLES libraries were found; set TOUCHHLE_LLVMPIPE_EGL and TOUCHHLE_LLVMPIPE_GLES to provide them");
+        log_once!(
+            "Native Android CPU rasterizer libraries were not found; using RadekHLE9.9's built-in CPU rasterizer"
+        );
         return false;
     };
-    if !egl.is_file() || !gles.is_file() {
-        log_once!("LLVMPipe fallback enabled but configured Mesa libraries were not found");
+    if !library_spec_is_loadable(&egl) || !library_spec_is_loadable(&gles) {
+        log_once!(
+            "Configured native CPU rasterizer libraries were not found; using RadekHLE9.9's built-in CPU rasterizer"
+        );
         return false;
     }
     unsafe {
         std::env::set_var("SDL_VIDEO_EGL_DRIVER", &egl);
         std::env::set_var("SDL_VIDEO_GL_DRIVER", &gles);
+        std::env::set_var("TOUCHHLE_LLVMPIPE_EGL", &egl);
+        std::env::set_var("TOUCHHLE_LLVMPIPE_GLES", &gles);
     }
     sdl2::hint::set("SDL_OPENGL_ES_DRIVER", "1");
     std::env::set_var("GALLIUM_DRIVER", "llvmpipe");
-    log_once!("LLVMPipe fallback active: using configured Mesa EGL/GLES libraries");
+    std::env::set_var("MESA_LOADER_DRIVER_OVERRIDE", "llvmpipe");
+    std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
+    log_once!("Native CPU rasterizer active: using the discovered EGL/GLES libraries");
     true
 }
 
@@ -204,14 +297,14 @@ impl SoftwareState {
         let width = width.max(1) as usize;
         let height = height.max(1) as usize;
         let mut strings = HashMap::new();
-        strings.insert(gl::VENDOR, CString::new("RadekHLE").unwrap());
+        strings.insert(gl::VENDOR, CString::new("RadekHLE9.9").unwrap());
         strings.insert(
             gl::RENDERER,
-            CString::new("RadekHLE CPU rasterizer").unwrap(),
+            CString::new("RadekHLE9.9 CPU rasterizer").unwrap(),
         );
         strings.insert(
             gl::VERSION,
-            CString::new("OpenGL ES 3.0 RadekHLE CPU rasterizer").unwrap(),
+            CString::new("OpenGL ES 3.0 RadekHLE9.9 CPU rasterizer").unwrap(),
         );
         strings.insert(
             gl::EXTENSIONS,
@@ -713,7 +806,7 @@ impl GLES for SoftwareGLES<'_> {
     }
 
     unsafe fn driver_description(&self) -> String {
-        "OpenGL ES 3.0 / RadekHLE / CPU rasterizer".to_owned()
+        "OpenGL ES 3.0 / RadekHLE9.9 / CPU rasterizer".to_owned()
     }
     unsafe fn GetError(&mut self) -> GLenum {
         let value = self.state.error;

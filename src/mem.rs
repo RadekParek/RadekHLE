@@ -302,6 +302,7 @@ impl<T: SafeRead> SafeWrite for T {}
 type Bytes = [u8; 1 << 32];
 pub const PAGE_SIZE: GuestUSize = 4096;
 pub const PAGE_SIZE_ALIGN_MASK: GuestUSize = 0xfff;
+const MAX_DEFENSIVE_GUEST_ACCESS: GuestUSize = 64 * 1024 * 1024;
 
 /// The type that owns the guest memory and provides accessors for it.
 pub struct Mem {
@@ -479,6 +480,12 @@ impl Mem {
         unsafe { &mut *self.bytes }
     }
 
+    #[inline]
+    fn invalid_access(&self, addr: VAddr, size: GuestUSize) -> bool {
+        let end = u64::from(addr) + u64::from(size);
+        addr < self.null_segment_size || end > self.bytes().len() as u64
+    }
+
     // Soft handler for null-page accesses. No panic; returns a stub page.
     // Rate-limited: only the first N unique (addr, is_write) pairs are logged,
     // further occurrences are silently counted. This prevents the log from
@@ -493,7 +500,7 @@ impl Mem {
 
         let mut guard = SEEN.lock().unwrap();
         let set = guard.get_or_insert_with(HashSet::new);
-        let key = (at, is_write);
+        let key = (if at < PAGE_SIZE { 0 } else { at }, is_write);
         if set.contains(&key) {
             return;
         }
@@ -580,6 +587,10 @@ impl Mem {
     #[inline(always)]
     pub fn bytes_at<const MUT: bool>(&self, ptr: Ptr<u8, MUT>, count: GuestUSize) -> &[u8] {
         let _perf_scope = crate::perf::memory_scope();
+        if count > MAX_DEFENSIVE_GUEST_ACCESS {
+            Self::null_check_fail(ptr.to_bits(), count, false, "bytes_at(oversized)");
+            return unsafe { std::slice::from_raw_parts(self.null_stub_page, PAGE_SIZE as usize) };
+        }
         // ХАК: Вместо паники логируем и возвращаем данные из stub-страницы
         if ptr.to_bits() < self.null_segment_size {
             Self::null_check_fail(ptr.to_bits(), count, false, "bytes_at");
@@ -664,6 +675,12 @@ impl Mem {
     #[inline(always)]
     pub fn bytes_at_mut(&mut self, ptr: MutPtr<u8>, count: GuestUSize) -> &mut [u8] {
         let _perf_scope = crate::perf::memory_scope();
+        if count > MAX_DEFENSIVE_GUEST_ACCESS {
+            Self::null_check_fail(ptr.to_bits(), count, true, "bytes_at_mut(oversized)");
+            return unsafe {
+                std::slice::from_raw_parts_mut(self.null_write_sink, PAGE_SIZE as usize)
+            };
+        }
         let count_usize = count as usize;
         // ХАК: Вместо паники логируем и возвращаем данные из stub-страницы
         if ptr.to_bits() < self.null_segment_size {
@@ -789,10 +806,15 @@ impl Mem {
     where
         T: SafeRead,
     {
-        // This is unsafe unless we are careful with which types SafeRead is
-        // implemented for!
-        // This would also be unsafe if the non-unaligned method was used.
-        unsafe { self.ptr_at(ptr, 1).read_unaligned() }
+        let addr = ptr.to_bits();
+        let size = guest_size_of::<T>();
+        if self.invalid_access(addr, size) {
+            Self::null_check_fail(addr, size, false, "read");
+            return unsafe { std::mem::zeroed() };
+        }
+        let bytes = self.bytes();
+        let ptr = unsafe { bytes.as_ptr().add(addr as usize).cast::<T>() };
+        unsafe { ptr.read_unaligned() }
     }
     /// Write a value to memory.
     /// This is the preferred way to write memory in
@@ -801,13 +823,15 @@ impl Mem {
     where
         T: SafeWrite,
     {
+        let addr = ptr.to_bits();
         let size = guest_size_of::<T>();
         assert!(size > 0);
-        let slice = self.bytes_at_mut(ptr.cast(), size);
-        let ptr: *mut T = slice.as_mut_ptr().cast();
-        // It's unaligned because what is well-aligned for the guest is not
-        // necessarily well-aligned for the host.
-        // This would be unsafe if the non-unaligned method was used.
+        if self.invalid_access(addr, size) {
+            Self::null_check_fail(addr, size, true, "write");
+            return;
+        }
+        let bytes = self.bytes_mut();
+        let ptr = unsafe { bytes.as_mut_ptr().add(addr as usize).cast::<T>() };
         unsafe { ptr.write_unaligned(value) }
     }
 
@@ -1097,6 +1121,21 @@ mod mem_tests {
             mem.write(p, 0xAB);
             assert_eq!(mem.read(p.cast_const()), 0xAB);
         }
+    }
+
+    #[test]
+    fn null_page_reads_are_zero_and_writes_are_discarded() {
+        let mut mem = Mem::new();
+        mem.set_null_segment_size(super::PAGE_SIZE);
+
+        let null: Ptr<u32, true> = Ptr::from_bits(0);
+        assert_eq!(mem.read(null.cast_const()), 0);
+        mem.write(null, 0xdead_beef);
+        assert_eq!(mem.read(null.cast_const()), 0);
+
+        let near_top: Ptr<u32, true> = Ptr::from_bits(u32::MAX);
+        assert_eq!(mem.read(near_top.cast_const()), 0);
+        mem.write(near_top, 0xdead_beef);
     }
 
     #[test]

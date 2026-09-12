@@ -306,6 +306,7 @@ struct AppPickerDelegateHostObject {
     copyright_next: bool,
     quick_options_show: bool,
     quick_options_hide: bool,
+    settings_category: Option<usize>,
     scale_hack_default: bool,
     scale_hack1: bool,
     scale_hack_half: bool,
@@ -369,6 +370,7 @@ struct AppPickerDelegateHostObject {
     gles_override_version: Option<crate::options::GlesOverrideVersion>,
     texture_filtering_toggle: bool,
     texture_filtering: Option<crate::options::TextureFiltering>,
+    pvrtc_decoding: Option<crate::options::PvrtcDecoding>,
     memory_management_toggle: bool,
     memory_management: Option<crate::options::MemoryManagement>,
     arm64_backend: Option<crate::options::Arm64Backend>,
@@ -428,6 +430,15 @@ const CLASSES: ClassExports = objc_classes! {
 }
 - (())quickOptionsHide {
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).quick_options_hide = true;
+}
+- (())settingsRuntime {
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).settings_category = Some(0);
+}
+- (())settingsGraphics {
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).settings_category = Some(1);
+}
+- (())settingsSystem {
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).settings_category = Some(2);
 }
 - (())scaleHackDefault {
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).scale_hack_default = true;
@@ -644,7 +655,7 @@ const CLASSES: ClassExports = objc_classes! {
 }
 - (())highPerformance:(id)switch {
     let switch_state: bool = msg![env; switch isOn];
-    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).high_performance = Some(switch_state);
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).high_performance = Some(crate::options::DEFAULT_HIGH_PERFORMANCE);
 }
 - (())forceMaxClocks:(id)switch {
     let switch_state: bool = msg![env; switch isOn];
@@ -691,6 +702,9 @@ const CLASSES: ClassExports = objc_classes! {
     let switch_state: bool = msg![env; switch isOn];
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).no_texture_compression = Some(switch_state);
 }
+- (())pvrtcDecodingSoftware { env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).pvrtc_decoding = Some(crate::options::PvrtcDecoding::Software); }
+- (())pvrtcDecodingAuto { env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).pvrtc_decoding = Some(crate::options::PvrtcDecoding::Auto); }
+- (())pvrtcDecodingDriver { env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).pvrtc_decoding = Some(crate::options::PvrtcDecoding::Driver); }
 - (())antiAliasing:(id)sender {
     let tag: NSInteger = msg![env; sender tag];
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).anti_aliasing = Some(tag as u8);
@@ -990,7 +1004,7 @@ fn app_picker_inner(
         let text = ns_string::from_rust_string(
             env,
             format!(
-                "RadekHLE 7.0 {}{}{}",
+                "RadekHLE9.9 {}{}{}",
                 crate::branding(),
                 if crate::branding().is_empty() {
                     ""
@@ -1083,13 +1097,13 @@ fn app_picker_inner(
     let mut quick_options_revert_x_axis = false;
     let mut quick_options_revert_y_axis = false;
     let mut quick_options_analog_stick_tilt_controls = true;
-    let mut quick_options_network = false;
+    let mut quick_options_network = true;
     let mut quick_options_rtcs = false;
     let mut quick_options_show_fps = true;
     let mut quick_options_frame_pacing = true;
     let mut quick_options_fps_limit: Option<f64> = None;
     let mut quick_options_frame_generation = false;
-    let mut quick_options_high_performance = false;
+    let mut quick_options_high_performance = crate::options::DEFAULT_HIGH_PERFORMANCE;
     let mut quick_options_force_max_clocks = false;
     let mut quick_options_vsync = false;
     let mut quick_options_battery_saver = false;
@@ -1113,13 +1127,13 @@ fn app_picker_inner(
     let mut quick_options_graphics_api = crate::options::GraphicsApi::Default;
     let mut quick_options_audio_backend = crate::options::AudioBackend::Default;
     let mut quick_options_texture_filtering = crate::options::TextureFiltering::Default;
+    let mut quick_options_pvrtc_decoding = crate::options::PvrtcDecoding::default();
     let mut quick_options_memory_management = crate::options::MemoryManagement::Balanced;
     let mut quick_options_gles_override = crate::options::GlesOverrideVersion::Default;
     let mut quick_options_arm64_backend = crate::options::Arm64Backend::Interpreter;
     let mut quick_options_arm64_fallback = crate::options::Arm64Fallback::Interpreter;
     let mut quick_options_llvmpipe_fallback = false;
     let mut quick_options_metal_translator = cfg!(target_arch = "aarch64");
-    let mut quick_options_software_rendering = false;
     let mut quick_options_custom_driver = false;
     let mut quick_options_anisotropic_filtering = 1u8;
     let mut quick_options_texture_upscaler = 1u8;
@@ -1168,6 +1182,20 @@ fn app_picker_inner(
                 .iter()
                 .position(|choice| *choice == value)
                 .unwrap_or(0);
+            update_quick_option_buttons(env, buttons, selected);
+        }
+    }
+    fn update_pvrtc_decoding_buttons(
+        env: &mut Environment,
+        groups: &[Vec<id>],
+        value: crate::options::PvrtcDecoding,
+    ) {
+        let selected = match value {
+            crate::options::PvrtcDecoding::Software => 0,
+            crate::options::PvrtcDecoding::Auto => 1,
+            crate::options::PvrtcDecoding::Driver => 2,
+        };
+        if let Some(buttons) = groups.get(3) {
             update_quick_option_buttons(env, buttons, selected);
         }
     }
@@ -1292,6 +1320,11 @@ fn app_picker_inner(
         2,
         &[1, 2, 3, 4],
         quick_options_texture_upscaler,
+    );
+    update_pvrtc_decoding_buttons(
+        env,
+        &quick_options_stuff.quality_buttons,
+        quick_options_pvrtc_decoding,
     );
     () = msg![env; (quick_options_stuff.no_texture_compression_switch)
         setOn:quick_options_no_texture_compression];
@@ -1438,6 +1471,25 @@ fn app_picker_inner(
         } else if std::mem::take(&mut host_obj.quick_options_hide) {
             animate_picker_panel(env, quick_options_stuff.main_view, false);
             animate_picker_panel(env, quick_options_stuff.settings_backdrop, false);
+        } else if let Some(category) = std::mem::take(&mut host_obj.settings_category) {
+            let menus = [
+                quick_options_stuff.ios_version_menu,
+                quick_options_stuff.device_model_menu,
+                quick_options_stuff.graphics_api_menu,
+                quick_options_stuff.gles_override_menu,
+                quick_options_stuff.texture_filtering_menu,
+                quick_options_stuff.memory_management_menu,
+                quick_options_stuff.audio_backend_menu,
+                quick_options_stuff.custom_resolution_menu,
+                quick_options_stuff.custom_resolution_editor,
+            ];
+            select_settings_category(
+                env,
+                &quick_options_stuff.settings_category_views,
+                &quick_options_stuff.settings_category_buttons,
+                &menus,
+                category,
+            );
         } else if std::mem::take(&mut host_obj.apps_refresh_requested) {
             let apps_dir = paths::user_data_base_path().join(paths::APPS_DIR);
             match enumerate_apps(&apps_dir) {
@@ -1517,6 +1569,9 @@ fn app_picker_inner(
                 value as usize,
             );
             () = msg![env; (quick_options_stuff.texture_filtering_menu) setHidden:true];
+        } else if let Some(value) = std::mem::take(&mut host_obj.pvrtc_decoding) {
+            quick_options_pvrtc_decoding = value;
+            update_pvrtc_decoding_buttons(env, &quick_options_stuff.quality_buttons, value);
         } else if std::mem::take(&mut host_obj.memory_management_toggle) {
             toggle_settings_dropdown(
                 env,
@@ -1837,10 +1892,16 @@ fn app_picker_inner(
             quick_options_vsync = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.battery_saver) {
             quick_options_battery_saver = enabled;
+            if enabled {
+                quick_options_high_performance = false;
+                quick_options_force_max_clocks = false;
+            }
         } else if let Some(enabled) = std::mem::take(&mut host_obj.ultra_battery_saver) {
             quick_options_ultra_battery_saver = enabled;
             if enabled {
                 quick_options_battery_saver = true;
+                quick_options_high_performance = false;
+                quick_options_force_max_clocks = false;
                 () = msg![env; (quick_options_stuff.battery_saver_switch) setOn:true];
             }
             () = msg![env; (quick_options_stuff.ultra_battery_saver_switch) setOn:enabled];
@@ -1881,8 +1942,6 @@ fn app_picker_inner(
         } else if let Some(enabled) = std::mem::take(&mut host_obj.low_audio_quality) {
             quick_options_low_audio_quality = enabled;
             () = msg![env; (quick_options_stuff.low_audio_quality_switch) setOn:enabled];
-        } else if let Some(enabled) = std::mem::take(&mut host_obj.software_rendering) {
-            quick_options_software_rendering = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.custom_driver) {
             quick_options_custom_driver = enabled;
             if enabled {
@@ -2012,6 +2071,8 @@ fn app_picker_inner(
     }
     if quick_options_network {
         option_args.push("--allow-network-access".to_string());
+    } else {
+        option_args.push("--disable-network-access".to_string());
     }
     option_args.push(
         if quick_options_rtcs {
@@ -2089,9 +2150,6 @@ fn app_picker_inner(
         }
         .to_string(),
     );
-    if quick_options_software_rendering {
-        option_args.push("--software-rendering".to_string());
-    }
     if quick_options_custom_driver {
         option_args.push("--custom-driver=touchHLE_custom_drivers".to_string());
     } else {
@@ -2131,6 +2189,10 @@ fn app_picker_inner(
         }
         .to_string(),
     );
+    option_args.push(format!(
+        "--pvrtc-decoding={}",
+        quick_options_pvrtc_decoding.short_name()
+    ));
     option_args.push(
         if quick_options_no_texture_compression {
             "--no-texture-compression"
@@ -2150,9 +2212,7 @@ fn app_picker_inner(
             crate::options::GraphicsApi::GLES30 => "gles3.0",
             crate::options::GraphicsApi::Wgpu => "wgpu",
             crate::options::GraphicsApi::Vulkan => "vulkan",
-            crate::options::GraphicsApi::Software => {
-                unreachable!("software rendering is standalone")
-            }
+            crate::options::GraphicsApi::Software => "software",
             crate::options::GraphicsApi::Metal => "metal",
             crate::options::GraphicsApi::Default => unreachable!(),
         };
@@ -2962,6 +3022,8 @@ fn change_copyright_page(
 struct QuickOptionsStuff {
     main_view: id,
     settings_backdrop: id,
+    settings_category_buttons: [id; 3],
+    settings_category_views: [Vec<id>; 3],
     ios_version_btn: id,
     ios_version_menu: id,
     ios_version_items: Vec<id>,
@@ -3152,6 +3214,40 @@ fn setup_quick_options(
     () = msg![env; subtitle setTextColor:black];
     () = msg![env; main_view addSubview:subtitle];
 
+    let category_titles = ["Runtime", "Graphics", "System"];
+    let category_selectors = ["settingsRuntime", "settingsGraphics", "settingsSystem"];
+    let category_button_width = (main_frame.size.width - 56.0 * ui_scale) / 3.0;
+    let mut settings_category_buttons = [nil; 3];
+    for (index, (title, selector_name)) in category_titles
+        .iter()
+        .zip(category_selectors.iter())
+        .enumerate()
+    {
+        let button: id = msg_class![env; UIButton buttonWithType:UIButtonTypeCustom];
+        let frame = CGRect {
+            origin: CGPoint {
+                x: 18.0 * ui_scale + index as CGFloat * (category_button_width + 10.0 * ui_scale),
+                y: 68.0 * ui_scale,
+            },
+            size: CGSize {
+                width: category_button_width,
+                height: 34.0 * ui_scale,
+            },
+        };
+        () = msg![env; button setFrame:frame];
+        let text = ns_string::get_static_str(env, title);
+        () = msg![env; button setTitle:text forState:UIControlStateNormal];
+        let font = picker_font(env, 13.0 * ui_scale);
+        let label: id = msg![env; button titleLabel];
+        () = msg![env; label setFont:font];
+        () = msg![env; label setAdjustsFontSizeToFitWidth:true];
+        () = msg![env; button addTarget:delegate
+                                 action:(env.objc.lookup_selector(selector_name).unwrap())
+                       forControlEvents:UIControlEventTouchUpInside];
+        () = msg![env; main_view addSubview:button];
+        settings_category_buttons[index] = button;
+    }
+
     // Close button (×) in the upper right corner. It uses an explicit border
     // and a slightly larger frame than the title so the glyph is clearly
     // visible against the white menu background.
@@ -3202,6 +3298,7 @@ fn setup_quick_options(
     }
 
     enum RowKind {
+        Category(usize),
         Label(&'static str),
         Buttons(&'static [(&'static str, &'static str)]),
         /// Dropdown listing every selectable device model.
@@ -3216,6 +3313,7 @@ fn setup_quick_options(
         Switch(&'static str, bool),
     }
     let rows = [
+        RowKind::Category(0),
         RowKind::Label("iOS version"),
         RowKind::IosVersionDropdown,
         RowKind::Label("Audio backend"),
@@ -3224,10 +3322,13 @@ fn setup_quick_options(
         RowKind::Switch("coreAudio:", false),
         RowKind::Label("Lower audio quality"),
         RowKind::Switch("lowAudioQuality:", false),
+        RowKind::Category(1),
         RowKind::Label("Graphics API"),
         RowKind::GraphicsApiDropdown,
+        RowKind::Label("GLES override version"),
+        RowKind::GlesOverrideDropdown,
         RowKind::Label("High performance mode"),
-        RowKind::Switch("highPerformance:", false),
+        RowKind::Switch("highPerformance:", crate::options::DEFAULT_HIGH_PERFORMANCE),
         RowKind::Label("Force max clocks (Adreno)"),
         RowKind::Switch("forceMaxClocks:", false),
         RowKind::Label("Shader compatibility fixes"),
@@ -3236,16 +3337,12 @@ fn setup_quick_options(
         RowKind::Switch("fixTextureMinFilter:", cfg!(target_os = "android")),
         RowKind::Label("Force Core Animation composition"),
         RowKind::Switch("forceComposition:", false),
-        RowKind::Label("GLES override version"),
-        RowKind::GlesOverrideDropdown,
         RowKind::Label("Custom driver"),
         RowKind::Switch("customDriver:", false),
         RowKind::Label("Custom driver files"),
         RowKind::Buttons(&[("Select ZIP file", "openCustomDriverFolder")]),
         RowKind::Label("Vsync"),
         RowKind::Switch("vsync:", false),
-        RowKind::Label("Software rendering (CPU only)"),
-        RowKind::Switch("softwareRendering:", false),
         RowKind::Label("Frame generation"),
         RowKind::Switch("frameGeneration:", false),
         RowKind::Label("Anisotropic filtering"),
@@ -3272,8 +3369,15 @@ fn setup_quick_options(
         ]),
         RowKind::Label("Texture filtering"),
         RowKind::TextureFilteringDropdown,
+        RowKind::Label("PVRTC decoding"),
+        RowKind::Buttons(&[
+            ("Software", "pvrtcDecodingSoftware"),
+            ("Automatic", "pvrtcDecodingAuto"),
+            ("Host driver", "pvrtcDecodingDriver"),
+        ]),
         RowKind::Label("No texture compression"),
         RowKind::Switch("noTextureCompression:", false),
+        RowKind::Category(2),
         RowKind::Label("Battery saver"),
         RowKind::Switch("batterySaver:", false),
         RowKind::Label("Ultra battery saver"),
@@ -3287,7 +3391,7 @@ fn setup_quick_options(
         RowKind::Label("LLVMPipe fallback"),
         RowKind::Switch("llvmpipeFallback:", false),
         RowKind::Label("Metal translator (ARM64)"),
-        RowKind::Switch("metalTranslator:", false),
+        RowKind::Switch("metalTranslator:", cfg!(target_arch = "aarch64")),
         RowKind::Label("Game folder"),
         RowKind::Buttons(&[
             ("Open folder", "openFileManager"),
@@ -3329,7 +3433,7 @@ fn setup_quick_options(
         RowKind::Label("Device model"),
         RowKind::DeviceDropdown,
         RowKind::Label("Network access"),
-        RowKind::Switch("network:", false),
+        RowKind::Switch("network:", true),
         RowKind::Label("RTCS"),
         RowKind::Switch("rtcs:", false),
         RowKind::Label("ANGLE driver"),
@@ -3415,8 +3519,17 @@ fn setup_quick_options(
     let mut device_model_menu: id = nil;
     let mut device_model_items: Vec<id> = Vec::new();
     let mut device_model_thumb: id = nil;
-    for (i, row) in rows.iter().enumerate() {
-        let row_center = divider + ((1 + i / 2) as CGFloat) * 78.0 * ui_scale;
+    let mut settings_category_views: [Vec<id>; 3] = std::array::from_fn(|_| Vec::new());
+    let mut settings_category = 0usize;
+    let mut category_row_indices = [0usize; 3];
+    for row in rows.iter() {
+        if let RowKind::Category(category) = *row {
+            settings_category = category.min(2);
+            continue;
+        }
+        let row_index = category_row_indices[settings_category];
+        category_row_indices[settings_category] += 1;
+        let row_center = divider + ((1 + row_index / 2) as CGFloat) * 78.0 * ui_scale;
 
         match *row {
             RowKind::Label(text) => {
@@ -3446,6 +3559,7 @@ fn setup_quick_options(
                 () = msg![env; label setAdjustsFontSizeToFitWidth:true];
                 () = msg![env; label setMinimumFontSize:8.0];
                 () = msg![env; main_view addSubview:label];
+                settings_category_views[settings_category].push(label);
             }
             RowKind::Buttons(buttons) => {
                 let controls = make_button_row(
@@ -3463,6 +3577,7 @@ fn setup_quick_options(
                 let button_width = (controls_width - margin * (controls.len() as CGFloat + 1.0))
                     / controls.len() as CGFloat;
                 for (index, &button) in controls.iter().enumerate() {
+                    settings_category_views[settings_category].push(button);
                     let button_frame = CGRect {
                         origin: CGPoint {
                             x: controls_x + margin + index as CGFloat * (button_width + margin),
@@ -3495,7 +3610,8 @@ fn setup_quick_options(
                     }
                     Some("anisotropicFiltering1")
                     | Some("textureUpscaler1")
-                    | Some("antiAliasing1") => {
+                    | Some("antiAliasing1")
+                    | Some("pvrtcDecodingSoftware") => {
                         quality_buttons.push(controls.clone());
                     }
                     _ => {}
@@ -3512,6 +3628,7 @@ fn setup_quick_options(
                 ios_version_btn = dropdown.0;
                 ios_version_menu = dropdown.1;
                 ios_version_items = dropdown.2;
+                settings_category_views[settings_category].push(ios_version_btn);
             }
             RowKind::DeviceDropdown => {
                 let dropdown = make_device_model_dropdown(
@@ -3525,6 +3642,7 @@ fn setup_quick_options(
                 device_model_menu = dropdown.1;
                 device_model_items = dropdown.2;
                 device_model_thumb = dropdown.3;
+                settings_category_views[settings_category].push(device_model_btn);
             }
             RowKind::GraphicsApiDropdown => {
                 let dropdown = make_graphics_api_dropdown(
@@ -3537,6 +3655,7 @@ fn setup_quick_options(
                 graphics_api_btn = dropdown.0;
                 graphics_api_menu = dropdown.1;
                 graphics_api_items = dropdown.2;
+                settings_category_views[settings_category].push(graphics_api_btn);
             }
             RowKind::TextureFilteringDropdown => {
                 let dropdown = make_settings_dropdown(
@@ -3553,6 +3672,7 @@ fn setup_quick_options(
                 texture_filtering_btn = dropdown.0;
                 texture_filtering_menu = dropdown.1;
                 texture_filtering_items = dropdown.2;
+                settings_category_views[settings_category].push(texture_filtering_btn);
             }
             RowKind::MemoryManagementDropdown => {
                 let dropdown = make_settings_dropdown(
@@ -3569,6 +3689,7 @@ fn setup_quick_options(
                 memory_management_btn = dropdown.0;
                 memory_management_menu = dropdown.1;
                 memory_management_items = dropdown.2;
+                settings_category_views[settings_category].push(memory_management_btn);
             }
             RowKind::GlesOverrideDropdown => {
                 let dropdown = make_settings_dropdown(
@@ -3585,6 +3706,7 @@ fn setup_quick_options(
                 gles_override_btn = dropdown.0;
                 gles_override_menu = dropdown.1;
                 gles_override_items = dropdown.2;
+                settings_category_views[settings_category].push(gles_override_btn);
             }
             RowKind::AudioBackendDropdown => {
                 let dropdown = make_settings_dropdown(
@@ -3601,7 +3723,9 @@ fn setup_quick_options(
                 audio_backend_btn = dropdown.0;
                 audio_backend_menu = dropdown.1;
                 audio_backend_items = dropdown.2;
+                settings_category_views[settings_category].push(audio_backend_btn);
             }
+            RowKind::Category(_) => unreachable!(),
             RowKind::Switch(selector_name, default_state) => {
                 let switch_frame = CGRect {
                     origin: CGPoint {
@@ -3622,6 +3746,7 @@ fn setup_quick_options(
                                          action:selector
                                forControlEvents:UIControlEventValueChanged];
                 () = msg![env; main_view addSubview:switch];
+                settings_category_views[settings_category].push(switch);
                 if selector_name == "frameGeneration:" {
                     frame_generation_switch = switch;
                 }
@@ -3862,9 +3987,30 @@ fn setup_quick_options(
     custom_resolution_height_field = height_field;
     custom_resolution_error = error;
 
+    let settings_category_menus = [
+        ios_version_menu,
+        device_model_menu,
+        graphics_api_menu,
+        gles_override_menu,
+        texture_filtering_menu,
+        memory_management_menu,
+        audio_backend_menu,
+        resolution_menu,
+        editor,
+    ];
+    select_settings_category(
+        env,
+        &settings_category_views,
+        &settings_category_buttons,
+        &settings_category_menus,
+        0,
+    );
+
     QuickOptionsStuff {
         main_view,
         settings_backdrop,
+        settings_category_buttons,
+        settings_category_views,
         ios_version_btn,
         ios_version_menu,
         ios_version_items,
@@ -4033,6 +4179,10 @@ const GRAPHICS_API_ENTRIES: &[(&str, crate::options::GraphicsApi)] = &[
     ),
     ("WGPU presentation", crate::options::GraphicsApi::Wgpu),
     ("Vulkan presentation", crate::options::GraphicsApi::Vulkan),
+    (
+        "Software rendering (CPU only)",
+        crate::options::GraphicsApi::Software,
+    ),
 ];
 
 fn settings_menu_gray(env: &mut Environment) -> id {
@@ -4069,6 +4219,34 @@ fn update_graphics_api_dropdown(
 fn set_settings_menu_background(env: &mut Environment, menu: id) {
     let gray: id = settings_menu_gray(env);
     () = msg![env; menu setBackgroundColor:gray];
+}
+
+fn select_settings_category(
+    env: &mut Environment,
+    views: &[Vec<id>; 3],
+    buttons: &[id; 3],
+    menus: &[id],
+    selected: usize,
+) {
+    let selected = selected.min(views.len().saturating_sub(1));
+    let selected_color = settings_menu_selected_green(env);
+    let unselected_color = settings_menu_gray(env);
+    let white: id = msg_class![env; UIColor whiteColor];
+    let black: id = msg_class![env; UIColor blackColor];
+    for (index, &button) in buttons.iter().enumerate() {
+        () = msg![env; button setBackgroundColor:(if index == selected { selected_color } else { unselected_color })];
+        () = msg![env; button setTitleColor:(if index == selected { white } else { black }) forState:UIControlStateNormal];
+    }
+    for (index, category_views) in views.iter().enumerate() {
+        for &view in category_views {
+            () = msg![env; view setHidden:(index != selected)];
+        }
+    }
+    for &menu in menus {
+        if menu != nil {
+            () = msg![env; menu setHidden:true];
+        }
+    }
 }
 
 fn toggle_settings_dropdown(env: &mut Environment, main_view: id, menu: id, button: id) {

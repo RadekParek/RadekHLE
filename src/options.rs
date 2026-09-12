@@ -33,6 +33,9 @@ pub enum Button {
 /// Highest iOS version currently exposed by the emulator compatibility layer.
 pub const LATEST_IOS_VERSION: (i32, i32, i32) = (26, 6, 0);
 
+/// The app-picker power switch starts in the same state as the runtime default.
+pub const DEFAULT_HIGH_PERFORMANCE: bool = true;
+
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Arm64Backend {
     Auto,
@@ -176,6 +179,37 @@ impl TextureFiltering {
         }
     }
 }
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum PvrtcDecoding {
+    Software,
+    Auto,
+    Driver,
+}
+
+impl Default for PvrtcDecoding {
+    fn default() -> Self {
+        Self::Software
+    }
+}
+
+impl PvrtcDecoding {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "software" | "cpu" | "decode" => Ok(Self::Software),
+            "auto" | "automatic" => Ok(Self::Auto),
+            "driver" | "native" => Ok(Self::Driver),
+            _ => Err(format!("Invalid PVRTC decoding mode {value:?}")),
+        }
+    }
+
+    pub fn short_name(self) -> &'static str {
+        match self {
+            Self::Software => "software",
+            Self::Auto => "auto",
+            Self::Driver => "driver",
+        }
+    }
+}
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum MemoryManagement {
@@ -252,6 +286,17 @@ impl GlesOverrideVersion {
             Self::Gles31 => "3.1",
             Self::Gles32 => "3.2",
             Self::Metal => "Metal",
+        }
+    }
+
+    pub fn graphics_api(self) -> GraphicsApi {
+        match self {
+            Self::Default => GraphicsApi::Default,
+            Self::Gles10 => GraphicsApi::GLES10,
+            Self::Gles11 => GraphicsApi::GLES11,
+            Self::Gles20 => GraphicsApi::GLES20,
+            Self::Gles30 | Self::Gles31 | Self::Gles32 => GraphicsApi::GLES30,
+            Self::Metal => GraphicsApi::Metal,
         }
     }
 }
@@ -464,6 +509,7 @@ pub struct Options {
     pub anisotropic_filtering: u8,
     pub texture_upscaler: u8,
     pub texture_filtering: TextureFiltering,
+    pub pvrtc_decoding: PvrtcDecoding,
     pub no_texture_compression: bool,
     pub memory_management: MemoryManagement,
     pub anti_aliasing: u8,
@@ -524,12 +570,12 @@ impl Default for Options {
             battery_saver: false,
             ultra_battery_saver: false,
             frame_generation: false,
-            high_performance: false,
+            high_performance: DEFAULT_HIGH_PERFORMANCE,
             force_max_clocks: false,
             rtcs: false,
             force_composition: false,
             prefer_gles2_context: false,
-            network_access: false,
+            network_access: true,
             popup_errors: true,
             dumping_options: Default::default(),
             dumping_file: crate::paths::user_data_base_path().join("DUMP.txt"),
@@ -542,6 +588,7 @@ impl Default for Options {
             anisotropic_filtering: 1,
             texture_upscaler: 1,
             texture_filtering: TextureFiltering::Default,
+            pvrtc_decoding: PvrtcDecoding::default(),
             no_texture_compression: false,
             memory_management: MemoryManagement::Balanced,
             anti_aliasing: 1,
@@ -791,6 +838,8 @@ impl Options {
             self.texture_upscaler = parse_quality(value, "--texture-upscaler=", &[1, 2, 3, 4])?;
         } else if let Some(value) = arg.strip_prefix("--texture-filtering=") {
             self.texture_filtering = TextureFiltering::parse(value)?;
+        } else if let Some(value) = arg.strip_prefix("--pvrtc-decoding=") {
+            self.pvrtc_decoding = PvrtcDecoding::parse(value)?;
         } else if arg == "--no-texture-compression" {
             self.no_texture_compression = true;
         } else if arg == "--allow-texture-compression" {
@@ -800,16 +849,25 @@ impl Options {
         } else if let Some(value) = arg.strip_prefix("--anti-aliasing=") {
             self.anti_aliasing = parse_quality(value, "--anti-aliasing=", &[1, 2, 4, 8])?;
         } else if let Some(value) = arg.strip_prefix("--gles-override=") {
-            self.gles_override_version = GlesOverrideVersion::parse(value)?;
+            let override_version = GlesOverrideVersion::parse(value)?;
+            self.gles_override_version = override_version;
+            if override_version != GlesOverrideVersion::Default {
+                self.graphics_api = override_version.graphics_api();
+            }
         } else if let Some(value) = arg.strip_prefix("--graphics-api=") {
             let api = GraphicsApi::from_short_name(value)
                 .map_err(|_| "Unrecognized --graphics-api= value".to_string())?;
-            if api == GraphicsApi::Software {
-                return Err("Software rendering is controlled by --software-rendering".to_string());
-            }
             self.graphics_api = api;
+            if api == GraphicsApi::Software {
+                self.software_rendering = true;
+                self.software_presentation = true;
+            }
         } else if let Some(value) = arg.strip_prefix("--gles-override-version=") {
-            self.gles_override_version = GlesOverrideVersion::parse(value)?;
+            let override_version = GlesOverrideVersion::parse(value)?;
+            self.gles_override_version = override_version;
+            if override_version != GlesOverrideVersion::Default {
+                self.graphics_api = override_version.graphics_api();
+            }
         } else if arg == "--angle-driver" {
             self.angle_driver = true;
         } else if arg == "--disable-angle-driver" {
@@ -848,12 +906,16 @@ impl Options {
             self.vsync = false;
         } else if arg == "--battery-saver" || arg == "--battery-saver=on" {
             self.battery_saver = true;
+            self.high_performance = false;
+            self.force_max_clocks = false;
         } else if arg == "--disable-battery-saver" || arg == "--battery-saver=off" {
             self.battery_saver = false;
             self.ultra_battery_saver = false;
         } else if arg == "--ultra-battery-saver" || arg == "--ultra-battery-saver=on" {
             self.ultra_battery_saver = true;
             self.battery_saver = true;
+            self.high_performance = false;
+            self.force_max_clocks = false;
         } else if arg == "--disable-ultra-battery-saver" || arg == "--ultra-battery-saver=off" {
             self.ultra_battery_saver = false;
         } else if arg == "--frame-generation" || arg == "--frame-generation=on" {
@@ -862,6 +924,8 @@ impl Options {
             self.frame_generation = false;
         } else if arg == "--high-performance" || arg == "--high-performance=on" {
             self.high_performance = true;
+            self.battery_saver = false;
+            self.ultra_battery_saver = false;
         } else if arg == "--disable-high-performance" || arg == "--high-performance=off" {
             self.high_performance = false;
             self.force_max_clocks = false;
@@ -915,6 +979,8 @@ impl Options {
             self.prefer_gles2_context = true;
         } else if arg == "--allow-network-access" {
             self.network_access = true;
+        } else if arg == "--disable-network-access" {
+            self.network_access = false;
         } else if arg == "--no-error-popup" {
             self.popup_errors = false;
         } else if let Some(values) = arg.strip_prefix("--dump=") {
@@ -979,7 +1045,10 @@ impl Options {
     }
 
     pub fn apply_power_profile(&mut self, display_rate: f64) {
-        if self.high_performance {
+        if self.ultra_battery_saver {
+            self.high_performance = false;
+            self.force_max_clocks = false;
+        } else if self.high_performance {
             self.battery_saver = false;
             self.ultra_battery_saver = false;
             self.vsync = false;
@@ -987,8 +1056,7 @@ impl Options {
             self.frame_generation = false;
             self.fps_limit = None;
             return;
-        }
-        if !self.ultra_battery_saver {
+        } else {
             return;
         }
         self.battery_saver = true;
@@ -1089,6 +1157,20 @@ mod tests {
         assert!(!options.frame_pacing_enabled());
         assert!(!options.vsync);
         assert_eq!(options.fps_limit, None);
+    }
+
+    #[test]
+    fn parses_software_graphics_and_pvrtc_modes() {
+        let mut options = Options::default();
+        options.parse_argument("--graphics-api=software").unwrap();
+        assert_eq!(options.graphics_api, GraphicsApi::Software);
+        assert!(options.software_rendering);
+        assert!(options.software_presentation);
+
+        options.parse_argument("--pvrtc-decoding=driver").unwrap();
+        assert_eq!(options.pvrtc_decoding, PvrtcDecoding::Driver);
+        options.parse_argument("--pvrtc-decoding=software").unwrap();
+        assert_eq!(options.pvrtc_decoding, PvrtcDecoding::Software);
     }
 
     #[test]
@@ -1232,10 +1314,31 @@ mod tests {
     }
 
     #[test]
-    fn default_graphics_api_does_not_enable_a_translator() {
+    fn defaults_enable_requested_native_compatibility_modes() {
         let options = Options::default();
         assert_eq!(options.graphics_api, GraphicsApi::Default);
-        assert!(!options.metal_translator);
+        assert!(options.high_performance);
+        assert!(!options.force_composition);
+        assert!(options.network_access);
+        assert_eq!(options.metal_translator, cfg!(target_arch = "aarch64"));
+    }
+
+    #[test]
+    fn software_graphics_api_selects_cpu_rendering() {
+        let mut options = Options::default();
+        options.parse_argument("--graphics-api=software").unwrap();
+        assert_eq!(options.graphics_api, GraphicsApi::Software);
+        assert!(!options.force_composition);
+    }
+
+    #[test]
+    fn gles_override_selects_a_real_graphics_path() {
+        let mut options = Options::default();
+        options.parse_argument("--gles-override=gles2").unwrap();
+        assert_eq!(options.gles_override_version, GlesOverrideVersion::Gles20);
+        assert_eq!(options.graphics_api, GraphicsApi::GLES20);
+        options.parse_argument("--graphics-api=vulkan").unwrap();
+        assert_eq!(options.graphics_api, GraphicsApi::Vulkan);
     }
 
     #[test]

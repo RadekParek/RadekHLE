@@ -99,7 +99,7 @@ pub use gles_generic::GLES;
 pub use software::SoftwareGLESContext;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 static TRANSLATOR_TRACE_EVENTS: AtomicU32 = AtomicU32::new(0);
 static TRANSLATOR_TRACE_ENV: OnceLock<bool> = OnceLock::new();
@@ -110,6 +110,13 @@ static GL_CALL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static TEXTURE_UPSCALER: AtomicU8 = AtomicU8::new(1);
 static ANTI_ALIASING: AtomicU8 = AtomicU8::new(1);
 static MEMORY_MANAGEMENT: AtomicU8 = AtomicU8::new(1);
+struct OrthoLogState {
+    matrix: [f32; 16],
+    logged_at: std::time::Instant,
+}
+
+static LAST_ORTHO_LOG: OnceLock<Mutex<Option<OrthoLogState>>> = OnceLock::new();
+static PVRTC_DECODING: AtomicU8 = AtomicU8::new(1);
 
 pub(crate) fn configure_quality_options(
     texture_upscaler: u8,
@@ -119,6 +126,28 @@ pub(crate) fn configure_quality_options(
     TEXTURE_UPSCALER.store(texture_upscaler.clamp(1, 4), Ordering::Relaxed);
     ANTI_ALIASING.store(anti_aliasing.clamp(1, 8), Ordering::Relaxed);
     MEMORY_MANAGEMENT.store(memory_management.min(2), Ordering::Relaxed);
+}
+pub(crate) fn configure_pvrtc_decoding(mode: crate::options::PvrtcDecoding) {
+    PVRTC_DECODING.store(
+        match mode {
+            crate::options::PvrtcDecoding::Auto => 0,
+            crate::options::PvrtcDecoding::Software => 1,
+            crate::options::PvrtcDecoding::Driver => 2,
+        },
+        Ordering::Relaxed,
+    );
+}
+
+pub(crate) fn pvrtc_decoding_mode() -> crate::options::PvrtcDecoding {
+    match PVRTC_DECODING.load(Ordering::Relaxed) {
+        1 => crate::options::PvrtcDecoding::Software,
+        2 => crate::options::PvrtcDecoding::Driver,
+        _ => crate::options::PvrtcDecoding::Auto,
+    }
+}
+
+pub(crate) fn should_decode_pvrtc() -> bool {
+    !matches!(pvrtc_decoding_mode(), crate::options::PvrtcDecoding::Driver)
 }
 
 pub(crate) fn texture_upscaler() -> u8 {
@@ -252,13 +281,25 @@ pub fn configure_custom_driver(path: Option<&std::path::Path>) -> bool {
     } else {
         let egl = find_driver_library(
             &driver_dir,
-            &["libEGL.so", "libEGL.so.1", "libEGL.dylib", "libEGL.dll"],
+            &[
+                "libEGL.so",
+                "libEGL.so.1",
+                "libEGL_adreno.so",
+                "libEGL_angle.so",
+                "libEGL_mesa.so",
+                "libEGL.dylib",
+                "libEGL.dll",
+            ],
         );
         let gles = find_driver_library(
             &driver_dir,
             &[
                 "libGLESv2.so",
                 "libGLESv2.so.2",
+                "libGLESv2_adreno.so",
+                "libGLESv2_angle.so",
+                "libGLESv2_mesa.so",
+                "libGLESv3.so",
                 "libGLESv2.dylib",
                 "libGLESv2.dll",
             ],
@@ -300,23 +341,42 @@ fn find_driver_archive(directory: &std::path::Path) -> Option<std::path::PathBuf
 }
 
 fn find_driver_library(directory: &std::path::Path, names: &[&str]) -> Option<std::path::PathBuf> {
-    let entries = std::fs::read_dir(directory).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file()
-            && path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| {
-                    names
-                        .iter()
-                        .any(|candidate| name.eq_ignore_ascii_case(candidate))
-                })
-        {
-            return Some(path);
+    let mut directories = vec![directory.to_path_buf()];
+    let mut matches = Vec::new();
+    while let Some(current) = directories.pop() {
+        let Ok(entries) = std::fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry
+                .file_type()
+                .map(|file_type| file_type.is_dir())
+                .unwrap_or(false)
+            {
+                directories.push(path);
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let Some(rank) = names
+                .iter()
+                .position(|candidate| name.eq_ignore_ascii_case(candidate))
+            else {
+                continue;
+            };
+            if path.is_file() {
+                matches.push((rank, path));
+            }
         }
     }
-    None
+    matches.sort_by(|(left_rank, left_path), (right_rank, right_path)| {
+        left_rank
+            .cmp(right_rank)
+            .then_with(|| left_path.cmp(right_path))
+    });
+    matches.into_iter().next().map(|(_, path)| path)
 }
 
 fn extract_custom_driver_archive(path: &std::path::Path) -> Result<std::path::PathBuf, String> {
@@ -374,46 +434,146 @@ fn extract_custom_driver_archive(path: &std::path::Path) -> Result<std::path::Pa
     Ok(output)
 }
 
-pub fn configure_angle_driver(enabled: bool) {
-    if !enabled {
-        return;
+#[cfg(target_os = "android")]
+fn configure_bundled_angle_driver() -> bool {
+    const LIBRARIES: &[&str] = &[
+        "libEGL_angle.so",
+        "libGLESv1_CM_angle.so",
+        "libGLESv2_angle.so",
+        "libfeature_support_angle.so",
+    ];
+
+    if std::env::var_os("TOUCHHLE_ANGLE").is_some_and(|value| value == "0") {
+        panic!(
+            "ANGLE was requested by the emulator but TOUCHHLE_ANGLE=0 disabled the bundled driver"
+        );
+    }
+    if std::env::var_os("SDL_VIDEO_EGL_DRIVER").is_some()
+        || std::env::var_os("SDL_VIDEO_GL_DRIVER").is_some()
+    {
+        panic!("ANGLE is forced; SDL_VIDEO_EGL_DRIVER/SDL_VIDEO_GL_DRIVER must not override it");
     }
 
-    let default_egl = if cfg!(target_os = "windows") {
-        "libEGL.dll"
-    } else if cfg!(target_os = "macos") {
-        "libEGL.dylib"
+    fn can_load(name: &str) -> bool {
+        let Ok(name) = std::ffi::CString::new(name) else {
+            return false;
+        };
+        unsafe {
+            let handle = libc::dlopen(name.as_ptr(), libc::RTLD_NOW);
+            if handle.is_null() {
+                false
+            } else {
+                libc::dlclose(handle);
+                true
+            }
+        }
+    }
+
+    if !LIBRARIES.iter().all(|name| can_load(name)) {
+        return false;
+    }
+    unsafe {
+        std::env::set_var("SDL_VIDEO_EGL_DRIVER", LIBRARIES[0]);
+        std::env::set_var("SDL_VIDEO_GL_DRIVER", LIBRARIES[1]);
+    }
+    log!(
+        "Bundled Android ANGLE driver forced: EGL={}, GLES1={}, GLES2={}; Vulkan backend selected",
+        LIBRARIES[0],
+        LIBRARIES[1],
+        LIBRARIES[2]
+    );
+    true
+}
+
+pub fn configure_angle_driver(enabled: bool) -> bool {
+    if !enabled {
+        return false;
+    }
+
+    let explicit_egl = std::env::var_os("TOUCHHLE_ANGLE_EGL").map(std::path::PathBuf::from);
+    let explicit_gles = std::env::var_os("TOUCHHLE_ANGLE_GLES").map(std::path::PathBuf::from);
+    let explicit_override = explicit_egl.is_some() || explicit_gles.is_some();
+
+    if explicit_override {
+        let Some(egl_path) = explicit_egl else {
+            panic!("ANGLE override requires both TOUCHHLE_ANGLE_EGL and TOUCHHLE_ANGLE_GLES");
+        };
+        let Some(gles_path) = explicit_gles else {
+            panic!("ANGLE override requires both TOUCHHLE_ANGLE_EGL and TOUCHHLE_ANGLE_GLES");
+        };
+        if !angle_library_paths_are_usable(&egl_path, &gles_path) {
+            panic!(
+                "ANGLE override libraries are not usable: EGL={} GLES={}",
+                egl_path.display(),
+                gles_path.display()
+            );
+        }
+        unsafe {
+            std::env::set_var("SDL_VIDEO_EGL_DRIVER", &egl_path);
+            std::env::set_var("SDL_VIDEO_GL_DRIVER", &gles_path);
+        }
+        log!(
+            "Custom ANGLE Vulkan driver active: EGL={}, GLES={}",
+            egl_path.display(),
+            gles_path.display()
+        );
     } else {
-        "libEGL.so"
-    };
-    let default_gles = if cfg!(target_os = "windows") {
-        "libGLESv2.dll"
-    } else if cfg!(target_os = "macos") {
-        "libGLESv2.dylib"
-    } else {
-        "libGLESv2.so"
-    };
-    let egl_path = std::env::var("TOUCHHLE_ANGLE_EGL").unwrap_or_else(|_| default_egl.to_owned());
-    let gles_path =
-        std::env::var("TOUCHHLE_ANGLE_GLES").unwrap_or_else(|_| default_gles.to_owned());
-    let egl_exists = std::path::Path::new(&egl_path).exists();
-    let gles_exists = std::path::Path::new(&gles_path).exists();
+        #[cfg(target_os = "android")]
+        {
+            if !configure_bundled_angle_driver() {
+                unsafe {
+                    std::env::remove_var("SDL_VIDEO_EGL_DRIVER");
+                    std::env::remove_var("SDL_VIDEO_GL_DRIVER");
+                }
+                log!(
+                    "Bundled ANGLE libraries are unavailable; forcing Android's package-level ANGLE Vulkan loader"
+                );
+            }
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            let (egl_name, gles_name) = if cfg!(target_os = "windows") {
+                ("libEGL.dll", "libGLESv2.dll")
+            } else if cfg!(target_os = "macos") {
+                ("libEGL.dylib", "libGLESv2.dylib")
+            } else {
+                ("libEGL.so", "libGLESv2.so")
+            };
+            let egl_path = std::path::PathBuf::from(egl_name);
+            let gles_path = std::path::PathBuf::from(gles_name);
+            if !angle_library_paths_are_usable(&egl_path, &gles_path) {
+                panic!(
+                    "ANGLE libraries are not usable: EGL={} GLES={}",
+                    egl_path.display(),
+                    gles_path.display()
+                );
+            }
+            unsafe {
+                std::env::set_var("SDL_VIDEO_EGL_DRIVER", &egl_path);
+                std::env::set_var("SDL_VIDEO_GL_DRIVER", &gles_path);
+            }
+            log!(
+                "Native ANGLE Vulkan driver active: EGL={}, GLES={}",
+                egl_path.display(),
+                gles_path.display()
+            );
+        }
+    }
 
     unsafe {
-        std::env::set_var("SDL_VIDEO_EGL_DRIVER", &egl_path);
-        std::env::set_var("SDL_VIDEO_GL_DRIVER", &gles_path);
+        std::env::set_var("ANGLE_DEFAULT_PLATFORM", "vulkan");
     }
     sdl2::hint::set("SDL_OPENGL_ES_DRIVER", "1");
-    log!(
-        "ANGLE override requested: EGL={} (exists={}), GLES={} (exists={}); SDL will try these before the first window",
-        egl_path,
-        egl_exists,
-        gles_path,
-        gles_exists
-    );
-    if !egl_exists || !gles_exists {
-        log!("ANGLE libraries are not present at the configured paths; SDL may fall back or context creation may fail");
+    true
+}
+
+fn angle_library_paths_are_usable(egl: &std::path::Path, gles: &std::path::Path) -> bool {
+    if std::env::var_os("TOUCHHLE_ANGLE_EGL").is_some()
+        || std::env::var_os("TOUCHHLE_ANGLE_GLES").is_some()
+    {
+        return egl.is_file() && gles.is_file();
     }
+    cfg!(not(target_os = "android")) || (egl.is_file() && gles.is_file())
 }
 
 /// Labels for [GLES] implementations and an abstraction for constructing them.
@@ -665,16 +825,33 @@ pub fn create_gles2_ctx_no_parent_stack(
     }
 }
 
-/// Same as [create_gles1_ctx], but without calling
-/// [Environment::on_parent_stack_in_coroutine]. Only should be called by
-/// functions not inside a coroutine that can't use [Environment].
+pub fn create_host_gles1_ctx_no_parent_stack(
+    window: &mut crate::window::Window,
+) -> Box<dyn GLESContext> {
+    assert!(window.on_main_stack());
+    log!("Creating the host OpenGL ES 1.1 context for internal presentation");
+    for implementation in [
+        GLESImplementation::GLES1Native,
+        GLESImplementation::GLES1OnGL2,
+    ] {
+        log!("Trying: {}", implementation.description());
+        match implementation.construct(window) {
+            Ok(ctx) => {
+                log!("=> Success!");
+                return ctx;
+            }
+            Err(error) => log!("=> Failed: {}.", error),
+        }
+    }
+    panic!("Couldn't create the host OpenGL ES 1.1 context for internal presentation!");
+}
+
 pub fn create_gles1_ctx_no_parent_stack(
     window: &mut crate::window::Window,
     options: &crate::options::Options,
 ) -> Box<dyn GLESContext> {
     assert!(window.on_main_stack());
     log!("Creating an OpenGL ES 1.1 context:");
-    configure_angle_driver(options.angle_driver);
     if options.software_rendering && !llvmpipe_fallback_available() {
         log!("Using the built-in CPU-only software OpenGL ES 1.1 rasterizer because no native LLVMPipe driver is available");
         return Box::new(
@@ -702,8 +879,30 @@ pub fn create_gles1_ctx_no_parent_stack(
     }
     gles1_ctx.expect("Couldn't create OpenGL ES 1.1 context!")
 }
-
 pub(crate) fn log_ortho_matrix_details(matrix: &[f32; 16], label: &str) {
+    let mut state = LAST_ORTHO_LOG
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap();
+    let changed = state.as_ref().is_none_or(|previous| {
+        previous
+            .matrix
+            .iter()
+            .zip(matrix)
+            .any(|(old, new)| (old - new).abs() > 0.0001)
+    });
+    if !changed
+        || state.as_ref().is_some_and(|previous| {
+            previous.logged_at.elapsed() < std::time::Duration::from_millis(500)
+        })
+    {
+        return;
+    }
+    *state = Some(OrthoLogState {
+        matrix: *matrix,
+        logged_at: std::time::Instant::now(),
+    });
+
     let scale_x = matrix[0];
     let scale_y = matrix[5];
     let scale_z = matrix[10];
@@ -726,8 +925,10 @@ pub(crate) fn log_ortho_matrix_details(matrix: &[f32; 16], label: &str) {
             "[ORTHO MATRIX VERIFICATION] bounds: left={left:.2}, right={right:.2}, bottom={bottom:.2}, top={top:.2}, x_axis={x_orientation}, y_axis={y_orientation}"
         );
         log!(
-            "[ORTHO MATRIX VERIFICATION] validation: right_positive={}, bottom_nonnegative={}, top_positive={}"
-            , right > 0.0, bottom >= 0.0, top > 0.0
+            "[ORTHO MATRIX VERIFICATION] validation: right_positive={}, bottom_nonnegative={}, top_positive={}",
+            right > 0.0,
+            bottom >= 0.0,
+            top > 0.0
         );
     }
     log!(
@@ -735,6 +936,6 @@ pub(crate) fn log_ortho_matrix_details(matrix: &[f32; 16], label: &str) {
         matrix[0], matrix[4], matrix[8], matrix[12],
         matrix[1], matrix[5], matrix[9], matrix[13],
         matrix[2], matrix[6], matrix[10], matrix[14],
-        matrix[3], matrix[7], matrix[11], matrix[15]
+        matrix[3], matrix[7], matrix[11], matrix[15],
     );
 }

@@ -16,8 +16,8 @@ use crate::gles::present::present_frame;
 use crate::gles::wgpu::WgpuPresentation;
 use crate::gles::{
     create_gles1_ctx_no_parent_stack, create_gles1_gles3_translator_ctx_no_parent_stack,
-    create_gles1_translator_ctx_no_parent_stack, create_gles2_ctx_no_parent_stack, GLESContext,
-    SoftwareGLESContext, GLES,
+    create_gles1_translator_ctx_no_parent_stack, create_gles2_ctx_no_parent_stack,
+    create_host_gles1_ctx_no_parent_stack, GLESContext, GLES,
 };
 use crate::image::Image;
 use crate::matrix::Matrix;
@@ -1216,6 +1216,8 @@ pub struct Window {
     frame_generation_state: FrameGenerationState,
     wgpu_presentation: Option<WgpuPresentation>,
     internal_gl_ins: Option<Box<dyn GLESContext>>,
+    /// Keep a real host GL context alive while the built-in CPU renderer presents pixels.
+    host_compatibility_gl_ins: Option<Box<dyn GLESContext>>,
     splash_image: Option<Image>,
     /// Whether the selected image already targets the startup orientation.
     splash_image_is_orientation_specific: bool,
@@ -1293,15 +1295,26 @@ impl Window {
             options.anti_aliasing,
             options.memory_management as u8,
         );
-        let custom_driver_active =
-            crate::gles::configure_custom_driver(options.custom_driver.as_deref());
-        crate::gles::configure_angle_driver(options.angle_driver && !custom_driver_active);
+        crate::gles::configure_pvrtc_decoding(options.pvrtc_decoding);
+        let cpu_only_requested = options.software_rendering
+            || matches!(options.graphics_api, crate::options::GraphicsApi::Software);
+        let angle_driver_active = crate::gles::configure_angle_driver(options.angle_driver);
+        let custom_driver_active = if angle_driver_active {
+            if options.custom_driver.is_some() {
+                log!("ANGLE is enabled; ignoring the custom/native vendor driver selection");
+            }
+            false
+        } else {
+            crate::gles::configure_custom_driver(options.custom_driver.as_deref())
+        };
         let llvmpipe_active = crate::gles::configure_llvmpipe_fallback(
-            (options.llvmpipe_fallback || options.software_rendering) && !custom_driver_active,
+            (options.llvmpipe_fallback || cpu_only_requested)
+                && !custom_driver_active
+                && !angle_driver_active,
         );
-        let native_cpu_renderer = options.software_rendering && llvmpipe_active;
+        let native_cpu_renderer = cpu_only_requested && llvmpipe_active;
         let software_presentation =
-            (options.software_rendering || options.software_presentation) && !native_cpu_renderer;
+            (cpu_only_requested || options.software_presentation) && !native_cpu_renderer;
         if native_cpu_renderer {
             log!("Software rendering selected: using the host's native LLVMPipe CPU rasterizer instead of the built-in fallback");
         }
@@ -1332,7 +1345,7 @@ impl Window {
             sdl2::hint::set("SDL_RENDER_VSYNC", "0");
         }
 
-        if env::consts::OS == "android" && !software_presentation {
+        if env::consts::OS == "android" {
             // SDL needs the host context profile before creating the window.
             // A GLES1 window cannot later create the GLES2 context required by
             // the fixed-function translator on Android.
@@ -1348,7 +1361,7 @@ impl Window {
                         | crate::options::GraphicsApi::Wgpu
                         | crate::options::GraphicsApi::Vulkan
                 ) || (matches!(options.graphics_api, crate::options::GraphicsApi::Default)
-                    && (options.prefer_gles2_context || options.angle_driver || llvmpipe_active));
+                    && (options.prefer_gles2_context || angle_driver_active || llvmpipe_active));
 
             if use_gles2 {
                 let version = if matches!(
@@ -1506,6 +1519,7 @@ impl Window {
             frame_generation_state: FrameGenerationState::default(),
             wgpu_presentation: None,
             internal_gl_ins: None,
+            host_compatibility_gl_ins: None,
             splash_image,
             splash_image_is_orientation_specific,
             device_family,
@@ -1543,8 +1557,7 @@ impl Window {
         // because SDL2 won't let us use more than one graphics API in the same
         // window, and we also need OpenGL ES for the app's own rendering.
         if software_presentation {
-            log!("Software rendering enabled: skipping host GL context creation; presentation uses CPU pixels and SDL only");
-            return window;
+            log!("Software rendering enabled: retaining host GL context creation for SDL and compatibility paths; presentation uses CPU pixels");
         }
 
         if matches!(
@@ -1573,39 +1586,64 @@ impl Window {
             }
         }
 
-        let mut gl_ins = match options.graphics_api {
-            crate::options::GraphicsApi::Translator => {
-                create_gles1_translator_ctx_no_parent_stack(&mut window)
+        if software_presentation && cpu_only_requested && !native_cpu_renderer {
+            window.host_compatibility_gl_ins =
+                Some(create_host_gles1_ctx_no_parent_stack(&mut window));
+        }
+
+        let mut gl_ins = if software_presentation && cpu_only_requested {
+            if native_cpu_renderer {
+                create_host_gles1_ctx_no_parent_stack(&mut window)
+            } else {
+                crate::gles::GLESImplementation::Software
+                    .construct(&mut window)
+                    .expect("Could not create software GLES context")
             }
-            crate::options::GraphicsApi::TranslatorGLES30 => {
-                create_gles1_gles3_translator_ctx_no_parent_stack(&mut window)
-            }
-            crate::options::GraphicsApi::GLES20 | crate::options::GraphicsApi::GLES30 => {
-                create_gles2_ctx_no_parent_stack(&mut window)
-            }
-            crate::options::GraphicsApi::GLES10 | crate::options::GraphicsApi::GLES11 => {
-                create_gles1_ctx_no_parent_stack(&mut window, options)
-            }
-            crate::options::GraphicsApi::Software => Box::new(
-                SoftwareGLESContext::new(&mut window)
-                    .expect("Could not create software GLES context"),
-            ),
-            crate::options::GraphicsApi::Metal
-            | crate::options::GraphicsApi::Wgpu
-            | crate::options::GraphicsApi::Vulkan => create_gles2_ctx_no_parent_stack(&mut window),
-            crate::options::GraphicsApi::Default => {
-                if llvmpipe_active {
+        } else {
+            match options.graphics_api {
+                crate::options::GraphicsApi::Translator => {
                     create_gles1_translator_ctx_no_parent_stack(&mut window)
-                } else if options.prefer_gles2_context || options.angle_driver {
+                }
+                crate::options::GraphicsApi::TranslatorGLES30 => {
+                    create_gles1_gles3_translator_ctx_no_parent_stack(&mut window)
+                }
+                crate::options::GraphicsApi::GLES20 | crate::options::GraphicsApi::GLES30 => {
                     create_gles2_ctx_no_parent_stack(&mut window)
-                } else {
+                }
+                crate::options::GraphicsApi::GLES10 | crate::options::GraphicsApi::GLES11 => {
                     create_gles1_ctx_no_parent_stack(&mut window, options)
+                }
+                crate::options::GraphicsApi::Software => {
+                    create_host_gles1_ctx_no_parent_stack(&mut window)
+                }
+                crate::options::GraphicsApi::Metal
+                | crate::options::GraphicsApi::Wgpu
+                | crate::options::GraphicsApi::Vulkan => {
+                    create_gles2_ctx_no_parent_stack(&mut window)
+                }
+                crate::options::GraphicsApi::Default => {
+                    if llvmpipe_active {
+                        create_gles1_translator_ctx_no_parent_stack(&mut window)
+                    } else if options.prefer_gles2_context || angle_driver_active {
+                        create_gles2_ctx_no_parent_stack(&mut window)
+                    } else {
+                        create_gles1_ctx_no_parent_stack(&mut window, options)
+                    }
                 }
             }
         };
         {
             let gl_ctx = gl_ins.make_current(&mut window);
-            log!("Driver info: {}", unsafe { gl_ctx.driver_description() });
+            let driver_description = unsafe { gl_ctx.driver_description() };
+            if angle_driver_active
+                && cfg!(target_os = "android")
+                && !driver_description.to_ascii_uppercase().contains("ANGLE")
+            {
+                panic!(
+                    "ANGLE was forced, but Android created a non-ANGLE context: {driver_description}"
+                );
+            }
+            log!("Driver info: {}", driver_description);
         }
         if options.vsync {
             if let Err(error) = window.video_ctx.gl_set_swap_interval(SwapInterval::VSync) {
@@ -2307,7 +2345,16 @@ impl Window {
         self.sensor_ctx.update();
         if self.controllers.is_empty() || !options.analog_stick_tilt_controls {
             if let Some(ref accelerometer) = self.accelerometer {
-                let data = accelerometer.get_data().unwrap();
+                let data = match accelerometer.get_data() {
+                    Ok(data) => data,
+                    Err(error) => {
+                        log_once_fmt!(
+                            "Warning: accelerometer read failed ({}); reporting neutral acceleration",
+                            error
+                        );
+                        return (0.0, 0.0, -1.0);
+                    }
+                };
                 let sdl2::sensor::SensorData::Accel(data) = data else {
                     // We asked SDL for the accelerometer sensor explicitly
                     // earlier; if SDL handed us a different sensor variant
@@ -3021,9 +3068,9 @@ impl Window {
                 // Also show FPS in the window title so it's visible when the
                 // app is running fullscreen or without console.
                 let base_title = if crate::branding().is_empty() {
-                    format!("RadekHLE 7.0 {}", crate::VERSION)
+                    format!("RadekHLE9.9 {}", crate::VERSION)
                 } else {
-                    format!("RadekHLE 7.0 {} {}", crate::branding(), crate::VERSION)
+                    format!("RadekHLE9.9 {} {}", crate::branding(), crate::VERSION)
                 };
                 let title = format!("{} - FPS: {:.1}", base_title, fps);
                 // Ignore any error setting the title.
@@ -3374,7 +3421,7 @@ pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
         messagebox::MessageBoxFlag::ERROR,
         &mbox,
         "touchHLE crashed!",
-        &format!("RadekHLE 7.0 crashed with the following error: {error_message}"),
+        &format!("RadekHLE9.9 crashed with the following error: {error_message}"),
         window.map(|win| &win.window),
         None,
     ) else {

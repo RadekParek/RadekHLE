@@ -35,7 +35,7 @@ do
     fi
 done
 
-for path in artifacts/macos/radekhle.dmg artifacts/android/RadekHLE-7.0.apk; do
+for path in artifacts/macos/radekhle.dmg artifacts/android/RadekHLE9.9.apk; do
     if [ ! -e "$path" ]; then
         echo "Missing build artifact (all platform builds must succeed): $path" >&2
         exit 1
@@ -63,7 +63,7 @@ rm -rf release
 mkdir -p release
 
 {
-    printf '%s\n\n' "RadekHLE ${VERSION}"
+    printf '%s\n\n' "RadekHLE9.9 ${VERSION}"
     if [ "${FORCE_RADEKHLE_RELEASE:-}" = "true" ]; then
         printf '%s\n\n' "_Manual release — changelog shows the latest 5 commits._"
     fi
@@ -102,11 +102,11 @@ mkdir -p release
 cd "$ROOT/dev-scripts"
 ./prepare-release.sh --prepare-files
 
-prefix="RadekHLE"
+prefix="RadekHLE9.9"
 
 ./prepare-release.sh --create-zip-macos "$ROOT/artifacts/macos/radekhle.dmg" \
     -o "$ROOT/release/${prefix}_macOS_x86_64.zip"
-./prepare-release.sh --create-zip-android "$ROOT/artifacts/android/RadekHLE-7.0.apk" \
+./prepare-release.sh --create-zip-android "$ROOT/artifacts/android/RadekHLE9.9.apk" \
     -o "$ROOT/release/${prefix}_Android_AArch64.zip"
 ./prepare-release.sh --create-zip-windows \
     "$ROOT/$windows_exe" \

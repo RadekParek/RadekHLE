@@ -1,6 +1,6 @@
-# RadekHLE
+# RadekHLE9.9
 
-RadekHLE is a community fork of [touchHLE](https://github.com/touchHLE/touchHLE), an HLE emulator for early iPhone OS applications. It keeps the upstream Rust architecture and adds Android, ARM64, graphics, and compatibility work.
+RadekHLE9.9 is a community fork of [touchHLE](https://github.com/touchHLE/touchHLE), an HLE emulator for early iPhone OS applications. It keeps the upstream Rust architecture and adds Android, ARM64, graphics, and compatibility work.
 
 The project is licensed under the Mozilla Public License 2.0. Source and dependency notices are in `LICENSE`, `touchHLE_dylibs/`, and `touchHLE_fonts/`.
 

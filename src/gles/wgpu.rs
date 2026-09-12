@@ -173,7 +173,7 @@ impl WgpuPresentation {
         let required_limits = wgpu::Limits::downlevel_defaults();
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
-                label: Some("RadekHLE WGPU presentation device"),
+                label: Some("RadekHLE9.9 WGPU presentation device"),
                 required_features: wgpu::Features::empty(),
                 required_limits,
             },
@@ -279,11 +279,11 @@ impl WgpuPresentation {
         };
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("RadekHLE WGPU frame presenter"),
+            label: Some("RadekHLE9.9 WGPU frame presenter"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(SHADER)),
         });
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("RadekHLE WGPU frame bindings"),
+            label: Some("RadekHLE9.9 WGPU frame bindings"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -304,7 +304,7 @@ impl WgpuPresentation {
             ],
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("RadekHLE WGPU frame pipeline layout"),
+            label: Some("RadekHLE9.9 WGPU frame pipeline layout"),
             bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
         });
@@ -313,7 +313,7 @@ impl WgpuPresentation {
             zero_initialize_workgroup_memory: true,
         };
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("RadekHLE WGPU frame pipeline"),
+            label: Some("RadekHLE9.9 WGPU frame pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -352,7 +352,7 @@ impl WgpuPresentation {
             multiview: None,
         });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("RadekHLE WGPU frame sampler"),
+            label: Some("RadekHLE9.9 WGPU frame sampler"),
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::FilterMode::Linear,
@@ -361,7 +361,7 @@ impl WgpuPresentation {
             ..Default::default()
         });
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("RadekHLE WGPU frame vertices"),
+            label: Some("RadekHLE9.9 WGPU frame vertices"),
             contents: bytemuck::cast_slice(&[
                 Vertex {
                     position: [-1.0, -1.0],
@@ -476,7 +476,7 @@ impl WgpuPresentation {
 
         if self.surface_input_size != (width, height) {
             let texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("RadekHLE WGPU uploaded frame"),
+                label: Some("RadekHLE9.9 WGPU uploaded frame"),
                 size: wgpu::Extent3d {
                     width,
                     height,
@@ -491,7 +491,7 @@ impl WgpuPresentation {
             });
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("RadekHLE WGPU uploaded frame bindings"),
+                label: Some("RadekHLE9.9 WGPU uploaded frame bindings"),
                 layout: &self.bind_group_layout,
                 entries: &[
                     wgpu::BindGroupEntry {
@@ -535,11 +535,11 @@ impl WgpuPresentation {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("RadekHLE WGPU frame encoder"),
+                label: Some("RadekHLE9.9 WGPU frame encoder"),
             });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("RadekHLE WGPU frame pass"),
+                label: Some("RadekHLE9.9 WGPU frame pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &output_view,
                     resolve_target: None,
@@ -591,7 +591,7 @@ impl WgpuPresentation {
             .unwrap_or(true);
         if target_changed {
             let texture_desc = wgpu::TextureDescriptor {
-                label: Some("RadekHLE WGPU offscreen frame target"),
+                label: Some("RadekHLE9.9 WGPU offscreen frame target"),
                 size: wgpu::Extent3d {
                     width,
                     height,
@@ -607,7 +607,7 @@ impl WgpuPresentation {
                 view_formats: &[],
             };
             self.offscreen_input = Some(self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("RadekHLE WGPU offscreen frame input"),
+                label: Some("RadekHLE9.9 WGPU offscreen frame input"),
                 size: texture_desc.size,
                 mip_level_count: texture_desc.mip_level_count,
                 sample_count: texture_desc.sample_count,
@@ -628,7 +628,7 @@ impl WgpuPresentation {
                 .unwrap()
                 .create_view(&wgpu::TextureViewDescriptor::default());
             let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("RadekHLE WGPU offscreen frame bindings"),
+                label: Some("RadekHLE9.9 WGPU offscreen frame bindings"),
                 layout: &self.bind_group_layout,
                 entries: &[
                     wgpu::BindGroupEntry {
@@ -670,11 +670,11 @@ impl WgpuPresentation {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("RadekHLE WGPU offscreen frame encoder"),
+                label: Some("RadekHLE9.9 WGPU offscreen frame encoder"),
             });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("RadekHLE WGPU offscreen frame pass"),
+                label: Some("RadekHLE9.9 WGPU offscreen frame pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target_view,
                     resolve_target: None,
