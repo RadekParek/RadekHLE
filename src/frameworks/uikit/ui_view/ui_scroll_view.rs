@@ -48,8 +48,9 @@ pub struct UIScrollViewHostObject {
     zoom_scale: CGFloat,
     keyboard_dismiss_mode: UIScrollViewKeyboardDismissMode,
     decelerates: bool,
-    scrolls_to_top: bool,             // (с прошлого фикса)
-    can_cancel_content_touches: bool, // <-- ДОБАВЛЕНО
+    scrolls_to_top: bool, // (с прошлого фикса)
+    can_cancel_content_touches: bool,
+    delays_content_touches: bool,
     /// `UIScrollViewIndicatorStyle` — specifies the look of the scroll
     /// indicators. Per Apple's UIScrollView reference:
     /// https://developer.apple.com/documentation/uikit/uiscrollview/1619615-indicatorstyle
@@ -112,8 +113,9 @@ impl Default for UIScrollViewHostObject {
             keyboard_dismiss_mode: UIScrollViewKeyboardDismissModeNone,
             decelerates: true,
             scrolls_to_top: true,
-            can_cancel_content_touches: true, // <-- ДОБАВЛЕНО
-            indicator_style: 0,               // UIScrollViewIndicatorStyleDefault
+            can_cancel_content_touches: true,
+            delays_content_touches: true,
+            indicator_style: 0,
         }
     }
 }
@@ -237,8 +239,12 @@ pub const CLASSES: ClassExports = objc_classes! {
     env.objc.borrow_mut::<UIScrollViewHostObject>(this).always_bounce_horizontal = value;
 }
 
-- (())setDelaysContentTouches:(bool)_value {
-    // TODO
+- (bool)delaysContentTouches {
+    env.objc.borrow::<UIScrollViewHostObject>(this).delays_content_touches
+}
+
+- (())setDelaysContentTouches:(bool)value {
+    env.objc.borrow_mut::<UIScrollViewHostObject>(this).delays_content_touches = value;
 }
 
 // MARK: - Scroll indicators

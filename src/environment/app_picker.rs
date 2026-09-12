@@ -2439,7 +2439,7 @@ fn make_icon_grid(
 ) -> IconGridStuff {
     let ui_scale = picker_ui_scale(app_frame.size);
     let short_side = app_frame.size.width.min(app_frame.size.height);
-    let icon_size_value = (60.0 * ui_scale).min(short_side * 0.23).max(50.0);
+    let icon_size_value = (54.0 * ui_scale).min(short_side * 0.21).max(46.0);
     let icon_size = CGSize {
         width: icon_size_value,
         height: icon_size_value,
@@ -2478,7 +2478,9 @@ fn make_icon_grid(
     () = msg![env; icon_scroll_view setTag:ICON_SCROLL_TAG];
     () = msg![env; icon_scroll_view setDelegate:delegate];
     () = msg![env; icon_scroll_view setPagingEnabled:true];
-    () = msg![env; icon_scroll_view setDirectionalLockEnabled:true];
+    () = msg![env; icon_scroll_view setDirectionalLockEnabled:false];
+    () = msg![env; icon_scroll_view setDelaysContentTouches:false];
+    () = msg![env; icon_scroll_view setCanCancelContentTouches:true];
     () = msg![env; icon_scroll_view setScrollEnabled:true];
     () = msg![env; icon_scroll_view setBounces:true];
     () = msg![env; icon_scroll_view setAlwaysBounceHorizontal:(pages.len() > 1)];
@@ -2559,7 +2561,7 @@ fn make_icon_grid(
             let label: id = msg_class![env; UILabel alloc];
             let label: id = msg![env; label initWithFrame:label_frame];
             () = msg![env; label setTextAlignment:UITextAlignmentCenter];
-            let font = picker_font(env, (11.0 * ui_scale).max(9.0));
+            let font = picker_font(env, (12.0 * ui_scale).max(10.0));
             () = msg![env; label setFont:font];
             () = msg![env; label setNumberOfLines:2];
             () = msg![env; label setAdjustsFontSizeToFitWidth:true];
@@ -2759,7 +2761,7 @@ fn make_app_launcher_grid(
 ) {
     let ui_scale = picker_ui_scale(super_view_size);
     let short_side = super_view_size.width.min(super_view_size.height);
-    let icon_size = (58.0 * ui_scale).min(short_side * 0.23).max(48.0);
+    let icon_size = (52.0 * ui_scale).min(short_side * 0.21).max(44.0);
     let card_width = (super_view_size.width * 0.40).max(icon_size + 12.0 * ui_scale);
     let items = [
         ("Files", "openFileManager", "/res/picker_files_icon.jpg"),
@@ -2817,7 +2819,7 @@ fn make_app_launcher_grid(
         };
         let mut image = Image::from_bytes(resource).expect("picker icon resource must be valid");
         image.round_corners(
-            14.0, /* four_corners: */ true, /* add_sheen: */ true,
+            12.0, /* four_corners: */ true, /* add_sheen: */ true,
         );
         let image = cg_image::from_image(env, image);
         let image: id = msg_class![env; UIImage imageWithCGImage:image];
@@ -3235,7 +3237,7 @@ fn setup_quick_options(
         origin: CGPoint { x: 0.0, y: 0.0 },
         size: app_frame.size,
     };
-    let content_height = app_frame.size.height.max(6200.0);
+    let content_height = app_frame.size.height.max(8600.0);
     let main_frame = CGRect {
         origin: CGPoint { x: 0.0, y: 0.0 },
         size: CGSize {
@@ -3249,11 +3251,13 @@ fn setup_quick_options(
     // readable row instead of being compressed into overlapping controls.
 
     let settings_background: id =
-        msg_class![env; UIColor colorWithRed:0.72 green:0.72 blue:0.72 alpha:1.0];
+        msg_class![env; UIColor colorWithRed:0.95 green:0.95 blue:0.97 alpha:1.0];
     let settings_backdrop: id = msg_class![env; UIView alloc];
     let settings_backdrop: id = msg![env; settings_backdrop initWithFrame:visible_frame];
-    () = msg![env; settings_backdrop setBackgroundColor:settings_background];
-    () = msg![env; settings_backdrop setOpaque:true];
+    let clear: id = msg_class![env; UIColor clearColor];
+    () = msg![env; settings_backdrop setBackgroundColor:clear];
+    () = msg![env; settings_backdrop setOpaque:false];
+    () = msg![env; settings_backdrop setUserInteractionEnabled:false];
     () = msg![env; settings_backdrop setHidden:true];
     () = msg![env; super_view addSubview:settings_backdrop];
 
@@ -3271,7 +3275,8 @@ fn setup_quick_options(
     () = msg![env; super_view addSubview:main_view];
 
     let ui_scale = picker_ui_scale(app_frame.size);
-    let divider = 160.0 * ui_scale;
+    let divider = 176.0 * ui_scale;
+    let settings_row_height = 108.0 * ui_scale;
 
     let header_frame = CGRect {
         origin: CGPoint {
@@ -3336,11 +3341,11 @@ fn setup_quick_options(
             origin: CGPoint {
                 x: 18.0 * ui_scale
                     + (index % 2) as CGFloat * (category_button_width + 10.0 * ui_scale),
-                y: 68.0 * ui_scale + (index / 2) as CGFloat * 42.0 * ui_scale,
+                y: 70.0 * ui_scale + (index / 2) as CGFloat * 46.0 * ui_scale,
             },
             size: CGSize {
                 width: category_button_width,
-                height: 34.0 * ui_scale,
+                height: 38.0 * ui_scale,
             },
         };
         () = msg![env; button setFrame:frame];
@@ -3641,18 +3646,19 @@ fn setup_quick_options(
         }
         let row_index = category_row_indices[settings_category];
         category_row_indices[settings_category] += 1;
-        let row_center = divider + ((1 + row_index / 2) as CGFloat) * 78.0 * ui_scale;
+        let row_center = divider + ((1 + row_index / 2) as CGFloat) * settings_row_height;
+        let control_center = row_center + 24.0 * ui_scale;
 
         match *row {
             RowKind::Label(text) => {
                 let frame = CGRect {
                     origin: CGPoint {
                         x: 22.0 * ui_scale,
-                        y: row_center - (56.0 * ui_scale) / 2.0,
+                        y: row_center - 43.0 * ui_scale,
                     },
                     size: CGSize {
-                        width: main_frame.size.width * 0.39,
-                        height: 56.0 * ui_scale,
+                        width: main_frame.size.width - 44.0 * ui_scale,
+                        height: 36.0 * ui_scale,
                     },
                 };
 
@@ -3661,15 +3667,15 @@ fn setup_quick_options(
                 let text = ns_string::get_static_str(env, text);
                 () = msg![env; label setText:text];
                 () = msg![env; label setTextAlignment:UITextAlignmentLeft];
-                let label_font = picker_font(env, 16.0 * ui_scale);
+                let label_font = picker_font(env, 15.5 * ui_scale);
                 () = msg![env; label setFont:label_font];
-                () = msg![env; label setNumberOfLines:0];
+                () = msg![env; label setNumberOfLines:2];
                 let black: id = msg_class![env; UIColor blackColor];
                 () = msg![env; label setTextColor:black];
                 let clear: id = msg_class![env; UIColor clearColor];
                 () = msg![env; label setBackgroundColor:clear];
                 () = msg![env; label setAdjustsFontSizeToFitWidth:true];
-                () = msg![env; label setMinimumFontSize:9.0];
+                () = msg![env; label setMinimumFontSize:10.5];
                 () = msg![env; main_view addSubview:label];
                 settings_category_views[settings_category].push(label);
             }
@@ -3679,13 +3685,13 @@ fn setup_quick_options(
                     delegate,
                     main_view,
                     main_frame.size,
-                    row_center,
+                    control_center,
                     buttons,
-                    /* font_size: */ Some(10.5),
+                    /* font_size: */ Some(11.5),
                 );
                 let margin = 6.0 * ui_scale;
-                let controls_width = main_frame.size.width * 0.56;
-                let controls_x = main_frame.size.width * 0.42;
+                let controls_width = main_frame.size.width - 44.0 * ui_scale;
+                let controls_x = 22.0 * ui_scale;
                 let columns = if controls.len() > 6 {
                     (controls.len() + 1) / 2
                 } else {
@@ -3722,7 +3728,7 @@ fn setup_quick_options(
                     }
                     Some("customResolution") => {
                         custom_resolution_button = controls.first().copied().unwrap_or(nil);
-                        custom_resolution_row_center = row_center;
+                        custom_resolution_row_center = control_center;
                     }
                     Some("orientationDefault") => {
                         orientation_buttons = controls.try_into().ok();
@@ -3748,7 +3754,7 @@ fn setup_quick_options(
                     delegate,
                     main_view,
                     main_frame.size,
-                    row_center,
+                    control_center,
                 );
                 ios_version_btn = dropdown.0;
                 ios_version_menu = dropdown.1;
@@ -3761,7 +3767,7 @@ fn setup_quick_options(
                     delegate,
                     main_view,
                     main_frame.size,
-                    row_center,
+                    control_center,
                 );
                 device_model_btn = dropdown.0;
                 device_model_menu = dropdown.1;
@@ -3775,7 +3781,7 @@ fn setup_quick_options(
                     delegate,
                     main_view,
                     main_frame.size,
-                    row_center,
+                    control_center,
                 );
                 graphics_api_btn = dropdown.0;
                 graphics_api_menu = dropdown.1;
@@ -3788,7 +3794,7 @@ fn setup_quick_options(
                     delegate,
                     main_view,
                     main_frame.size,
-                    row_center,
+                    control_center,
                     TEXTURE_FILTERING_ENTRIES,
                     "default",
                     "textureFilteringToggle",
@@ -3805,7 +3811,7 @@ fn setup_quick_options(
                     delegate,
                     main_view,
                     main_frame.size,
-                    row_center,
+                    control_center,
                     MEMORY_MANAGEMENT_ENTRIES,
                     "balanced",
                     "memoryManagementToggle",
@@ -3822,7 +3828,7 @@ fn setup_quick_options(
                     delegate,
                     main_view,
                     main_frame.size,
-                    row_center,
+                    control_center,
                     GLES_OVERRIDE_ENTRIES,
                     "default",
                     "glesOverrideToggle",
@@ -3839,7 +3845,7 @@ fn setup_quick_options(
                     delegate,
                     main_view,
                     main_frame.size,
-                    row_center,
+                    control_center,
                     AUDIO_BACKEND_ENTRIES,
                     "default",
                     "audioBackendToggle",
@@ -3856,7 +3862,7 @@ fn setup_quick_options(
                     delegate,
                     main_view,
                     main_frame.size,
-                    row_center,
+                    control_center,
                 );
                 custom_driver_btn = dropdown.0;
                 custom_driver_menu = dropdown.1;
@@ -3868,11 +3874,11 @@ fn setup_quick_options(
             RowKind::Switch(selector_name, default_state) => {
                 let switch_frame = CGRect {
                     origin: CGPoint {
-                        x: main_frame.size.width * 0.70,
-                        y: row_center - (30.0 * ui_scale) / 2.0,
+                        x: main_frame.size.width - 116.0 * ui_scale,
+                        y: control_center - (30.0 * ui_scale) / 2.0,
                     },
                     size: CGSize {
-                        width: 94.0 * ui_scale,
+                        width: 104.0 * ui_scale,
                         height: 30.0 * ui_scale,
                     },
                 };
@@ -4342,7 +4348,7 @@ const GRAPHICS_API_ENTRIES: &[(&str, crate::options::GraphicsApi)] = &[
 ];
 
 fn settings_menu_gray(env: &mut Environment) -> id {
-    msg_class![env; UIColor grayColor]
+    msg_class![env; UIColor colorWithRed:0.22 green:0.23 blue:0.26 alpha:1.0]
 }
 
 fn settings_menu_selected_green(env: &mut Environment) -> id {
@@ -4486,11 +4492,11 @@ fn make_custom_driver_dropdown(
     let ui_scale = picker_ui_scale(main_view_size);
     let button_frame = CGRect {
         origin: CGPoint {
-            x: main_view_size.width * 0.42,
+            x: 22.0 * ui_scale,
             y: row_center - 17.0 * ui_scale,
         },
         size: CGSize {
-            width: main_view_size.width * 0.55,
+            width: (main_view_size.width - 44.0 * ui_scale).max(180.0 * ui_scale),
             height: 34.0 * ui_scale,
         },
     };
@@ -4498,8 +4504,8 @@ fn make_custom_driver_dropdown(
     () = msg![env; button setFrame:button_frame];
     let title = ns_string::get_static_str(env, "No custom driver");
     () = msg![env; button setTitle:title forState:UIControlStateNormal];
-    let black: id = msg_class![env; UIColor blackColor];
-    () = msg![env; button setTitleColor:black forState:UIControlStateNormal];
+    let white: id = msg_class![env; UIColor whiteColor];
+    () = msg![env; button setTitleColor:white forState:UIControlStateNormal];
     let gray = settings_menu_gray(env);
     () = msg![env; button setBackgroundColor:gray];
     let selector = env.objc.lookup_selector("customDriverToggle").unwrap();
@@ -4551,7 +4557,7 @@ fn make_custom_driver_dropdown(
         };
         let label = ns_string::from_rust_string(env, label);
         () = msg![env; item setTitle:label forState:UIControlStateNormal];
-        () = msg![env; item setTitleColor:black forState:UIControlStateNormal];
+        () = msg![env; item setTitleColor:white forState:UIControlStateNormal];
         let item_background = settings_menu_gray(env);
         () = msg![env; item setBackgroundColor:item_background];
         () = msg![env; item setTag:(if paths.is_empty() { -1 } else { index as NSInteger })];
@@ -4571,11 +4577,11 @@ fn make_graphics_api_dropdown(
     row_center: CGFloat,
 ) -> (id, id, Vec<id>) {
     let ui_scale = picker_ui_scale(super_view_size);
-    let width = (super_view_size.width * 0.56).clamp(170.0, 720.0);
+    let width = (super_view_size.width - 44.0 * ui_scale).max(180.0 * ui_scale);
     let height = 30.0 * ui_scale;
     let frame = CGRect {
         origin: CGPoint {
-            x: super_view_size.width * 0.42,
+            x: 22.0 * ui_scale,
             y: row_center - height / 2.0,
         },
         size: CGSize { width, height },
@@ -4640,11 +4646,11 @@ fn make_settings_dropdown<T>(
     select_selector_name: &str,
 ) -> (id, id, Vec<id>) {
     let ui_scale = picker_ui_scale(super_view_size);
-    let width = (super_view_size.width * 0.56).clamp(170.0, 720.0);
+    let width = (super_view_size.width - 44.0 * ui_scale).max(180.0 * ui_scale);
     let height = 30.0 * ui_scale;
     let button_frame = CGRect {
         origin: CGPoint {
-            x: super_view_size.width * 0.42,
+            x: 22.0 * ui_scale,
             y: row_center - height / 2.0,
         },
         size: CGSize { width, height },
@@ -4722,7 +4728,7 @@ fn make_ios_version_dropdown(
     let item_height: CGFloat = 30.0 * ui_scale;
     let button_frame = CGRect {
         origin: CGPoint {
-            x: super_view_size.width * 0.42,
+            x: 22.0 * ui_scale,
             y: row_center - button_height / 2.0,
         },
         size: CGSize {
@@ -4816,7 +4822,7 @@ fn make_device_model_dropdown(
 
     let btn_frame = CGRect {
         origin: CGPoint {
-            x: super_view_size.width * 0.42,
+            x: 22.0 * ui_scale,
             y: row_center - btn_height / 2.0,
         },
         size: CGSize {

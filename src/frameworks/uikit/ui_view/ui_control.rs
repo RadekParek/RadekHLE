@@ -109,6 +109,58 @@ fn send_actions(env: &mut Environment, this: id, event: id, control_event: UICon
     }
 }
 
+fn scroll_view_ancestor(env: &mut Environment, view: id) -> id {
+    let scroll_view_class = env.objc.get_known_class("UIScrollView", &mut env.mem);
+    let mut parent: id = msg![env; view superview];
+    let mut depth = 0;
+    while parent != nil && depth < 32 {
+        let class = msg![env; parent class];
+        if env.objc.class_is_subclass_of(class, scroll_view_class) {
+            return parent;
+        }
+        parent = msg![env; parent superview];
+        depth += 1;
+    }
+    nil
+}
+
+fn forward_touch_to_scroll_view(
+    env: &mut Environment,
+    view: id,
+    touches: id,
+    event: id,
+    moved: bool,
+) {
+    let scroll_view = scroll_view_ancestor(env, view);
+    if scroll_view == nil {
+        return;
+    }
+    let can_cancel: bool = msg![env; scroll_view canCancelContentTouches];
+    if moved && can_cancel {
+        let touch: id = msg![env; touches anyObject];
+        let previous: CGPoint = msg![env; touch previousLocationInView:view];
+        let current: CGPoint = msg![env; touch locationInView:view];
+        let dx = current.x - previous.x;
+        let dy = current.y - previous.y;
+        if dx * dx + dy * dy > 64.0 {
+            let tracked = env.objc.borrow::<UIControlHostObject>(view).tracked_touch;
+            if tracked == touch {
+                () = msg![env; view cancelTrackingWithEvent:event];
+                release(env, tracked);
+                let host = env.objc.borrow_mut::<UIControlHostObject>(view);
+                host.tracked_touch = nil;
+                host.tracking = false;
+                () = msg![env; view setHighlighted:false];
+            }
+        }
+    }
+    if moved {
+        () = msg![env; scroll_view touchesMoved:touches withEvent:event];
+    } else {
+        () = msg![env; scroll_view touchesEnded:touches withEvent:event];
+    }
+}
+
 pub const CLASSES: ClassExports = objc_classes! {
 
 (env, this, _cmd);
@@ -262,12 +314,14 @@ pub const CLASSES: ClassExports = objc_classes! {
         (false, true) => UIControlEventTouchDragEnter,
         (true, false) => UIControlEventTouchDragExit,
     });
+    forward_touch_to_scroll_view(env, this, touches, event, true);
 }
 - (())touchesEnded:(id)touches // NSSet* of UITouch*
          withEvent:(id)event { // UIEvent*
     let touch: id = msg![env; touches anyObject];
     let tracked_touch = env.objc.borrow::<UIControlHostObject>(this).tracked_touch;
     if tracked_touch != touch {
+        forward_touch_to_scroll_view(env, this, touches, event, false);
         return;
     }
     () = msg![env; this endTrackingWithTouch:touch withEvent:event];
@@ -283,6 +337,7 @@ pub const CLASSES: ClassExports = objc_classes! {
         true => UIControlEventTouchUpInside,
         false => UIControlEventTouchUpOutside,
     });
+    forward_touch_to_scroll_view(env, this, touches, event, false);
 }
 
 - (())addTarget:(id)target

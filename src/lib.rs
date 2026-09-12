@@ -116,6 +116,66 @@ Special options:
     --info
         Print basic information about the app bundle without running the app.
 ";
+fn detect_engine_and_enable_diagnostics(
+    bundle: &bundle::Bundle,
+    fs: &fs::Fs,
+    app_id: &str,
+    options: &mut options::Options,
+) {
+    let display_name = bundle.display_name().to_ascii_lowercase();
+    let bundle_name = bundle.bundle_name().to_ascii_lowercase();
+    let identifier = app_id.to_ascii_lowercase();
+    let unity_markers = [
+        "unity",
+        "unityframework",
+        "data/data.unity3d",
+        "globalgamemanagers",
+    ];
+    let unreal_markers = ["unreal", "ue3", "ue4", "ue5", "epicgames", "cooked"];
+    let has_unity_files = fs.is_file(&bundle.bundle_path().join("Data/data.unity3d"))
+        || fs.is_file(&bundle.bundle_path().join("Data/globalgamemanagers"))
+        || fs.is_file(&bundle.bundle_path().join("UnityFramework"));
+    let has_unreal_files = fs.is_file(&bundle.bundle_path().join("UE3CommandLine.txt"))
+        || fs.is_dir(&bundle.bundle_path().join("CookedAssets"));
+    let is_unity = has_unity_files
+        || unity_markers.iter().any(|marker| {
+            identifier.contains(marker)
+                || display_name.contains(marker)
+                || bundle_name.contains(marker)
+        });
+    let is_unreal = has_unreal_files
+        || unreal_markers.iter().any(|marker| {
+            identifier.contains(marker)
+                || display_name.contains(marker)
+                || bundle_name.contains(marker)
+        });
+
+    let engine = if is_unity {
+        Some("Unity")
+    } else if is_unreal {
+        Some("Unreal")
+    } else {
+        None
+    };
+    if let Some(engine) = engine {
+        options.verbose_logging = true;
+        options.trace_gl_errors = true;
+        unsafe {
+            std::env::set_var("TOUCHHLE_ENGINE_KIND", engine);
+            std::env::set_var("TOUCHHLE_ENGINE_VERBOSE", "1");
+        }
+        log!(
+            "{} engine detected from bundle metadata/files; enabling verbose compatibility and GL diagnostics",
+            engine
+        );
+    } else {
+        unsafe {
+            std::env::remove_var("TOUCHHLE_ENGINE_KIND");
+            std::env::remove_var("TOUCHHLE_ENGINE_VERBOSE");
+        }
+    }
+}
+
 pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
     struct PerfReportGuard;
     impl Drop for PerfReportGuard {
@@ -269,7 +329,7 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
         std::env::remove_var("TOUCHHLE_PRESENT_STRETCH_TO_VIEWPORT");
         if app_id == "com.robtop.geometryjump" {
             std::env::set_var("TOUCHHLE_TOUCH_LOCATION_PORTRAIT_TO_LANDSCAPE", "1");
-            std::env::set_var("TOUCHHLE_TOUCH_MODE", "right");
+            std::env::set_var("TOUCHHLE_TOUCH_MODE", "identity");
         }
         std::env::remove_var("TOUCHHLE_TOUCH_LOCATION_X_OFFSET");
 
@@ -455,6 +515,8 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
             }
         }
     }
+    detect_engine_and_enable_diagnostics(&bundle, &fs, app_id, &mut options);
+
     if options.fps_limit.is_none() {
         if let Some(refresh_rate) = window::host_refresh_rate() {
             options.fps_limit = Some(refresh_rate);
