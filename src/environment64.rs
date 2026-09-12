@@ -25,7 +25,7 @@ const A64_HALT_USER_DEFINED2: u32 = 0x0200_0000;
 const A64_HALT_USER_DEFINED3: u32 = 0x0400_0000;
 const STALL_THRESHOLD: u64 = 512;
 const EXECUTION_SLICE_TICKS: u64 = 1_000;
-const ARM64_BOOTSTRAP_GRACE_SLICES: u32 = 8;
+const ARM64_BOOTSTRAP_GRACE_SLICES: u32 = 10_000;
 
 fn sign_extend(value: u64, bits: u32) -> i64 {
     let shift = 64 - bits;

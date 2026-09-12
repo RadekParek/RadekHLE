@@ -232,7 +232,7 @@ const MEMORY_MANAGEMENT_ENTRIES: &[(&str, crate::options::MemoryManagement)] = &
     ("aggressive", crate::options::MemoryManagement::Aggressive),
 ];
 const GLES_OVERRIDE_ENTRIES: &[(&str, crate::options::GlesOverrideVersion)] = &[
-    ("default", crate::options::GlesOverrideVersion::Default),
+    ("Default", crate::options::GlesOverrideVersion::Default),
     ("gles1.0", crate::options::GlesOverrideVersion::Gles10),
     ("gles1.1", crate::options::GlesOverrideVersion::Gles11),
     ("gles2", crate::options::GlesOverrideVersion::Gles20),
@@ -1182,9 +1182,9 @@ fn app_picker_inner(
         for (idx, &button) in buttons.iter().enumerate() {
             let selected = idx == selected_idx;
             let color: id = if selected {
-                msg_class![env; UIColor colorWithRed:0.20 green:0.42 blue:0.26 alpha:1.0]
+                msg_class![env; UIColor darkGrayColor]
             } else {
-                msg_class![env; UIColor colorWithRed:0.72 green:0.72 blue:0.74 alpha:1.0]
+                msg_class![env; UIColor whiteColor]
             };
             let text_color: id = if selected {
                 msg_class![env; UIColor whiteColor]
@@ -1245,6 +1245,8 @@ fn app_picker_inner(
         value: Option<(i32, i32, i32)>,
     ) {
         let tag = ios_version_tag(value);
+        let white: id = msg_class![env; UIColor whiteColor];
+        let black: id = msg_class![env; UIColor blackColor];
         for &item in items {
             let item_tag: NSInteger = msg![env; item tag];
             let selected = item_tag == tag as NSInteger;
@@ -1254,11 +1256,11 @@ fn app_picker_inner(
                 settings_menu_gray(env)
             };
             () = msg![env; item setBackgroundColor:color];
+            () = msg![env; item setTitleColor:(if selected { white } else { black }) forState:UIControlStateNormal];
         }
         let label = ios_version_label(value);
         let title = ns_string::from_rust_string(env, label);
         () = msg![env; button setTitle:title forState:UIControlStateNormal];
-        let black: id = msg_class![env; UIColor blackColor];
         () = msg![env; button setTitleColor:black forState:UIControlStateNormal];
         () = msg![env; button layoutSubviews];
         release(env, title);
@@ -3250,8 +3252,7 @@ fn setup_quick_options(
     // screen and is hosted in a real scroll view so every option keeps a
     // readable row instead of being compressed into overlapping controls.
 
-    let settings_background: id =
-        msg_class![env; UIColor grayColor];
+    let settings_background: id = msg_class![env; UIColor whiteColor];
     let settings_backdrop: id = msg_class![env; UIView alloc];
     let settings_backdrop: id = msg![env; settings_backdrop initWithFrame:visible_frame];
     () = msg![env; settings_backdrop setBackgroundColor:settings_background];
@@ -3275,7 +3276,7 @@ fn setup_quick_options(
 
     let ui_scale = picker_ui_scale(app_frame.size);
     let divider = 176.0 * ui_scale;
-    let settings_row_height = 108.0 * ui_scale;
+    let settings_row_height = 116.0 * ui_scale;
 
     let header_frame = CGRect {
         origin: CGPoint {
@@ -3700,7 +3701,8 @@ fn setup_quick_options(
                 let button_width = (controls_width - margin * (columns as CGFloat + 1.0))
                     / columns.max(1) as CGFloat;
                 let button_height = if rows > 1 { 25.0 } else { 30.0 } * ui_scale;
-                let row_gap = if rows > 1 { 4.0 } else { 0.0 } * ui_scale;
+                let row_gap = (if rows > 1 { 4.0 } else { 0.0 }) * ui_scale;
+                let buttons_center = row_center + (if rows > 1 { 36.0 } else { 24.0 }) * ui_scale;
                 for (index, &button) in controls.iter().enumerate() {
                     settings_category_views[settings_category].push(button);
                     let row = index / columns.max(1);
@@ -3710,7 +3712,7 @@ fn setup_quick_options(
                     let button_frame = CGRect {
                         origin: CGPoint {
                             x: controls_x + margin + column as CGFloat * (button_width + margin),
-                            y: control_center - row_block_height / 2.0
+                            y: buttons_center - row_block_height / 2.0
                                 + row as CGFloat * (button_height + row_gap),
                         },
                         size: CGSize {
@@ -3829,7 +3831,7 @@ fn setup_quick_options(
                     main_frame.size,
                     control_center,
                     GLES_OVERRIDE_ENTRIES,
-                    "default",
+                    "Default",
                     "glesOverrideToggle",
                     "glesOverride:",
                 );
@@ -4303,7 +4305,8 @@ fn update_device_model_menu(
             settings_menu_gray(env)
         };
         let white: id = msg_class![env; UIColor whiteColor];
-        () = msg![env; item setTitleColor:white forState:UIControlStateNormal];
+        let black: id = msg_class![env; UIColor blackColor];
+        () = msg![env; item setTitleColor:(if is_selected { white } else { black }) forState:UIControlStateNormal];
         () = msg![env; item setBackgroundColor:color];
     }
 
@@ -4347,15 +4350,15 @@ const GRAPHICS_API_ENTRIES: &[(&str, crate::options::GraphicsApi)] = &[
 ];
 
 fn settings_menu_gray(env: &mut Environment) -> id {
-    msg_class![env; UIColor grayColor]
+    msg_class![env; UIColor whiteColor]
 }
 
 fn settings_menu_selected_green(env: &mut Environment) -> id {
-    msg_class![env; UIColor colorWithRed:0.20 green:0.55 blue:0.30 alpha:1.0]
+    msg_class![env; UIColor darkGrayColor]
 }
 
 fn settings_category_gray(env: &mut Environment) -> id {
-    msg_class![env; UIColor lightGrayColor]
+    msg_class![env; UIColor whiteColor]
 }
 
 fn update_graphics_api_dropdown(
@@ -4367,14 +4370,16 @@ fn update_graphics_api_dropdown(
     let selected_color: id = settings_menu_selected_green(env);
     let unselected_color: id = settings_menu_gray(env);
     let white: id = msg_class![env; UIColor whiteColor];
+    let black: id = msg_class![env; UIColor blackColor];
     for (index, &item) in items.iter().enumerate() {
-        let color: id = if GRAPHICS_API_ENTRIES[index].1 == value {
+        let selected = GRAPHICS_API_ENTRIES[index].1 == value;
+        let color: id = if selected {
             selected_color
         } else {
             unselected_color
         };
         () = msg![env; item setBackgroundColor:color];
-        () = msg![env; item setTitleColor:white forState:UIControlStateNormal];
+        () = msg![env; item setTitleColor:(if selected { white } else { black }) forState:UIControlStateNormal];
     }
     let title = ns_string::get_static_str(env, value.label());
     () = msg![env; button setTitle:title forState:UIControlStateNormal];
@@ -4435,14 +4440,16 @@ fn update_settings_dropdown<T>(
     let selected_color: id = settings_menu_selected_green(env);
     let unselected_color: id = settings_menu_gray(env);
     let white: id = msg_class![env; UIColor whiteColor];
+    let black: id = msg_class![env; UIColor blackColor];
     for (index, &item) in items.iter().enumerate() {
-        let background = if index == selected {
+        let selected_item = index == selected;
+        let background = if selected_item {
             selected_color
         } else {
             unselected_color
         };
         () = msg![env; item setBackgroundColor:background];
-        () = msg![env; item setTitleColor:white forState:UIControlStateNormal];
+        () = msg![env; item setTitleColor:(if selected_item { white } else { black }) forState:UIControlStateNormal];
     }
     if let Some((label, _)) = entries.get(selected) {
         let title = ns_string::get_static_str(env, label);
@@ -4503,8 +4510,8 @@ fn make_custom_driver_dropdown(
     () = msg![env; button setFrame:button_frame];
     let title = ns_string::get_static_str(env, "No custom driver");
     () = msg![env; button setTitle:title forState:UIControlStateNormal];
-    let white: id = msg_class![env; UIColor whiteColor];
-    () = msg![env; button setTitleColor:white forState:UIControlStateNormal];
+    let black: id = msg_class![env; UIColor blackColor];
+    () = msg![env; button setTitleColor:black forState:UIControlStateNormal];
     let gray = settings_menu_gray(env);
     () = msg![env; button setBackgroundColor:gray];
     let selector = env.objc.lookup_selector("customDriverToggle").unwrap();
@@ -4556,7 +4563,7 @@ fn make_custom_driver_dropdown(
         };
         let label = ns_string::from_rust_string(env, label);
         () = msg![env; item setTitle:label forState:UIControlStateNormal];
-        () = msg![env; item setTitleColor:white forState:UIControlStateNormal];
+        () = msg![env; item setTitleColor:black forState:UIControlStateNormal];
         let item_background = settings_menu_gray(env);
         () = msg![env; item setBackgroundColor:item_background];
         () = msg![env; item setTag:(if paths.is_empty() { -1 } else { index as NSInteger })];
@@ -4594,9 +4601,9 @@ fn make_graphics_api_dropdown(
     () = msg![env; button_label setFont:button_font];
     () = msg![env; button_label setAdjustsFontSizeToFitWidth:true];
     () = msg![env; button_label setMinimumFontSize:8.0];
-    let white: id = msg_class![env; UIColor whiteColor];
+    let black: id = msg_class![env; UIColor blackColor];
     let gray: id = settings_menu_gray(env);
-    () = msg![env; button setTitleColor:white forState:UIControlStateNormal];
+    () = msg![env; button setTitleColor:black forState:UIControlStateNormal];
     () = msg![env; button setBackgroundColor:gray];
     () = msg![env; button setFrame:frame];
     () = msg![env; button layoutSubviews];
@@ -4621,7 +4628,7 @@ fn make_graphics_api_dropdown(
         () = msg![env; item_label setFont:item_font];
         () = msg![env; item_label setAdjustsFontSizeToFitWidth:true];
         () = msg![env; item_label setMinimumFontSize:6.0];
-        () = msg![env; item setTitleColor:white forState:UIControlStateNormal];
+        () = msg![env; item setTitleColor:black forState:UIControlStateNormal];
         () = msg![env; item setBackgroundColor:gray];
         () = msg![env; item setFrame:(CGRect { origin: CGPoint { x: 0.0, y: index as CGFloat * height }, size: CGSize { width, height } })];
         () = msg![env; item layoutSubviews];
@@ -4663,9 +4670,9 @@ fn make_settings_dropdown<T>(
     () = msg![env; button_label setFont:button_font];
     () = msg![env; button_label setAdjustsFontSizeToFitWidth:true];
     () = msg![env; button_label setMinimumFontSize:8.0];
-    let white: id = msg_class![env; UIColor whiteColor];
+    let black: id = msg_class![env; UIColor blackColor];
     let gray: id = settings_menu_gray(env);
-    () = msg![env; button setTitleColor:white forState:UIControlStateNormal];
+    () = msg![env; button setTitleColor:black forState:UIControlStateNormal];
     () = msg![env; button setBackgroundColor:gray];
     () = msg![env; button setFrame:button_frame];
     () = msg![env; button layoutSubviews];
@@ -4698,7 +4705,7 @@ fn make_settings_dropdown<T>(
         () = msg![env; item_label setFont:item_font];
         () = msg![env; item_label setAdjustsFontSizeToFitWidth:true];
         () = msg![env; item_label setMinimumFontSize:6.0];
-        () = msg![env; item setTitleColor:white forState:UIControlStateNormal];
+        () = msg![env; item setTitleColor:black forState:UIControlStateNormal];
         () = msg![env; item setBackgroundColor:gray];
         () = msg![env; item setFrame:(CGRect {
             origin: CGPoint { x: 0.0, y: index as CGFloat * height },
@@ -4743,11 +4750,12 @@ fn make_ios_version_dropdown(
     let button_font = picker_font(env, 13.0 * ui_scale);
     () = msg![env; button_label setFont:button_font];
     let white: id = msg_class![env; UIColor whiteColor];
+    let black: id = msg_class![env; UIColor blackColor];
     let dark_gray: id = settings_menu_gray(env);
     () = msg![env; button_label setAdjustsFontSizeToFitWidth:true];
     () = msg![env; button_label setMinimumFontSize:8.0];
     let magenta: id = settings_menu_selected_green(env);
-    () = msg![env; button setTitleColor:white forState:UIControlStateNormal];
+    () = msg![env; button setTitleColor:black forState:UIControlStateNormal];
     () = msg![env; button setBackgroundColor:dark_gray];
     () = msg![env; button setFrame:button_frame];
     () = msg![env; button layoutSubviews];
@@ -4787,7 +4795,7 @@ fn make_ios_version_dropdown(
         () = msg![env; item_label setFont:item_font];
         () = msg![env; item_label setAdjustsFontSizeToFitWidth:true];
         () = msg![env; item_label setMinimumFontSize:6.0];
-        let item_text_color: id = msg_class![env; UIColor whiteColor];
+        let item_text_color: id = if *tag == 0 { white } else { black };
         () = msg![env; item setTitleColor:item_text_color forState:UIControlStateNormal];
         let item_color: id = if *tag == 0 { magenta } else { dark_gray };
         () = msg![env; item setBackgroundColor:item_color];
@@ -4831,12 +4839,13 @@ fn make_device_model_dropdown(
     };
 
     let dark_gray: id = settings_menu_gray(env);
+    let border_color: id = settings_menu_selected_green(env);
 
     // Bordered container for the toggle button (a darker frame behind a lighter
     // inner button), so it reads as a control on the white menu background.
     let border_view: id = msg_class![env; UIView alloc];
     let border_view: id = msg![env; border_view initWithFrame:btn_frame];
-    () = msg![env; border_view setBackgroundColor:dark_gray];
+    () = msg![env; border_view setBackgroundColor:border_color];
     () = msg![env; super_view addSubview:border_view];
 
     let inner_frame = CGRect {
@@ -4894,7 +4903,7 @@ fn make_device_model_dropdown(
     // `update_device_model_menu`).
     let entries = device_model_entries();
     let item_selector = env.objc.lookup_selector("deviceModel:").unwrap();
-    let white: id = msg_class![env; UIColor whiteColor];
+    let black: id = msg_class![env; UIColor blackColor];
     let mut items: Vec<id> = Vec::new();
     for (j, (title, tag)) in entries.into_iter().enumerate() {
         let y_pos = (j as CGFloat) * row_height;
@@ -4914,7 +4923,7 @@ fn make_device_model_dropdown(
         () = msg![env; item_label setFont:item_font];
         () = msg![env; item_label setAdjustsFontSizeToFitWidth:true];
         () = msg![env; item_label setMinimumFontSize:8.0];
-        () = msg![env; item_btn setTitleColor:white forState:UIControlStateNormal];
+        () = msg![env; item_btn setTitleColor:black forState:UIControlStateNormal];
         () = msg![env; item_btn setBackgroundColor:dark_gray];
         () = msg![env; item_btn setFrame:item_frame];
         () = msg![env; item_btn layoutSubviews];

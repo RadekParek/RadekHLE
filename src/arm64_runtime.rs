@@ -545,6 +545,7 @@ pub fn can_dispatch(symbol: &str) -> bool {
         | "objc_msgSend_fp2ret" | "objc_getClass" | "objc_getRequiredClass"
         | "objc_lookUpClass" | "object_getClass" | "object_getClassName"
         | "sel_registerName" | "sel_getUid" | "NSSelectorFromString"
+        | "NSStringFromClass" | "NSClassFromString" | "NSStringFromSelector"
         | "NSSearchPathForDirectoriesInDomains" | "time" | "srand" | "rand"
         | "objc_autoreleasePoolPush" | "objc_autoreleasePoolPop"
         | "objc_exception_throw" | "objc_begin_catch" | "objc_end_catch"
@@ -2559,6 +2560,52 @@ fn objc_class(mem: &mut Mem64, name: u64) -> Result<u64, String> {
     set_objc_field(mem, object, 56, name);
     Ok(object)
 }
+fn arm64_class_name_is_known(state: &RuntimeState, name: &str) -> bool {
+    state.class_objects.contains_key(name)
+        || state.objc_classes.iter().any(|class| class.name == name)
+        || search_host_dylibs(|dylib| dylib.class_exports, name).is_some()
+        || matches!(
+            name,
+            "NSObject"
+                | "NSString"
+                | "NSMutableString"
+                | "NSArray"
+                | "NSMutableArray"
+                | "NSDictionary"
+                | "NSMutableDictionary"
+                | "NSNumber"
+                | "NSData"
+                | "NSMutableData"
+                | "NSBundle"
+                | "UIApplication"
+                | "UIWindow"
+                | "UIView"
+                | "UIViewController"
+                | "EAGLView"
+                | "EAGLContext"
+                | "UIDevice"
+                | "UIScreen"
+                | "NSThread"
+                | "NSRunLoop"
+                | "CADisplayLink"
+                | "UnityFramework"
+                | "MTLDevice"
+                | "MTLCommandQueue"
+        )
+}
+
+fn objc_class_from_name(
+    mem: &mut Mem64,
+    state: &mut RuntimeState,
+    name: &str,
+) -> Result<u64, String> {
+    if arm64_class_name_is_known(state, name) {
+        objc_class_for_name(mem, state, name)
+    } else {
+        Ok(0)
+    }
+}
+
 fn objc_class_for_name(
     mem: &mut Mem64,
     state: &mut RuntimeState,
@@ -2649,18 +2696,32 @@ fn initialize_guest_ivars(
     Ok(())
 }
 
-fn receiver_class_name(mem: &Mem64, receiver: u64, kind: u64) -> Option<String> {
-    let class = if kind == A64_KIND_CLASS {
-        receiver
+fn objc_class_pointer_for_object(mem: &Mem64, object: u64, kind: u64) -> u64 {
+    if object == 0 {
+        return 0;
+    }
+    if kind == A64_KIND_CLASS {
+        return object;
+    }
+    let first_word = mem.read_u64(object).unwrap_or(0);
+    if first_word != 0
+        && mem.allocation_size(first_word).is_some()
+        && objc_kind(mem, first_word) == Some(A64_KIND_CLASS)
+    {
+        first_word
     } else {
-        let first_word = mem.read_u64(receiver).ok().unwrap_or(0);
-        if first_word != 0 && mem.allocation_size(first_word).is_some() {
-            first_word
-        } else {
-            objc_field(mem, receiver, 48)
-        }
-    };
-    objc_text(mem, objc_field(mem, class, 56)).and_then(|bytes| String::from_utf8(bytes).ok())
+        objc_field(mem, object, 48)
+    }
+}
+
+fn objc_class_name_pointer(mem: &Mem64, object: u64, kind: u64) -> u64 {
+    let class = objc_class_pointer_for_object(mem, object, kind);
+    objc_field(mem, class, 56)
+}
+
+fn receiver_class_name(mem: &Mem64, receiver: u64, kind: u64) -> Option<String> {
+    objc_text(mem, objc_class_name_pointer(mem, receiver, kind))
+        .and_then(|bytes| String::from_utf8(bytes).ok())
 }
 
 fn guest_method(
@@ -3334,18 +3395,75 @@ pub fn dispatch(
             objc_send(mem, context, state)?;
             Ok(true)
         }
+        "NSStringFromClass" => {
+            let class_name = if context.regs[0] == 0 {
+                None
+            } else {
+                receiver_class_name(mem, context.regs[0], A64_KIND_CLASS)
+            };
+            let result = match class_name {
+                Some(ref name) => objc_string(mem, name)?,
+                None => 0,
+            };
+            log_once_fmt!(
+                "ARM64 NSStringFromClass: class={:#x} name={} result={:#x} [repeated calls suppressed]",
+                context.regs[0],
+                class_name.as_deref().unwrap_or("<nil>"),
+                result,
+            );
+            return_value(context, result);
+            Ok(true)
+        }
+        "NSClassFromString" => {
+            let name = objc_text(mem, context.regs[0])
+                .and_then(|bytes| String::from_utf8(bytes).ok());
+            let result = match name.as_deref() {
+                Some(name) if !name.is_empty() => objc_class_from_name(mem, state, name)?,
+                _ => 0,
+            };
+            log_once_fmt!(
+                "ARM64 NSClassFromString: name={} result={:#x} [repeated calls suppressed]",
+                name.as_deref().unwrap_or("<nil>"),
+                result,
+            );
+            return_value(context, result);
+            Ok(true)
+        }
+        "NSStringFromSelector" => {
+            let selector = c_string(mem, context.regs[0])
+                .and_then(|bytes| String::from_utf8(bytes).ok());
+            let result = match selector.as_deref() {
+                Some(selector) => objc_string(mem, selector)?,
+                None => 0,
+            };
+            return_value(context, result);
+            Ok(true)
+        }
         "objc_getClass" | "objc_getRequiredClass" | "objc_lookUpClass" => {
-            let class = objc_class(mem, context.regs[0])?;
-            return_value(context, class);
+            let result = c_string(mem, context.regs[0])
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .map(|class_name| objc_class_from_name(mem, state, &class_name))
+                .transpose()?
+                .unwrap_or(0);
+            if result == 0 && symbol == "objc_getRequiredClass" {
+                log_once_fmt!(
+                    "ARM64 objc_getRequiredClass could not resolve {:?}; returning nil [repeated missing classes suppressed]",
+                    c_string(mem, context.regs[0]).map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
+                );
+            }
+            return_value(context, result);
             Ok(true)
         }
         "object_getClass" => {
-            return_value(context, if context.regs[0] == 0 { 0 } else { objc_class(mem, context.regs[0])? });
+            let object = context.regs[0];
+            let kind = objc_kind(mem, object).unwrap_or(A64_KIND_GENERIC);
+            return_value(context, objc_class_pointer_for_object(mem, object, kind));
             Ok(true)
         }
         "object_getClassName" => {
-            let class_name = objc_field(mem, context.regs[0], 56);
-            return_value(context, class_name);
+            let object = context.regs[0];
+            let kind = objc_kind(mem, object).unwrap_or(A64_KIND_GENERIC);
+            return_value(context, objc_class_name_pointer(mem, object, kind));
             Ok(true)
         }
         "sel_registerName" | "sel_getUid" => {
@@ -4894,6 +5012,76 @@ mod tests {
         )
         .unwrap());
         assert_eq!(context.regs[0], 0x1234);
+    }
+
+    #[test]
+    fn arm64_foundation_class_string_round_trip_is_nil_safe() {
+        let mut memory = Mem64::new();
+        let mut runtime_state = state();
+        let mut context = touchHLE_DynarmicA64Context::default();
+
+        let class_name = memory.alloc_zeroed(9).unwrap();
+        memory.write_bytes(class_name, b"EAGLView").unwrap();
+        context.regs[0] = class_name;
+        assert!(dispatch(
+            &mut memory,
+            &mut context,
+            "_objc_getClass",
+            &mut runtime_state,
+            None,
+        )
+        .unwrap());
+        let class = context.regs[0];
+        assert_ne!(class, 0);
+
+        context.regs[0] = class;
+        assert!(dispatch(
+            &mut memory,
+            &mut context,
+            "_NSStringFromClass",
+            &mut runtime_state,
+            None,
+        )
+        .unwrap());
+        let class_string = context.regs[0];
+        assert_eq!(
+            objc_text(&memory, class_string).as_deref(),
+            Some(&b"EAGLView"[..])
+        );
+
+        context.regs[0] = class_string;
+        assert!(dispatch(
+            &mut memory,
+            &mut context,
+            "_NSClassFromString",
+            &mut runtime_state,
+            None,
+        )
+        .unwrap());
+        assert_eq!(context.regs[0], class);
+
+        context.regs[0] = 0;
+        assert!(dispatch(
+            &mut memory,
+            &mut context,
+            "_NSStringFromClass",
+            &mut runtime_state,
+            None,
+        )
+        .unwrap());
+        assert_eq!(context.regs[0], 0);
+
+        let unknown = objc_string(&mut memory, "NoSuchClass").unwrap();
+        context.regs[0] = unknown;
+        assert!(dispatch(
+            &mut memory,
+            &mut context,
+            "_NSClassFromString",
+            &mut runtime_state,
+            None,
+        )
+        .unwrap());
+        assert_eq!(context.regs[0], 0);
     }
 
     #[test]
