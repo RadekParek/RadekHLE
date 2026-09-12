@@ -1027,7 +1027,7 @@ fn app_picker_inner(
         let font: id = picker_font(env, font_size);
         () = msg![env; label setFont:font];
         () = msg![env; label setAdjustsFontSizeToFitWidth:true];
-        () = msg![env; label setMinimumFontSize:8.0];
+        () = msg![env; label setMinimumFontSize:9.0];
         let text_color: id = if have_wallpaper {
             msg_class![env; UIColor whiteColor]
         } else {
@@ -3192,7 +3192,7 @@ fn setup_quick_options(
     () = msg![env; super_view addSubview:main_view];
 
     let ui_scale = picker_ui_scale(app_frame.size);
-    let divider = 42.0 * ui_scale;
+    let divider = 112.0 * ui_scale;
 
     let header_frame = CGRect {
         origin: CGPoint {
@@ -3209,7 +3209,7 @@ fn setup_quick_options(
     let header_text = ns_string::get_static_str(env, "Settings");
     () = msg![env; header setText:header_text];
     () = msg![env; header setTextAlignment:UITextAlignmentLeft];
-    let header_font = picker_font(env, 24.0 * ui_scale);
+    let header_font = picker_font(env, 27.0 * ui_scale);
     () = msg![env; header setFont:header_font];
     let black: id = msg_class![env; UIColor blackColor];
     () = msg![env; header setTextColor:black];
@@ -3232,7 +3232,7 @@ fn setup_quick_options(
     let subtitle_text = ns_string::get_static_str(env, "Scroll for more options");
     () = msg![env; subtitle setText:subtitle_text];
     () = msg![env; subtitle setTextAlignment:UITextAlignmentLeft];
-    let subtitle_font = picker_font(env, 13.0 * ui_scale);
+    let subtitle_font = picker_font(env, 14.0 * ui_scale);
     () = msg![env; subtitle setFont:subtitle_font];
     let black: id = msg_class![env; UIColor blackColor];
     () = msg![env; subtitle setTextColor:black];
@@ -3265,7 +3265,7 @@ fn setup_quick_options(
             },
             size: CGSize {
                 width: category_button_width,
-                height: 34.0 * ui_scale,
+                height: 36.0 * ui_scale,
             },
         };
         () = msg![env; button setFrame:frame];
@@ -3273,10 +3273,11 @@ fn setup_quick_options(
         () = msg![env; button setTitle:text forState:UIControlStateNormal];
         let title_color: id = msg_class![env; UIColor blackColor];
         () = msg![env; button setTitleColor:title_color forState:UIControlStateNormal];
-        let font = picker_font(env, 13.0 * ui_scale);
+        let font = picker_font(env, 14.0 * ui_scale);
         let label: id = msg![env; button titleLabel];
         () = msg![env; label setFont:font];
         () = msg![env; label setAdjustsFontSizeToFitWidth:true];
+        () = msg![env; button layoutSubviews];
         () = msg![env; button addTarget:delegate
                                  action:(env.objc.lookup_selector(selector_name).unwrap())
                        forControlEvents:UIControlEventTouchUpInside];
@@ -3583,7 +3584,7 @@ fn setup_quick_options(
                 let text = ns_string::get_static_str(env, text);
                 () = msg![env; label setText:text];
                 () = msg![env; label setTextAlignment:UITextAlignmentLeft];
-                let label_font = picker_font(env, 15.0 * ui_scale);
+                let label_font = picker_font(env, 16.0 * ui_scale);
                 () = msg![env; label setFont:label_font];
                 () = msg![env; label setNumberOfLines:0];
                 let black: id = msg_class![env; UIColor blackColor];
@@ -3831,6 +3832,15 @@ fn setup_quick_options(
             }
         }
     }
+
+    let max_category_rows = category_row_indices.iter().copied().max().unwrap_or(0);
+    let settings_row_pairs = ((max_category_rows + 1) / 2).max(1);
+    let settings_content_height =
+        divider + ((settings_row_pairs + 1) as CGFloat * 78.0 * ui_scale) + 34.0 * ui_scale;
+    () = msg![env; main_view setContentSize:(CGSize {
+        width: main_frame.size.width,
+        height: settings_content_height,
+    })];
 
     let ui_scale = picker_ui_scale(main_frame.size);
     let width = (main_frame.size.width * 0.56).clamp(170.0, 720.0);
