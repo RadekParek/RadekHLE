@@ -321,6 +321,7 @@ struct AppPickerDelegateHostObject {
     settings_category: Option<usize>,
     custom_driver_menu_toggle: bool,
     custom_driver_selected: Option<i32>,
+    custom_driver_enabled: Option<bool>,
     scale_hack_default: bool,
     scale_hack1: bool,
     scale_hack_half: bool,
@@ -477,6 +478,10 @@ const CLASSES: ClassExports = objc_classes! {
 }
 - (())customDriverToggle {
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).custom_driver_menu_toggle = true;
+}
+- (())customDriver:(id)switch {
+    let switch_state: bool = msg![env; switch isOn];
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).custom_driver_enabled = Some(switch_state);
 }
 - (())customDriverSelected:(id)sender {
     let tag: NSInteger = msg![env; sender tag];
@@ -1126,6 +1131,11 @@ fn app_picker_inner(
     let host_resolutions = crate::window::host_screen_resolutions();
     let quick_options_stuff =
         setup_quick_options(env, delegate, main_view, app_frame, &host_resolutions);
+    let mut quick_options_custom_driver_enabled = false;
+    () = msg![env; (quick_options_stuff.custom_driver_switch)
+        setOn:quick_options_custom_driver_enabled];
+    () = msg![env; (quick_options_stuff.custom_driver_btn)
+        setEnabled:quick_options_custom_driver_enabled];
     let mut quick_options_scale_hack: Option<f32> = None;
     let mut quick_options_custom_resolution: Option<(u32, u32)> = None;
     let mut quick_options_fullscreen: Option<()> = None;
@@ -1350,7 +1360,7 @@ fn app_picker_inner(
     update_quality_button_group(
         env,
         &quick_options_stuff.quality_buttons,
-        0,
+        1,
         &[1, 2, 4, 8, 16],
         quick_options_anisotropic_filtering,
     );
@@ -1371,7 +1381,7 @@ fn app_picker_inner(
     update_quality_button_group(
         env,
         &quick_options_stuff.quality_buttons,
-        1,
+        0,
         &[1, 2, 4, 8],
         quick_options_anti_aliasing,
     );
@@ -1387,8 +1397,13 @@ fn app_picker_inner(
     () = msg![env; (quick_options_stuff.vsync_switch) setOn:quick_options_vsync];
     () = msg![env; (quick_options_stuff.battery_saver_switch) setOn:quick_options_battery_saver];
     () = msg![env; (quick_options_stuff.ultra_battery_saver_switch) setOn:quick_options_ultra_battery_saver];
+    () = msg![env; (quick_options_stuff.log_file_switch) setOn:quick_options_log_file];
     () =
         msg![env; (quick_options_stuff.verbose_logging_switch) setOn:quick_options_verbose_logging];
+    () = msg![env; (quick_options_stuff.verbose_logging_switch)
+        setEnabled:quick_options_log_file];
+    () = msg![env; (quick_options_stuff.trace_gl_errors_switch)
+        setEnabled:quick_options_log_file];
     () = msg![env; (quick_options_stuff.fix_texture_min_filter_switch)
         setOn:quick_options_fix_texture_min_filter];
     () = msg![env; (quick_options_stuff.force_composition_switch)
@@ -1906,12 +1921,18 @@ fn app_picker_inner(
             quick_options_angle_driver = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.log_file) {
             quick_options_log_file = enabled;
+            () = msg![env; (quick_options_stuff.log_file_switch) setOn:enabled];
+            () = msg![env; (quick_options_stuff.verbose_logging_switch) setEnabled:enabled];
+            () = msg![env; (quick_options_stuff.trace_gl_errors_switch) setEnabled:enabled];
             if !enabled {
                 quick_options_verbose_logging = false;
+                quick_options_trace_gl_errors = false;
                 () = msg![env; (quick_options_stuff.verbose_logging_switch) setOn:false];
+                () = msg![env; (quick_options_stuff.trace_gl_errors_switch) setOn:false];
             }
         } else if let Some(enabled) = std::mem::take(&mut host_obj.trace_gl_errors) {
-            quick_options_trace_gl_errors = enabled;
+            quick_options_trace_gl_errors = enabled && quick_options_log_file;
+            () = msg![env; (quick_options_stuff.trace_gl_errors_switch) setOn:quick_options_trace_gl_errors];
         } else if let Some(enabled) = std::mem::take(&mut host_obj.fast_memory) {
             quick_options_fast_memory = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.force_32_bit) {
@@ -1951,7 +1972,8 @@ fn app_picker_inner(
             }
             () = msg![env; (quick_options_stuff.ultra_battery_saver_switch) setOn:enabled];
         } else if let Some(enabled) = std::mem::take(&mut host_obj.verbose_logging) {
-            quick_options_verbose_logging = enabled;
+            quick_options_verbose_logging = enabled && quick_options_log_file;
+            () = msg![env; (quick_options_stuff.verbose_logging_switch) setOn:quick_options_verbose_logging];
         } else if let Some(enabled) = std::mem::take(&mut host_obj.shader_compatibility_fixes) {
             quick_options_shader_compatibility_fixes = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.fix_texture_min_filter) {
@@ -1966,9 +1988,11 @@ fn app_picker_inner(
             () = msg![env; (quick_options_stuff.high_performance_switch) setOn:enabled];
             if !enabled {
                 quick_options_force_max_clocks = false;
+                () = msg![env; (quick_options_stuff.force_max_clocks_switch) setOn:false];
             }
         } else if let Some(enabled) = std::mem::take(&mut host_obj.force_max_clocks) {
             quick_options_force_max_clocks = enabled;
+            () = msg![env; (quick_options_stuff.force_max_clocks_switch) setOn:enabled];
             if enabled {
                 quick_options_high_performance = true;
                 () = msg![env; (quick_options_stuff.high_performance_switch) setOn:true];
@@ -1989,11 +2013,23 @@ fn app_picker_inner(
         } else if let Some(enabled) = std::mem::take(&mut host_obj.low_audio_quality) {
             quick_options_low_audio_quality = enabled;
             () = msg![env; (quick_options_stuff.low_audio_quality_switch) setOn:enabled];
+        } else if let Some(enabled) = std::mem::take(&mut host_obj.custom_driver_enabled) {
+            quick_options_custom_driver_enabled = enabled;
+            () = msg![env; (quick_options_stuff.custom_driver_btn) setEnabled:enabled];
+            if !enabled {
+                () = msg![env; (quick_options_stuff.custom_driver_menu) setHidden:true];
+            }
         } else if let Some(index) = std::mem::take(&mut host_obj.custom_driver_selected) {
             if index < 0 {
                 quick_options_custom_driver = None;
+                quick_options_custom_driver_enabled = false;
+                () = msg![env; (quick_options_stuff.custom_driver_switch) setOn:false];
+                () = msg![env; (quick_options_stuff.custom_driver_btn) setEnabled:false];
             } else if let Some(path) = quick_options_stuff.custom_driver_paths.get(index as usize) {
                 quick_options_custom_driver = Some(path.clone());
+                quick_options_custom_driver_enabled = true;
+                () = msg![env; (quick_options_stuff.custom_driver_switch) setOn:true];
+                () = msg![env; (quick_options_stuff.custom_driver_btn) setEnabled:true];
             }
             let title = quick_options_custom_driver
                 .as_ref()
@@ -2024,7 +2060,7 @@ fn app_picker_inner(
             update_quality_button_group(
                 env,
                 &quick_options_stuff.quality_buttons,
-                0,
+                1,
                 &[1, 2, 4, 8, 16],
                 value,
             );
@@ -2045,7 +2081,7 @@ fn app_picker_inner(
             update_quality_button_group(
                 env,
                 &quick_options_stuff.quality_buttons,
-                1,
+                0,
                 &[1, 2, 4, 8],
                 value,
             );
@@ -2210,8 +2246,12 @@ fn app_picker_inner(
         }
         .to_string(),
     );
-    if let Some(path) = &quick_options_custom_driver {
-        option_args.push(format!("--custom-driver={}", path.display()));
+    if quick_options_custom_driver_enabled {
+        if let Some(path) = &quick_options_custom_driver {
+            option_args.push(format!("--custom-driver={}", path.display()));
+        } else {
+            option_args.push("--disable-custom-driver".to_string());
+        }
     } else {
         option_args.push("--disable-custom-driver".to_string());
     }
@@ -3146,6 +3186,7 @@ struct QuickOptionsStuff {
     audio_backend_menu: id,
     audio_backend_items: Vec<id>,
     custom_driver_btn: id,
+    custom_driver_switch: id,
     custom_driver_menu: id,
     custom_driver_paths: Vec<PathBuf>,
     quality_buttons: Vec<Vec<id>>,
@@ -3160,13 +3201,16 @@ struct QuickOptionsStuff {
     render_rotation_buttons: [id; 5],
     frame_generation_switch: id,
     high_performance_switch: id,
+    force_max_clocks_switch: id,
     fps_limit_buttons: [id; 4],
     low_audio_quality_switch: id,
     no_texture_compression_switch: id,
     vsync_switch: id,
     battery_saver_switch: id,
     ultra_battery_saver_switch: id,
+    log_file_switch: id,
     verbose_logging_switch: id,
+    trace_gl_errors_switch: id,
     fix_texture_min_filter_switch: id,
     force_composition_switch: id,
     revert_x_axis_switch: id,
@@ -3275,8 +3319,11 @@ fn setup_quick_options(
     () = msg![env; super_view addSubview:main_view];
 
     let ui_scale = picker_ui_scale(app_frame.size);
-    let divider = 176.0 * ui_scale;
-    let settings_row_height = 116.0 * ui_scale;
+    // Leave room for the four top-level categories before the selected section's
+    // settings begin. Each category is a full-width card so its title stays
+    // readable on both phones and tablets.
+    let divider = 360.0 * ui_scale;
+    let settings_row_height = 104.0 * ui_scale;
 
     let header_frame = CGRect {
         origin: CGPoint {
@@ -3322,42 +3369,60 @@ fn setup_quick_options(
     () = msg![env; subtitle setTextColor:black];
     () = msg![env; main_view addSubview:subtitle];
 
-    let category_titles = ["Performance", "Graphics", "Compatibility", "Display"];
-    let category_selectors = [
-        "settingsRuntime",
-        "settingsGraphics",
-        "settingsSystem",
-        "settingsVideoDisplay",
+    let category_cards = [
+        (
+            "Performance",
+            "CPU, GPU, memory and frame pacing",
+            "settingsRuntime",
+        ),
+        (
+            "Display & Graphics",
+            "Resolution, rendering, image quality and frame generation",
+            "settingsGraphics",
+        ),
+        (
+            "System & Compatibility",
+            "iOS, device, audio, networking and compatibility",
+            "settingsSystem",
+        ),
+        (
+            "Controls, Games & Debug",
+            "Controls, game management and diagnostics",
+            "settingsVideoDisplay",
+        ),
     ];
-    let category_button_width = (main_frame.size.width - 46.0 * ui_scale) / 2.0;
+    let category_button_width = main_frame.size.width - 44.0 * ui_scale;
     let mut settings_category_buttons = [nil; 4];
-    for (index, (title, selector_name)) in category_titles
-        .iter()
-        .zip(category_selectors.iter())
-        .enumerate()
-    {
+    for (index, (title, subtitle, selector_name)) in category_cards.iter().enumerate() {
         let button: id = msg_class![env; UIButton buttonWithType:UIButtonTypeCustom];
         let frame = CGRect {
             origin: CGPoint {
-                x: 18.0 * ui_scale
-                    + (index % 2) as CGFloat * (category_button_width + 10.0 * ui_scale),
-                y: 70.0 * ui_scale + (index / 2) as CGFloat * 46.0 * ui_scale,
+                x: 22.0 * ui_scale,
+                y: 70.0 * ui_scale + index as CGFloat * 70.0 * ui_scale,
             },
             size: CGSize {
                 width: category_button_width,
-                height: 38.0 * ui_scale,
+                height: 58.0 * ui_scale,
             },
         };
         () = msg![env; button setFrame:frame];
-        let text = ns_string::get_static_str(env, title);
+        let text = ns_string::from_rust_string(env, format!("{}\n{}", title, subtitle));
         () = msg![env; button setTitle:text forState:UIControlStateNormal];
+        release(env, text);
         let title_color: id = msg_class![env; UIColor blackColor];
         () = msg![env; button setTitleColor:title_color forState:UIControlStateNormal];
-        let font = picker_font(env, 13.0 * ui_scale);
+        let font = picker_font(env, 13.5 * ui_scale);
         let label: id = msg![env; button titleLabel];
         () = msg![env; label setFont:font];
-        () = msg![env; label setNumberOfLines:1];
+        () = msg![env; label setNumberOfLines:2];
+        () = msg![env; label setTextAlignment:UITextAlignmentLeft];
         () = msg![env; label setAdjustsFontSizeToFitWidth:true];
+        () = msg![env; label setMinimumFontSize:9.0];
+        let card_background: id =
+            msg_class![env; UIColor colorWithRed:0.94 green:0.96 blue:0.95 alpha:1.0];
+        () = msg![env; button setBackgroundColor:card_background];
+        let layer: id = msg![env; button layer];
+        () = msg![env; layer setCornerRadius:(10.0 * ui_scale)];
         () = msg![env; button layoutSubviews];
         () = msg![env; button addTarget:delegate
                                  action:(env.objc.lookup_selector(selector_name).unwrap())
@@ -3417,11 +3482,10 @@ fn setup_quick_options(
 
     enum RowKind {
         Category(usize),
+        Section(&'static str),
         Label(&'static str),
         Buttons(&'static [(&'static str, &'static str)]),
-        /// Dropdown listing every selectable device model.
         DeviceDropdown,
-        /// Compact dropdown for the emulated iOS version.
         IosVersionDropdown,
         GraphicsApiDropdown,
         GlesOverrideDropdown,
@@ -3433,112 +3497,43 @@ fn setup_quick_options(
     }
     let rows = [
         RowKind::Category(0),
-        RowKind::Label("High performance mode"),
+        RowKind::Section("Performance"),
+        RowKind::Label("High Performance Mode"),
         RowKind::Switch("highPerformance:", crate::options::DEFAULT_HIGH_PERFORMANCE),
-        RowKind::Label("Maximum clocks hint (Adreno)"),
+        RowKind::Label("Force Maximum GPU Clocks"),
         RowKind::Switch("forceMaxClocks:", false),
-        RowKind::Label("Frame pacing"),
-        RowKind::Switch("framePacing:", true),
-        RowKind::Label("FPS limit"),
-        RowKind::Buttons(&[
-            ("Dynamic", "fpsLimitDynamic"),
-            ("30", "fpsLimit30"),
-            ("60", "fpsLimit60"),
-            ("120", "fpsLimit120"),
-        ]),
-        RowKind::Label("Vsync"),
-        RowKind::Switch("vsync:", false),
-        RowKind::Label("Battery saver"),
-        RowKind::Switch("batterySaver:", false),
-        RowKind::Label("Ultra battery saver"),
-        RowKind::Switch("ultraBatterySaver:", false),
-        RowKind::Label("Memory management"),
+        RowKind::Label("Fast Memory"),
+        RowKind::Switch("fastMemory:", true),
+        RowKind::Label("Memory Management"),
         RowKind::MemoryManagementDropdown,
-        RowKind::Label("ARM64 JIT (off = interpreter)"),
+        RowKind::Label("Battery Saver"),
+        RowKind::Switch("batterySaver:", false),
+        RowKind::Label("Ultra Battery Saver"),
+        RowKind::Switch("ultraBatterySaver:", false),
+        RowKind::Label("Frame Pacing"),
+        RowKind::Switch("framePacing:", true),
+        RowKind::Section("CPU / Emulation"),
+        RowKind::Label("ARM64 JIT"),
         RowKind::Switch("arm64Backend:", false),
-        RowKind::Label("Interpreter fallback"),
+        RowKind::Label("Interpreter Fallback"),
         RowKind::Switch("arm64Fallback:", false),
-        RowKind::Category(1),
-        RowKind::Label("Graphics API"),
-        RowKind::GraphicsApiDropdown,
-        RowKind::Label("GLES override version"),
-        RowKind::GlesOverrideDropdown,
-        RowKind::Label("ANGLE driver"),
-        RowKind::Switch("angleDriver:", false),
-        RowKind::Label("Custom driver"),
-        RowKind::Buttons(&[("Add custom driver", "openCustomDriverFolder")]),
-        RowKind::Label("Installed custom drivers"),
-        RowKind::CustomDriverDropdown,
-        RowKind::Label("LLVMPipe fallback"),
+        RowKind::Label("LLVMPipe Fallback"),
         RowKind::Switch("llvmpipeFallback:", false),
-        RowKind::Label("Metal translator (ARM64)"),
+        RowKind::Section("GPU / Driver"),
+        RowKind::Label("Custom Driver"),
+        RowKind::Switch("customDriver:", false),
+        RowKind::Buttons(&[("Add Custom Driver", "openCustomDriverFolder")]),
+        RowKind::Label("Custom Driver File"),
+        RowKind::CustomDriverDropdown,
+        RowKind::Label("ANGLE Driver"),
+        RowKind::Switch("angleDriver:", false),
+        RowKind::Label("Metal Translator"),
         RowKind::Switch("metalTranslator:", cfg!(target_arch = "aarch64")),
-        RowKind::Label("Shader compatibility fixes"),
-        RowKind::Switch("shaderCompatibilityFixes:", true),
-        RowKind::Label("Fix incomplete textures"),
-        RowKind::Switch("fixTextureMinFilter:", cfg!(target_os = "android")),
-        RowKind::Label("Texture filtering"),
-        RowKind::TextureFilteringDropdown,
-        RowKind::Label("PVRTC decoding"),
-        RowKind::Buttons(&[
-            ("Software", "pvrtcDecodingSoftware"),
-            ("Automatic", "pvrtcDecodingAuto"),
-            ("Host driver", "pvrtcDecodingDriver"),
-        ]),
-        RowKind::Label("No texture compression"),
-        RowKind::Switch("noTextureCompression:", false),
-        RowKind::Label("Anisotropic filtering"),
-        RowKind::Buttons(&[
-            ("1×", "anisotropicFiltering1"),
-            ("2×", "anisotropicFiltering2"),
-            ("4×", "anisotropicFiltering4"),
-            ("8×", "anisotropicFiltering8"),
-            ("16×", "anisotropicFiltering16"),
-        ]),
-        RowKind::Label("Anti-aliasing"),
-        RowKind::Buttons(&[
-            ("1×", "antiAliasing1"),
-            ("2×", "antiAliasing2"),
-            ("4×", "antiAliasing4"),
-            ("8×", "antiAliasing8"),
-        ]),
-        RowKind::Label("Texture upscaler"),
-        RowKind::Buttons(&[
-            ("1×", "textureUpscaler1"),
-            ("2×", "textureUpscaler2"),
-            ("3×", "textureUpscaler3"),
-            ("4×", "textureUpscaler4"),
-        ]),
-        RowKind::Category(2),
-        RowKind::Label("iOS version"),
-        RowKind::IosVersionDropdown,
-        RowKind::Label("Device model"),
-        RowKind::DeviceDropdown,
-        RowKind::Label("Audio backend"),
-        RowKind::AudioBackendDropdown,
-        RowKind::Label("Core audio"),
-        RowKind::Switch("coreAudio:", false),
-        RowKind::Label("Lower audio quality"),
-        RowKind::Switch("lowAudioQuality:", false),
-        RowKind::Label("Network access"),
-        RowKind::Switch("network:", true),
-        RowKind::Label("RTCS"),
-        RowKind::Switch("rtcs:", false),
-        RowKind::Label("Game folder"),
-        RowKind::Buttons(&[
-            ("Open folder", "openFileManager"),
-            ("Refresh", "refreshApps"),
-        ]),
-        RowKind::Label("Force 32-bit"),
-        RowKind::Switch("force32Bit:", false),
-        RowKind::Label("Force 64-bit"),
-        RowKind::Switch("force64Bit:", false),
-        RowKind::Label("Use analog sticks for tilt controls"),
-        RowKind::Switch("analogStickTiltControls:", true),
-        RowKind::Category(3),
-        RowKind::Label("Frame generation"),
-        RowKind::Switch("frameGeneration:", false),
-        RowKind::Label("Scale hack"),
+        RowKind::Category(1),
+        RowKind::Section("Display"),
+        RowKind::Label("Custom Resolution"),
+        RowKind::Buttons(&[("Custom", "customResolution")]),
+        RowKind::Label("Scale Hack"),
         RowKind::Buttons(&[
             ("Default", "scaleHackDefault"),
             ("Off", "scaleHack1"),
@@ -3548,8 +3543,6 @@ fn setup_quick_options(
             ("3×", "scaleHack3"),
             ("4×", "scaleHack4"),
         ]),
-        RowKind::Label("Custom resolution"),
-        RowKind::Buttons(&[("Custom", "customResolution")]),
         RowKind::Label("Orientation"),
         RowKind::Buttons(&[
             ("Default", "orientationDefault"),
@@ -3557,7 +3550,7 @@ fn setup_quick_options(
             ("→", "orientationLandscapeRight"),
             ("↓", "orientationPortraitUpsideDown"),
         ]),
-        RowKind::Label("Render rotation"),
+        RowKind::Label("Render Rotation"),
         RowKind::Buttons(&[
             ("Default", "renderRotationDefault"),
             ("-90°", "renderRotationMinus90"),
@@ -3565,27 +3558,113 @@ fn setup_quick_options(
             ("90°", "renderRotationPlus90"),
             ("180°", "renderRotationPlus180"),
         ]),
-        RowKind::Label("Fullscreen (stretched)"),
+        RowKind::Label("Stretch to Fullscreen"),
         RowKind::Switch("fullscreenStretched:", false),
-        RowKind::Label("Force Core Animation composition"),
-        RowKind::Switch("forceComposition:", false),
+        RowKind::Label("VSync"),
+        RowKind::Switch("vsync:", false),
+        RowKind::Label("Frame Generation"),
+        RowKind::Switch("frameGeneration:", false),
+        RowKind::Label("FPS Limit"),
+        RowKind::Buttons(&[
+            ("Dynamic", "fpsLimitDynamic"),
+            ("30", "fpsLimit30"),
+            ("60", "fpsLimit60"),
+            ("120", "fpsLimit120"),
+        ]),
         RowKind::Label("Show HUD"),
         RowKind::Switch("showFPS:", true),
-        RowKind::Label("Enable log file"),
-        RowKind::Switch("logFile:", true),
-        RowKind::Label("Verbose logging"),
-        RowKind::Switch("verboseLogging:", false),
-        RowKind::Label("Trace GL errors"),
-        RowKind::Switch("traceGLErrors:", false),
-        RowKind::Label("Fullscreen (override)"),
+        RowKind::Label("Fullscreen Override"),
         RowKind::Switch("fullscreen:", false),
+        RowKind::Section("Image Quality"),
+        RowKind::Label("Anti-Aliasing"),
+        RowKind::Buttons(&[
+            ("1×", "antiAliasing1"),
+            ("2×", "antiAliasing2"),
+            ("4×", "antiAliasing4"),
+            ("8×", "antiAliasing8"),
+        ]),
+        RowKind::Label("Anisotropic Filtering"),
+        RowKind::Buttons(&[
+            ("1×", "anisotropicFiltering1"),
+            ("2×", "anisotropicFiltering2"),
+            ("4×", "anisotropicFiltering4"),
+            ("8×", "anisotropicFiltering8"),
+            ("16×", "anisotropicFiltering16"),
+        ]),
+        RowKind::Label("Texture Upscaler"),
+        RowKind::Buttons(&[
+            ("1×", "textureUpscaler1"),
+            ("2×", "textureUpscaler2"),
+            ("3×", "textureUpscaler3"),
+            ("4×", "textureUpscaler4"),
+        ]),
+        RowKind::Label("Texture Filtering"),
+        RowKind::TextureFilteringDropdown,
+        RowKind::Label("PVRTC Decoding"),
+        RowKind::Buttons(&[
+            ("Software", "pvrtcDecodingSoftware"),
+            ("Automatic", "pvrtcDecodingAuto"),
+            ("Host Driver", "pvrtcDecodingDriver"),
+        ]),
+        RowKind::Label("No Texture Compression"),
+        RowKind::Switch("noTextureCompression:", false),
+        RowKind::Section("Graphics Compatibility"),
+        RowKind::Label("Graphics API"),
+        RowKind::GraphicsApiDropdown,
+        RowKind::Label("GLES Override Version"),
+        RowKind::GlesOverrideDropdown,
+        RowKind::Label("Shader Compatibility Fixes"),
+        RowKind::Switch("shaderCompatibilityFixes:", true),
+        RowKind::Label("Fix Incomplete Textures"),
+        RowKind::Switch("fixTextureMinFilter:", cfg!(target_os = "android")),
+        RowKind::Label("Force Core Animation Composition"),
+        RowKind::Switch("forceComposition:", false),
+        RowKind::Category(2),
+        RowKind::Section("iOS / Device"),
+        RowKind::Label("iOS Version"),
+        RowKind::IosVersionDropdown,
+        RowKind::Label("Device Model"),
+        RowKind::DeviceDropdown,
+        RowKind::Label("Force 32-bit"),
+        RowKind::Switch("force32Bit:", false),
+        RowKind::Label("Force 64-bit"),
+        RowKind::Switch("force64Bit:", false),
+        RowKind::Section("Audio"),
+        RowKind::Label("Audio Backend"),
+        RowKind::AudioBackendDropdown,
+        RowKind::Label("Core Audio"),
+        RowKind::Switch("coreAudio:", false),
+        RowKind::Label("Lower Audio Quality"),
+        RowKind::Switch("lowAudioQuality:", false),
+        RowKind::Section("Network"),
+        RowKind::Label("Network Access"),
+        RowKind::Switch("network:", true),
+        RowKind::Section("Compatibility"),
+        RowKind::Label("Real-Time Corruption System"),
+        RowKind::Switch("rtcs:", false),
+        RowKind::Label("Revert Y Axis"),
+        RowKind::Switch("revertYAxis:", false),
+        RowKind::Label("Revert X Axis"),
+        RowKind::Switch("revertXAxis:", false),
+        RowKind::Category(3),
+        RowKind::Section("Controls"),
+        RowKind::Label("Use Analog Sticks for Tilt Control"),
+        RowKind::Switch("analogStickTiltControls:", true),
+        RowKind::Section("Games"),
+        RowKind::Label("Game Folder"),
+        RowKind::Buttons(&[
+            ("Open Folder", "openFileManager"),
+            ("Refresh", "refreshApps"),
+        ]),
+        RowKind::Section("Debug & Logging"),
+        RowKind::Label("Enable Log File"),
+        RowKind::Switch("logFile:", true),
+        RowKind::Label("Verbose Logging"),
+        RowKind::Switch("verboseLogging:", false),
+        RowKind::Label("Trace OpenGL Errors"),
+        RowKind::Switch("traceGLErrors:", false),
     ];
-    let rows = if crate::window::Window::rotatable_fullscreen() {
-        // Fullscreen option doesn't make sense on always-fullscreen platforms
-        &rows[..rows.len() - 2]
-    } else {
-        &rows[..]
-    };
+    let rows = &rows[..];
 
     let mut scale_hack_buttons: Option<[id; 7]> = None;
     let mut custom_resolution_button: id = nil;
@@ -3599,13 +3678,16 @@ fn setup_quick_options(
     let mut render_rotation_buttons: Option<[id; 5]> = None;
     let mut fps_limit_buttons: Option<[id; 4]> = None;
     let mut frame_generation_switch: id = nil;
+    let mut high_performance_switch: id = nil;
+    let mut force_max_clocks_switch: id = nil;
     let mut low_audio_quality_switch: id = nil;
     let mut no_texture_compression_switch: id = nil;
     let mut vsync_switch: id = nil;
     let mut battery_saver_switch: id = nil;
     let mut ultra_battery_saver_switch: id = nil;
-    let mut high_performance_switch: id = nil;
+    let mut log_file_switch: id = nil;
     let mut verbose_logging_switch: id = nil;
+    let mut trace_gl_errors_switch: id = nil;
     let mut fix_texture_min_filter_switch: id = nil;
     let mut force_composition_switch: id = nil;
     let mut revert_x_axis_switch: id = nil;
@@ -3634,6 +3716,7 @@ fn setup_quick_options(
     let mut device_model_items: Vec<id> = Vec::new();
     let mut device_model_thumb: id = nil;
     let mut custom_driver_btn: id = nil;
+    let mut custom_driver_switch: id = nil;
     let mut custom_driver_menu: id = nil;
     let mut custom_driver_paths: Vec<PathBuf> = Vec::new();
     let mut settings_category_views: [Vec<id>; 4] = std::array::from_fn(|_| Vec::new());
@@ -3645,11 +3728,37 @@ fn setup_quick_options(
             continue;
         }
         let row_index = category_row_indices[settings_category];
-        category_row_indices[settings_category] += 1;
-        let row_center = divider + ((1 + row_index / 2) as CGFloat) * settings_row_height;
+        let row_center = divider + ((1 + row_index) as CGFloat) * settings_row_height;
         let control_center = row_center + 24.0 * ui_scale;
+        let consumes_slot = !matches!(row, RowKind::Label(_));
 
         match *row {
+            RowKind::Section(text) => {
+                let frame = CGRect {
+                    origin: CGPoint {
+                        x: 22.0 * ui_scale,
+                        y: row_center - 42.0 * ui_scale,
+                    },
+                    size: CGSize {
+                        width: main_frame.size.width - 44.0 * ui_scale,
+                        height: 30.0 * ui_scale,
+                    },
+                };
+                let label: id = msg_class![env; UILabel alloc];
+                let label: id = msg![env; label initWithFrame:frame];
+                let text = ns_string::get_static_str(env, text);
+                () = msg![env; label setText:text];
+                () = msg![env; label setTextAlignment:UITextAlignmentLeft];
+                let font = picker_font(env, 17.0 * ui_scale);
+                () = msg![env; label setFont:font];
+                let section_color: id =
+                    msg_class![env; UIColor colorWithRed:0.18 green:0.34 blue:0.25 alpha:1.0];
+                () = msg![env; label setTextColor:section_color];
+                let clear: id = msg_class![env; UIColor clearColor];
+                () = msg![env; label setBackgroundColor:clear];
+                () = msg![env; main_view addSubview:label];
+                settings_category_views[settings_category].push(label);
+            }
             RowKind::Label(text) => {
                 let frame = CGRect {
                     origin: CGPoint {
@@ -3899,6 +4008,12 @@ fn setup_quick_options(
                 if selector_name == "highPerformance:" {
                     high_performance_switch = switch;
                 }
+                if selector_name == "forceMaxClocks:" {
+                    force_max_clocks_switch = switch;
+                }
+                if selector_name == "customDriver:" {
+                    custom_driver_switch = switch;
+                }
                 if selector_name == "lowAudioQuality:" {
                     low_audio_quality_switch = switch;
                 }
@@ -3911,8 +4026,14 @@ fn setup_quick_options(
                 if selector_name == "ultraBatterySaver:" {
                     ultra_battery_saver_switch = switch;
                 }
+                if selector_name == "logFile:" {
+                    log_file_switch = switch;
+                }
                 if selector_name == "verboseLogging:" {
                     verbose_logging_switch = switch;
+                }
+                if selector_name == "traceGLErrors:" {
+                    trace_gl_errors_switch = switch;
                 }
                 if selector_name == "fixTextureMinFilter:" {
                     fix_texture_min_filter_switch = switch;
@@ -3931,12 +4052,14 @@ fn setup_quick_options(
                 }
             }
         }
+        if consumes_slot {
+            category_row_indices[settings_category] += 1;
+        }
     }
 
     let max_category_rows = category_row_indices.iter().copied().max().unwrap_or(0);
-    let settings_row_pairs = ((max_category_rows + 1) / 2).max(1);
     let settings_content_height =
-        divider + ((settings_row_pairs + 1) as CGFloat * settings_row_height) + 34.0 * ui_scale;
+        divider + ((max_category_rows + 2) as CGFloat * settings_row_height) + 34.0 * ui_scale;
     () = msg![env; main_view setContentSize:(CGSize {
         width: main_frame.size.width,
         height: settings_content_height,
@@ -4165,6 +4288,13 @@ fn setup_quick_options(
         0,
     );
 
+    collapse_settings_categories(
+        env,
+        &settings_category_views,
+        &settings_category_buttons,
+        &settings_category_menus,
+    );
+
     QuickOptionsStuff {
         main_view,
         settings_backdrop,
@@ -4189,6 +4319,7 @@ fn setup_quick_options(
         audio_backend_menu,
         audio_backend_items,
         custom_driver_btn,
+        custom_driver_switch,
         custom_driver_menu,
         custom_driver_paths,
         quality_buttons,
@@ -4203,13 +4334,16 @@ fn setup_quick_options(
         render_rotation_buttons: render_rotation_buttons.unwrap_or([nil; 5]),
         frame_generation_switch,
         high_performance_switch,
+        force_max_clocks_switch,
         fps_limit_buttons: fps_limit_buttons.unwrap_or([nil; 4]),
         low_audio_quality_switch,
         no_texture_compression_switch,
         vsync_switch,
         battery_saver_switch,
         ultra_battery_saver_switch,
+        log_file_switch,
         verbose_logging_switch,
+        trace_gl_errors_switch,
         fix_texture_min_filter_switch,
         force_composition_switch,
         revert_x_axis_switch,
@@ -4389,6 +4523,30 @@ fn update_graphics_api_dropdown(
 fn set_settings_menu_background(env: &mut Environment, menu: id) {
     let gray: id = settings_menu_gray(env);
     () = msg![env; menu setBackgroundColor:gray];
+}
+
+fn collapse_settings_categories(
+    env: &mut Environment,
+    views: &[Vec<id>; 4],
+    buttons: &[id; 4],
+    menus: &[id],
+) {
+    let background = settings_category_gray(env);
+    let black: id = msg_class![env; UIColor blackColor];
+    for &button in buttons {
+        () = msg![env; button setBackgroundColor:background];
+        () = msg![env; button setTitleColor:black forState:UIControlStateNormal];
+    }
+    for category_views in views {
+        for &view in category_views {
+            () = msg![env; view setHidden:true];
+        }
+    }
+    for &menu in menus {
+        if menu != nil {
+            () = msg![env; menu setHidden:true];
+        }
+    }
 }
 
 fn select_settings_category(

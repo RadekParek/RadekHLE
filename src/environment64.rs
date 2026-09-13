@@ -13,6 +13,9 @@ use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 use touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context;
 
+#[path = "environment64/arm64_exceptions.rs"]
+mod arm64_exceptions;
+
 const STACK_BASE: u64 = 0x7fff_ffff_0000;
 const STACK_SIZE: u64 = 0x0010_0000;
 const SVC_THREAD_EXIT: u32 = 1;
@@ -400,6 +403,17 @@ fn failure_diagnostics(
 ) {
     let instruction = memory.read_u32(context.pc).unwrap_or(0);
     let decoded = decode_instruction(instruction, context.pc);
+    arm64_exceptions::handle_arm64_exception(
+        reason,
+        context.pc,
+        context.sp,
+        if reason == "memory abort" {
+            crate::cpu::last_a64_memory_fault()
+        } else {
+            None
+        },
+        instruction,
+    );
     echo!(
         "ARM64 failure diagnostics: reason={} pc={:#x} instruction={:#010x} decoded={}",
         reason,
@@ -972,10 +986,24 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             "ARM64 unresolved imports: {} (details available with --log-debug)",
             unresolved.len()
         );
-        for symbol in unresolved.iter().take(8) {
+        for symbol in &unresolved {
             log_dbg!("ARM64 unresolved import: {}", symbol);
         }
     }
+    let unresolved_report = unresolved.join("\n");
+    if let Err(error) = std::fs::write(
+        crate::paths::user_data_base_path().join("unresolved_imports.txt"),
+        unresolved_report,
+    ) {
+        log_dbg!("ARM64 could not write unresolved_imports.txt: {}", error);
+    }
+    crate::arm64_runtime::log_all_runtime_issues(
+        unresolved.len() as u32,
+        materialized_imports as u32,
+        host_stubs.len() as u32,
+        0,
+        entry,
+    );
     log_dbg!(
         "ARM64 first bindings: {}",
         executable
@@ -1262,7 +1290,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                         runtime_state.graphics_backend.label(),
                     ));
                 }
-                if symbol == "<unimplemented>" {
+                if !crate::arm64_runtime::can_dispatch(symbol) {
                     runtime_state.mark_unresolved_call(symbol, context.pc);
                 }
                 if matches!(
@@ -1385,7 +1413,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 if !handled {
                     let first = runtime_state.mark_unimplemented_reached(symbol);
                     if first {
-                        echo!("Warning: ARM64 reached unresolved host function {} at pc={:#x} lr={:#x} sp={:#x}; returning zero", symbol, context.pc, context.regs[30], context.sp);
+                        echo!("Warning: ARM64 reached unresolved host function {} at pc={:#x} lr={:#x} sp={:#x}; no safe signature is known, returning zero", symbol, context.pc, context.regs[30], context.sp);
                     }
                 }
                 if host_dispatches_since_callback > MAX_HOST_DISPATCHES_PER_CALLBACK {

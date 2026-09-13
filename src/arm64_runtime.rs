@@ -6,6 +6,9 @@ use crate::window::{DeviceFamily, DeviceOrientation, Window};
 use std::collections::{HashMap, HashSet};
 use touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context;
 
+#[path = "environment64/arm64_stubs.rs"]
+mod arm64_stubs;
+
 const MAX_CSTRING: u64 = 1024 * 1024;
 const A64_OBJECT_SIZE: u64 = 96;
 const A64_KIND_CLASS: u64 = 1;
@@ -521,9 +524,32 @@ fn materialize_custom_constant(mem: &mut Mem64, symbol: &str) -> Option<u64> {
     }
 }
 
+pub fn log_all_runtime_issues(
+    unresolved_count: u32,
+    materialized_count: u32,
+    stubs_count: u32,
+    dispatches: u32,
+    pc: u64,
+) {
+    echo!(
+        "ARM64 runtime summary: host_stubs={} materialized_imports={} unresolved_imports={} dispatches={} last_pc={:#x}",
+        stubs_count,
+        materialized_count,
+        unresolved_count,
+        dispatches,
+        pc,
+    );
+    if unresolved_count > 0 {
+        echo!(
+            "ARM64 runtime summary: {} imports still have no signature-safe implementation; execution will stop with diagnostics if one is reached",
+            unresolved_count
+        );
+    }
+}
+
 pub fn can_dispatch(symbol: &str) -> bool {
     let symbol = name(symbol);
-    if is_light_host_call(symbol) {
+    if is_light_host_call(symbol) || arm64_stubs::is_known(symbol) {
         return true;
     }
     match symbol {
@@ -1010,7 +1036,10 @@ fn arm64_prng(state: u32) -> u32 {
 }
 
 fn objc_text(mem: &Mem64, address: u64) -> Option<Vec<u8>> {
-    if objc_kind(mem, address) == Some(A64_KIND_STRING) {
+    if matches!(
+        objc_kind(mem, address),
+        Some(kind) if matches!(kind, A64_KIND_STRING | A64_KIND_MUTABLE_STRING)
+    ) {
         c_string(mem, objc_field(mem, address, 56))
     } else {
         c_string(mem, address)
@@ -4093,7 +4122,7 @@ pub fn dispatch(
         _ if symbol.starts_with("gl") || symbol.starts_with("egl") || symbol.starts_with("EAGL") => {
             return arm64_gl_call(mem, context, symbol, state, window);
         }
-        _ => Ok(false),
+        _ => arm64_stubs::dispatch(mem, context, symbol),
     }
 }
 
