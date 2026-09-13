@@ -575,7 +575,7 @@ impl Default for Options {
             rtcs: false,
             force_composition: false,
             prefer_gles2_context: false,
-            network_access: true,
+            network_access: false,
             popup_errors: true,
             dumping_options: Default::default(),
             dumping_file: crate::paths::user_data_base_path().join("DUMP.txt"),
@@ -1320,7 +1320,7 @@ mod tests {
         assert_eq!(options.graphics_api, GraphicsApi::Default);
         assert!(options.high_performance);
         assert!(!options.force_composition);
-        assert!(options.network_access);
+        assert!(!options.network_access);
         assert_eq!(options.metal_translator, cfg!(target_arch = "aarch64"));
     }
 

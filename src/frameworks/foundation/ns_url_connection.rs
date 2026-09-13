@@ -124,6 +124,13 @@ pub(crate) fn perform_request(
         status_code,
         response_body.len()
     );
+    if !(200..400).contains(&status_code) {
+        log_once_fmt!(
+            "NSURLConnection: treating HTTP status {} as a request failure; repeated HTTP failures are suppressed",
+            status_code
+        );
+        return Err(format!("HTTP status {}", status_code));
+    }
     Ok(NetworkResponse {
         status_code,
         headers,

@@ -115,8 +115,8 @@ fn malloc(env: &mut Environment, mut size: GuestUSize) -> MutVoidPtr {
     // sometimes compute nonsensical allocation sizes due to NULL pointer
     // arithmetic when upstream issues cause initialization failures).
     if size > 0x2000_0000 {
-        log!(
-            "TouchHLE::libc::stdlib: malloc({:#x}) refused as out of range — returning NULL",
+        log_once_fmt!(
+            "TouchHLE::libc::stdlib: malloc({:#x}) refused as out of range — returning NULL; repeated invalid sizes are suppressed",
             size
         );
         set_errno(env, crate::libc::errno::ENOMEM);
@@ -157,8 +157,8 @@ fn calloc(env: &mut Environment, count: GuestUSize, size: GuestUSize) -> MutVoid
     // Same out-of-range guard as malloc: refuse obviously-corrupted sizes
     // instead of exhausting the guest heap.
     if total > 0x2000_0000 {
-        log!(
-            "TouchHLE::libc::stdlib: calloc total {:#x} refused as out of range — returning NULL",
+        log_once_fmt!(
+            "TouchHLE::libc::stdlib: calloc total {:#x} refused as out of range — returning NULL; repeated invalid sizes are suppressed",
             total
         );
         set_errno(env, crate::libc::errno::ENOMEM);

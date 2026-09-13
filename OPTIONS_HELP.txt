@@ -465,6 +465,10 @@ Other options:
 
     --allow-network-access
         Allow apps running in touchHLE to access the Internet and the local network.
+        Network access is disabled by default; use this option explicitly.
+
+    --disable-network-access
+        Disable Internet and local-network access for apps.
 
     --ignore-gl-errors
         Ignore host OpenGL errors as queried by glGetError function.

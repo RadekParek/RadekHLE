@@ -867,11 +867,22 @@ impl Mem {
             return;
         }
 
-        // Also reject NULL source — real memmove(dest, NULL, n) is UB
-        // but guest games (Geometry Dash) trigger it via corrupted strings.
+        // A few guest runtimes pass NULL as an optional source while still
+        // supplying a non-zero length. Zero-fill a valid destination instead
+        // of leaving stale bytes there; stale bytes are what later become
+        // bogus string lengths, pointers, and allocation requests.
         if src_addr == 0 && size > 0 {
-            log!(
-                "WARNING: memmove from NULL (dest={:#x}, size={:#x}) — skipping",
+            let Some(dest_end) = dest_addr.checked_add(size_us).filter(|end| *end <= max) else {
+                log_once_fmt!(
+                    "WARNING: memmove from NULL had an invalid destination (dest={:#x}, size={:#x}); skipping",
+                    dest_addr,
+                    size_us,
+                );
+                return;
+            };
+            self.bytes_mut()[dest_addr..dest_end].fill(0);
+            log_once_fmt!(
+                "WARNING: memmove from NULL (first dest={:#x}, size={:#x}) — zero-filled the destination; repeated NULL-source memmoves are suppressed",
                 dest_addr,
                 size_us,
             );
@@ -975,7 +986,10 @@ impl Mem {
         }
         // Reject obviously bogus pointers before passing to the allocator.
         if !self.allocator.is_known_allocation(addr) {
-            log!("Can't free {:#x}, unknown allocation!", addr);
+            log_once_fmt!(
+                "Can't free {:#x}: unknown allocation; repeated invalid frees are suppressed",
+                addr
+            );
             return;
         }
         let size = self.allocator.free(addr);

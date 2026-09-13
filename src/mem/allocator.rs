@@ -348,8 +348,8 @@ impl Allocator {
         };
 
         let Some(alloc) = self.unused_chunks.allocate(aligned_size) else {
-            log!(
-                "Warning: Allocator::alloc: out of memory (could not find a large enough chunk for {:#x} bytes); returning NULL.",
+            log_once_fmt!(
+                "Warning: Allocator::alloc: out of memory (first failed request was {:#x} bytes); repeated allocation failures are suppressed.",
                 aligned_size
             );
             return 0;

@@ -1145,7 +1145,7 @@ fn app_picker_inner(
     let mut quick_options_revert_x_axis = false;
     let mut quick_options_revert_y_axis = false;
     let mut quick_options_analog_stick_tilt_controls = true;
-    let mut quick_options_network = true;
+    let mut quick_options_network = false;
     let mut quick_options_rtcs = false;
     let mut quick_options_show_fps = true;
     let mut quick_options_frame_pacing = true;
@@ -3524,7 +3524,7 @@ fn setup_quick_options(
         RowKind::Switch("lowAudioQuality:", false),
         RowKind::Subsection("Networking"),
         RowKind::Label("Network access"),
-        RowKind::Switch("network:", true),
+        RowKind::Switch("network:", false),
 
         RowKind::Section("DISPLAY, CONTROLS & DEBUG"),
         RowKind::Subsection("Display"),

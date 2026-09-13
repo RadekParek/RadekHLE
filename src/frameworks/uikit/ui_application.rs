@@ -587,7 +587,10 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (())registerForRemoteNotificationTypes:(UIRemoteNotificationType)types {
-    log!("TODO: ignoring registerForRemoteNotificationTypes:{}", types);
+    log_once_fmt!(
+        "Remote notification registration requested (types={}); notifications are unavailable in the emulator and the request was ignored",
+        types
+    );
 }
 
 // `- (UIRemoteNotificationType)enabledRemoteNotificationTypes` —

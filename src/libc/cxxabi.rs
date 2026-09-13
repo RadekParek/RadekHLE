@@ -256,7 +256,7 @@ fn __cxa_throw(env: &mut Environment, _exc: MutVoidPtr, tinfo: ConstVoidPtr, _dt
 }
 
 fn __cxa_rethrow(env: &mut Environment) {
-    log!("__cxa_rethrow — bypassing");
+    log_once!("__cxa_rethrow — bypassing; repeated calls are suppressed");
     if !unwind_to_app_frame(env) {
         log!(
             "Warning: Could not unwind past __cxa_rethrow; no app-level frame. \
@@ -388,7 +388,7 @@ fn _Unwind_SjLj_RaiseException(env: &mut Environment, _exc: MutVoidPtr) -> i32 {
 
 #[allow(non_snake_case)]
 fn _Unwind_SjLj_Resume(env: &mut Environment, _exc: MutVoidPtr) {
-    log!("_Unwind_SjLj_Resume — bypassing");
+    log_once!("_Unwind_SjLj_Resume — bypassing; repeated resume calls are suppressed");
     if !unwind_to_app_frame(env) {
         log!(
             "Warning: _Unwind_SjLj_Resume with no recoverable frame; returning \
@@ -399,7 +399,7 @@ fn _Unwind_SjLj_Resume(env: &mut Environment, _exc: MutVoidPtr) {
 
 #[allow(non_snake_case)]
 fn _Unwind_SjLj_Resume_or_Rethrow(env: &mut Environment, _exc: MutVoidPtr) -> i32 {
-    log!("_Unwind_SjLj_Resume_or_Rethrow — bypassing");
+    log_once!("_Unwind_SjLj_Resume_or_Rethrow — bypassing; repeated calls are suppressed");
     if !unwind_to_app_frame(env) {
         log!(
             "Warning: _Unwind_SjLj_Resume_or_Rethrow with no recoverable frame; \

@@ -3473,8 +3473,8 @@ fn glIsProgram(env: &mut Environment, program: GLuint) -> GLboolean {
     with_ctx_and_mem(env, |gles, _mem| unsafe { gles.IsProgram(program) })
 }
 fn glGetShaderiv(env: &mut Environment, shader: GLuint, pname: GLenum, params: MutPtr<GLint>) {
-    log!(
-        "[GLES] glGetShaderiv called with shader={}, pname=0x{:x}",
+    log_once_fmt!(
+        "[GLES] glGetShaderiv is active (first shader={}, pname=0x{:x}); repeated query logging is suppressed",
         shader,
         pname
     );
