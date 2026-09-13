@@ -72,6 +72,17 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 @end
 
+// Legacy Twitter.framework apps refer to TWRequest even when they only query
+// the class or take the "no Twitter account" path. Register the class so those
+// harmless probes inherit NSObject's normal class/alloc behaviour.
+@implementation TWRequest: NSObject
+
+- (id)init {
+    this
+}
+
+@end
+
 // `SLRequest` (iOS 6.0+). Wraps an authenticated HTTP request that
 // would normally be sent through a Social-framework account
 // (Twitter/Facebook/etc.) configured in iOS Settings.

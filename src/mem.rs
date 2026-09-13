@@ -303,6 +303,7 @@ type Bytes = [u8; 1 << 32];
 pub const PAGE_SIZE: GuestUSize = 4096;
 pub const PAGE_SIZE_ALIGN_MASK: GuestUSize = 0xfff;
 const MAX_DEFENSIVE_GUEST_ACCESS: GuestUSize = 64 * 1024 * 1024;
+const MAX_DEFENSIVE_GUEST_ALLOCATION: GuestUSize = 512 * 1024 * 1024;
 
 /// The type that owns the guest memory and provides accessors for it.
 pub struct Mem {
@@ -923,8 +924,16 @@ impl Mem {
 
     /// Allocate `size` bytes.
     pub fn alloc(&mut self, size: GuestUSize) -> MutVoidPtr {
+        if size > MAX_DEFENSIVE_GUEST_ALLOCATION {
+            log_once_fmt!(
+                "Warning: guest allocation of {:#x} bytes refused as out of range; repeated invalid allocation sizes are suppressed",
+                size
+            );
+            return MutVoidPtr::null();
+        }
+
         let ptr = Ptr::from_bits(self.allocator.alloc(size));
-        if !self.zero_memory_on_free {
+        if !ptr.is_null() && !self.zero_memory_on_free {
             self.bytes_at_mut(ptr.cast(), size).fill(0);
         }
 
@@ -935,7 +944,9 @@ impl Mem {
     /// Allocate `size` bytes initialized to 0.
     pub fn calloc(&mut self, size: GuestUSize) -> MutVoidPtr {
         let ptr = self.alloc(size);
-        self.bytes_at_mut(ptr.cast(), size).fill(0);
+        if !ptr.is_null() {
+            self.bytes_at_mut(ptr.cast(), size).fill(0);
+        }
         ptr
     }
 
@@ -967,6 +978,11 @@ impl Mem {
         }
 
         let new_ptr = self.alloc(size);
+        if new_ptr.is_null() {
+            // Match libc realloc: a failed resize leaves the original
+            // allocation untouched so callers can recover without losing it.
+            return MutVoidPtr::null();
+        }
         self.memmove(new_ptr, old_ptr.cast_const(), old_size);
         self.free(old_ptr);
         new_ptr
@@ -1168,5 +1184,13 @@ mod mem_tests {
         // overflow when the multiplied offset exceeds the address space.
         let p: Ptr<u32, true> = Ptr::from_bits(0xFFFF_FFF0);
         assert_eq!((p + 0x8).to_bits(), 0x0000_0010);
+    }
+
+    #[test]
+    fn oversized_allocations_return_null_without_touching_memory() {
+        let mut mem = Mem::new();
+        let size = super::MAX_DEFENSIVE_GUEST_ALLOCATION + 1;
+        assert!(mem.alloc(size).is_null());
+        assert!(mem.calloc(size).is_null());
     }
 }

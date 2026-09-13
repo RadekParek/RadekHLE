@@ -187,7 +187,21 @@ fn note_exception_throw(key: &str) -> u32 {
 const CXA_EXCEPTION_HEADER_SIZE: GuestUSize = 0x60;
 
 fn __cxa_allocate_exception(env: &mut Environment, thrown_size: GuestUSize) -> MutVoidPtr {
-    let block: MutVoidPtr = env.mem.alloc(CXA_EXCEPTION_HEADER_SIZE + thrown_size);
+    let Some(total_size) = CXA_EXCEPTION_HEADER_SIZE.checked_add(thrown_size) else {
+        log!(
+            "Warning: __cxa_allocate_exception size overflow for {:#x} bytes; returning NULL",
+            thrown_size
+        );
+        return MutVoidPtr::null();
+    };
+    let block: MutVoidPtr = env.mem.alloc(total_size);
+    if block.is_null() {
+        log_once_fmt!(
+            "Warning: __cxa_allocate_exception could not allocate {:#x} bytes; returning NULL; repeated failures are suppressed",
+            total_size
+        );
+        return MutVoidPtr::null();
+    }
     Ptr::from_bits(block.to_bits() + CXA_EXCEPTION_HEADER_SIZE)
 }
 

@@ -150,6 +150,13 @@ pub const CLASSES: ClassExports = objc_classes! {
         return this;
     }
     let alloc = env.mem.alloc(length);
+    if alloc.is_null() {
+        log!(
+            "NSData initWithBytes:length: allocation failed for {:#x} bytes; returning empty data",
+            length
+        );
+        return this;
+    }
     env.mem.memmove(alloc, bytes, length);
     host_object.bytes = alloc;
     host_object.length = length;
@@ -496,6 +503,13 @@ pub const CLASSES: ClassExports = objc_classes! {
     // Pre-allocate but leave length at 0.
     if capacity > 0 {
         let alloc = env.mem.alloc(capacity);
+        if alloc.is_null() {
+            log!(
+                "NSMutableData initWithCapacity: allocation failed for {:#x} bytes; returning empty data",
+                capacity
+            );
+            return this;
+        }
         let host_object = env.objc.borrow_mut::<NSDataHostObject>(this);
         host_object.bytes = alloc;
         // length intentionally remains 0.
@@ -506,6 +520,13 @@ pub const CLASSES: ClassExports = objc_classes! {
 - (id)initWithLength:(NSUInteger)length {
     if length > 0 {
         let alloc = env.mem.alloc(length);
+        if alloc.is_null() {
+            log!(
+                "NSMutableData initWithLength: allocation failed for {:#x} bytes; returning empty data",
+                length
+            );
+            return this;
+        }
         env.mem.bytes_at_mut(alloc.cast(), length).fill(0);
         let host_object = env.objc.borrow_mut::<NSDataHostObject>(this);
         host_object.bytes = alloc;
@@ -548,6 +569,13 @@ pub const CLASSES: ClassExports = objc_classes! {
     } else {
         let old_len = host_object.length;
         let alloc = env.mem.realloc(host_object.bytes, length);
+        if alloc.is_null() {
+            log!(
+                "NSMutableData setLength: allocation failed for {:#x} bytes; preserving existing data",
+                length
+            );
+            return;
+        }
         if length > old_len {
             let diff = length - old_len;
             let offset_ptr: MutPtr<u8> = alloc.cast() + old_len;

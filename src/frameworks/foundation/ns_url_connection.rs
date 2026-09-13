@@ -56,16 +56,20 @@ pub(crate) fn perform_request(
         return Err("request URL is nil".to_string());
     }
     let absolute_string: id = msg![env; url_object absoluteString];
-    let url = crate::frameworks::foundation::ns_string::to_rust_string(env, absolute_string)
-        .into_owned();
+    let url =
+        crate::frameworks::foundation::ns_string::to_rust_string(env, absolute_string).into_owned();
     if url.is_empty() {
         return Err("request URL is empty".to_string());
     }
 
     let method_object: id = msg![env; request HTTPMethod];
-    let method = crate::frameworks::foundation::ns_string::to_rust_string(env, method_object)
-        .into_owned();
-    let method = if method.is_empty() { "GET".to_string() } else { method };
+    let method =
+        crate::frameworks::foundation::ns_string::to_rust_string(env, method_object).into_owned();
+    let method = if method.is_empty() {
+        "GET".to_string()
+    } else {
+        method
+    };
     let timeout: f64 = msg![env; request timeoutInterval];
     let timeout = timeout.clamp(1.0, 120.0);
 
@@ -124,13 +128,10 @@ pub(crate) fn perform_request(
         status_code,
         response_body.len()
     );
-    if !(200..400).contains(&status_code) {
-        log_once_fmt!(
-            "NSURLConnection: treating HTTP status {} as a request failure; repeated HTTP failures are suppressed",
-            status_code
-        );
-        return Err(format!("HTTP status {}", status_code));
-    }
+    // HTTP status codes, including 4xx and 5xx, are still successful URL-loading
+    // transactions. Only transport failures belong on didFailWithError:. Passing
+    // an HTTP error through as an NSHTTPURLResponse lets guest code inspect the
+    // status and body instead of entering a malformed error-retry path.
     Ok(NetworkResponse {
         status_code,
         headers,
@@ -144,7 +145,16 @@ fn make_data_from_bytes(env: &mut crate::Environment, body: &[u8]) -> id {
     }
     let length: u32 = body.len().try_into().unwrap_or(u32::MAX);
     let buffer = env.mem.alloc(length);
-    env.mem.bytes_at_mut(buffer.cast(), length).copy_from_slice(&body[..length as usize]);
+    if buffer.is_null() {
+        log!(
+            "NSURLConnection: response body allocation failed for {:#x} bytes; delivering empty NSData",
+            length
+        );
+        return msg_class![env; NSData data];
+    }
+    env.mem
+        .bytes_at_mut(buffer.cast(), length)
+        .copy_from_slice(&body[..length as usize]);
     let bytes: ConstVoidPtr = buffer.cast_const().cast_void();
     let data: id = msg_class![env; NSData dataWithBytes:bytes length:length];
     env.mem.free(buffer.cast());
@@ -207,11 +217,7 @@ fn make_network_error(env: &mut crate::Environment) -> id {
     autorelease(env, domain);
 
     let desc_key = get_static_str(env, "NSLocalizedDescription");
-    let desc_val = from_rust_string(
-        env,
-        "The network connection was unavailable."
-            .to_string(),
-    );
+    let desc_val = from_rust_string(env, "The network connection was unavailable.".to_string());
     autorelease(env, desc_val);
 
     let user_info: id = msg_class![env; NSMutableDictionary new];
@@ -276,7 +282,10 @@ fn notify_delegate_success(
 
     let (response, data) = if fake_network_success_enabled() {
         log!("NSURLConnection: delivering explicit compatibility-profile fake HTTP 200 response");
-        (make_fake_http_response(env, request), make_fake_success_data(env))
+        (
+            make_fake_http_response(env, request),
+            make_fake_success_data(env),
+        )
     } else {
         match perform_request(env, request) {
             Ok(result) => (
