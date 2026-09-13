@@ -3722,7 +3722,7 @@ fn setup_quick_options(
     let mut settings_category_views: [Vec<id>; 4] = std::array::from_fn(|_| Vec::new());
     let mut settings_category = 0usize;
     let mut category_row_indices = [0usize; 4];
-    for row in rows.iter() {
+    for (row_list_index, row) in rows.iter().enumerate() {
         if let RowKind::Category(category) = *row {
             settings_category = category.min(3);
             continue;
@@ -3730,6 +3730,9 @@ fn setup_quick_options(
         let row_index = category_row_indices[settings_category];
         let row_center = divider + ((1 + row_index) as CGFloat) * settings_row_height;
         let control_center = row_center + 24.0 * ui_scale;
+        let inline_switch_label = rows
+            .get(row_list_index + 1)
+            .is_some_and(|next| matches!(next, RowKind::Switch(_, _)));
         let consumes_slot = !matches!(row, RowKind::Label(_));
 
         match *row {
@@ -3760,15 +3763,28 @@ fn setup_quick_options(
                 settings_category_views[settings_category].push(label);
             }
             RowKind::Label(text) => {
-                let frame = CGRect {
-                    origin: CGPoint {
-                        x: 22.0 * ui_scale,
-                        y: row_center - 43.0 * ui_scale,
-                    },
-                    size: CGSize {
-                        width: main_frame.size.width - 44.0 * ui_scale,
-                        height: 36.0 * ui_scale,
-                    },
+                let frame = if inline_switch_label {
+                    CGRect {
+                        origin: CGPoint {
+                            x: 22.0 * ui_scale,
+                            y: row_center - 15.0 * ui_scale,
+                        },
+                        size: CGSize {
+                            width: main_frame.size.width - 160.0 * ui_scale,
+                            height: 30.0 * ui_scale,
+                        },
+                    }
+                } else {
+                    CGRect {
+                        origin: CGPoint {
+                            x: 22.0 * ui_scale,
+                            y: row_center - 43.0 * ui_scale,
+                        },
+                        size: CGSize {
+                            width: main_frame.size.width - 44.0 * ui_scale,
+                            height: 36.0 * ui_scale,
+                        },
+                    }
                 };
 
                 let label: id = msg_class![env; UILabel alloc];
@@ -3776,15 +3792,20 @@ fn setup_quick_options(
                 let text = ns_string::get_static_str(env, text);
                 () = msg![env; label setText:text];
                 () = msg![env; label setTextAlignment:UITextAlignmentLeft];
-                let label_font = picker_font(env, 15.5 * ui_scale);
+                let label_font = picker_font(
+                    env,
+                    (if inline_switch_label { 14.5 } else { 15.5 }) * ui_scale,
+                );
                 () = msg![env; label setFont:label_font];
-                () = msg![env; label setNumberOfLines:2];
+                let label_lines: NSInteger = if inline_switch_label { 1 } else { 2 };
+                () = msg![env; label setNumberOfLines:label_lines];
                 let black: id = msg_class![env; UIColor blackColor];
                 () = msg![env; label setTextColor:black];
                 let clear: id = msg_class![env; UIColor clearColor];
                 () = msg![env; label setBackgroundColor:clear];
                 () = msg![env; label setAdjustsFontSizeToFitWidth:true];
-                () = msg![env; label setMinimumFontSize:10.5];
+                let minimum_font_size: CGFloat = if inline_switch_label { 10.0 } else { 10.5 };
+                () = msg![env; label setMinimumFontSize:minimum_font_size];
                 () = msg![env; main_view addSubview:label];
                 settings_category_views[settings_category].push(label);
             }
@@ -3985,7 +4006,7 @@ fn setup_quick_options(
                 let switch_frame = CGRect {
                     origin: CGPoint {
                         x: main_frame.size.width - 116.0 * ui_scale,
-                        y: control_center - (30.0 * ui_scale) / 2.0,
+                        y: row_center - (30.0 * ui_scale) / 2.0,
                     },
                     size: CGSize {
                         width: 104.0 * ui_scale,

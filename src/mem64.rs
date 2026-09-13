@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use crate::mem::{SafeRead, SafeWrite};
 
@@ -93,6 +93,7 @@ pub struct Mem64 {
     write_history: VecDeque<MemoryWrite>,
     current_pc: Option<Guest64Addr>,
     next_allocation: Guest64Addr,
+    materialized_imports: HashMap<String, Guest64Addr>,
 }
 
 impl Mem64 {
@@ -101,6 +102,14 @@ impl Mem64 {
             next_allocation: 0x1_0000_0000,
             ..Self::default()
         }
+    }
+
+    pub fn cached_import(&self, symbol: &str) -> Option<Guest64Addr> {
+        self.materialized_imports.get(symbol).copied()
+    }
+
+    pub fn cache_import(&mut self, symbol: impl Into<String>, address: Guest64Addr) {
+        self.materialized_imports.insert(symbol.into(), address);
     }
 
     pub fn map_zeroed(

@@ -100,6 +100,12 @@ public class MainActivity extends SDLActivity {
         ArrayList<String> missing = new ArrayList<>();
         if (!hasPermission(Manifest.permission.CAMERA)) missing.add(Manifest.permission.CAMERA);
         if (!hasPermission(Manifest.permission.RECORD_AUDIO)) missing.add(Manifest.permission.RECORD_AUDIO);
+        if (Build.VERSION.SDK_INT < 33 && !hasPermission(Manifest.permission.READ_EXTERNAL_STORAGE)) {
+            missing.add(Manifest.permission.READ_EXTERNAL_STORAGE);
+        }
+        if (Build.VERSION.SDK_INT < 29 && !hasPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
+            missing.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        }
         if (missing.isEmpty()) {
             startNativeCapture();
         } else {
@@ -154,7 +160,8 @@ public class MainActivity extends SDLActivity {
         File target = new File(captureDirectory, "status");
         File temporary = new File(captureDirectory, "status.part");
         String status = "camera=" + (hasPermission(Manifest.permission.CAMERA) ? "1" : "0")
-                + "\nmicrophone=" + (hasPermission(Manifest.permission.RECORD_AUDIO) ? "1" : "0") + "\n";
+                + "\nmicrophone=" + (hasPermission(Manifest.permission.RECORD_AUDIO) ? "1" : "0")
+                + "\nstorage=" + (Build.VERSION.SDK_INT >= 33 || hasPermission(Manifest.permission.READ_EXTERNAL_STORAGE) ? "1" : "0") + "\n";
         try (FileOutputStream output = new FileOutputStream(temporary, false)) {
             output.write(status.getBytes(StandardCharsets.UTF_8));
             output.flush();

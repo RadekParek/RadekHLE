@@ -60,6 +60,28 @@ pub fn microphone_available() -> bool {
         .map(|status| status.lines().any(|line| line == "microphone=1"))
         .unwrap_or(false)
 }
+pub fn log_native_capture_status() {
+    let status = std::fs::read_to_string(capture_directory().join("status"))
+        .unwrap_or_else(|_| "camera=0\nmicrophone=0\nstorage=unknown\n".to_owned());
+    let camera = status
+        .lines()
+        .find_map(|line| line.strip_prefix("camera="))
+        .unwrap_or("0");
+    let microphone = status
+        .lines()
+        .find_map(|line| line.strip_prefix("microphone="))
+        .unwrap_or("0");
+    let storage = status
+        .lines()
+        .find_map(|line| line.strip_prefix("storage="))
+        .unwrap_or("unknown");
+    log!(
+        "Native Android device capture status: camera={} microphone={} storage={}",
+        camera,
+        microphone,
+        storage
+    );
+}
 
 pub fn take_camera_frame() -> Option<CameraFrame> {
     let path = capture_directory().join("camera.nv21");

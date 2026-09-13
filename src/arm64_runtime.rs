@@ -1,7 +1,7 @@
 use crate::a64_abi::A64Abi;
 use crate::dyld::{search_host_dylibs, HostConstant};
 use crate::mach_o64::ObjCClass64;
-use crate::mem64::Mem64;
+use crate::mem64::{Mem64, Permissions};
 use crate::window::{DeviceFamily, DeviceOrientation, Window};
 use std::collections::{HashMap, HashSet};
 use touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context;
@@ -441,6 +441,8 @@ const LIGHT_HOST_CALLS: &[&str] = &[
     "log10f",
     "exp",
     "expf",
+    "exp10",
+    "exp10f",
     "expm1",
     "expm1f",
     "exp2",
@@ -689,6 +691,7 @@ fn dispatch_arm64_math(context: &mut touchHLE_DynarmicA64Context, symbol: &str) 
         "log2" => Some(arm64_double_arg(context, 0).log2()),
         "log10" => Some(arm64_double_arg(context, 0).log10()),
         "exp" => Some(arm64_double_arg(context, 0).exp()),
+        "exp10" => Some(10.0_f64.powf(arm64_double_arg(context, 0))),
         "expm1" => Some(arm64_double_arg(context, 0).exp_m1()),
         "exp2" => Some(arm64_double_arg(context, 0).exp2()),
         "pow" => Some(arm64_double_arg(context, 0).powf(arm64_double_arg(context, 1))),
@@ -720,6 +723,7 @@ fn dispatch_arm64_math(context: &mut touchHLE_DynarmicA64Context, symbol: &str) 
         "log2f" => Some(arm64_float_arg(context, 0).log2() as f64),
         "log10f" => Some(arm64_float_arg(context, 0).log10() as f64),
         "expf" => Some(arm64_float_arg(context, 0).exp() as f64),
+        "exp10f" => Some(10.0_f32.powf(arm64_float_arg(context, 0)) as f64),
         "expm1f" => Some(arm64_float_arg(context, 0).exp_m1() as f64),
         "exp2f" => Some(arm64_float_arg(context, 0).exp2() as f64),
         "powf" => Some(arm64_float_arg(context, 0).powf(arm64_float_arg(context, 1)) as f64),
@@ -2891,6 +2895,154 @@ pub fn schedule_display_link_callback(
     Ok(true)
 }
 
+fn cached_import_allocation(
+    mem: &mut Mem64,
+    symbol: &str,
+    size: u64,
+    permissions: Permissions,
+) -> Result<u64, String> {
+    if let Some(address) = mem.cached_import(symbol) {
+        return Ok(address);
+    }
+    let address = mem
+        .alloc_zeroed_with_permissions(size, permissions)
+        .map_err(str::to_owned)?;
+    mem.cache_import(symbol.to_owned(), address);
+    Ok(address)
+}
+
+fn materialize_arm64_data_import(mem: &mut Mem64, symbol: &str) -> Result<Option<u64>, String> {
+    let symbol = name(symbol);
+    let is_rtti_vtable = matches!(
+        symbol,
+        "ZTVN10__cxxabiv117__class_type_infoE"
+            | "ZTVN10__cxxabiv119__pointer_type_infoE"
+            | "ZTVN10__cxxabiv120__function_type_infoE"
+            | "ZTVN10__cxxabiv120__si_class_type_infoE"
+            | "ZTVN10__cxxabiv121__vmi_class_type_infoE"
+    ) || symbol.starts_with("ZTVNSt3__1")
+        || symbol.starts_with("ZTVSt");
+    if is_rtti_vtable {
+        let address = cached_import_allocation(
+            mem,
+            symbol,
+            16 * 8,
+            Permissions::read_write_execute(),
+        )?;
+        let stub = cached_import_allocation(
+            mem,
+            &format!("{symbol}:ret"),
+            8,
+            Permissions::read_write_execute(),
+        )?;
+        mem.write_u32(stub, 0xd65f03c0).map_err(str::to_owned)?;
+        for index in 2..16 {
+            mem.write_u64(address + index * 8, stub)
+                .map_err(str::to_owned)?;
+        }
+        return Ok(Some(address));
+    }
+    if symbol.starts_with("ZTI") {
+        let vtable = materialize_arm64_data_import(
+            mem,
+            "ZTVN10__cxxabiv117__class_type_infoE",
+        )?
+        .unwrap_or(0);
+        let address = cached_import_allocation(mem, symbol, 16, Permissions::read_write())?;
+        let name_pointer = cached_import_allocation(
+            mem,
+            &format!("{symbol}:name"),
+            symbol.len() as u64 + 1,
+            Permissions::read_write(),
+        )?;
+        mem.write_bytes(name_pointer, symbol.as_bytes())
+            .map_err(str::to_owned)?;
+        mem.write_u8(name_pointer + symbol.len() as u64, 0)
+            .map_err(str::to_owned)?;
+        mem.write_u64(address, vtable + 16).map_err(str::to_owned)?;
+        mem.write_u64(address + 8, name_pointer)
+            .map_err(str::to_owned)?;
+        return Ok(Some(address));
+    }
+    if symbol == "GLKMatrix4Identity" {
+        let address = cached_import_allocation(mem, symbol, 64, Permissions::read_write())?;
+        let values = [
+            1.0f32, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        ];
+        for (index, value) in values.iter().enumerate() {
+            mem.write_u32(address + index as u64 * 4, value.to_bits())
+                .map_err(str::to_owned)?;
+        }
+        return Ok(Some(address));
+    }
+    if symbol == "NDR_record" {
+        let address = cached_import_allocation(mem, symbol, 12, Permissions::read_write())?;
+        return Ok(Some(address));
+    }
+    if matches!(symbol, "in6addr_any" | "in6addr_loopback") {
+        let address = cached_import_allocation(mem, symbol, 16, Permissions::read_write())?;
+        if symbol == "in6addr_loopback" {
+            mem.write_u8(address + 15, 1).map_err(str::to_owned)?;
+        }
+        return Ok(Some(address));
+    }
+    if matches!(
+        symbol,
+        "kCFCoreFoundationVersionNumber"
+            | "kCLDistanceFilterNone"
+            | "kCLLocationAccuracyBest"
+            | "kCLLocationAccuracyHundredMeters"
+            | "kCLLocationAccuracyKilometer"
+            | "kCMTimeZero"
+    ) {
+        let (size, value) = match symbol {
+            "kCFCoreFoundationVersionNumber" => (8, Some(550.32f64.to_bits())),
+            "kCLDistanceFilterNone" => (8, Some((-1.0f64).to_bits())),
+            "kCLLocationAccuracyBest" => (8, Some((-1.0f64).to_bits())),
+            "kCLLocationAccuracyHundredMeters" => (8, Some(100f64.to_bits())),
+            "kCLLocationAccuracyKilometer" => (8, Some(1000f64.to_bits())),
+            _ => (24, None),
+        };
+        let address = cached_import_allocation(mem, symbol, size, Permissions::read_write())?;
+        if let Some(value) = value {
+            mem.write_u64(address, value).map_err(str::to_owned)?;
+        }
+        return Ok(Some(address));
+    }
+    if matches!(symbol, "vm_page_size" | "vm_page_mask") {
+        let address = cached_import_allocation(mem, symbol, 8, Permissions::read_write())?;
+        let value = if symbol == "vm_page_size" { 4096 } else { 4095 };
+        mem.write_u64(address, value).map_err(str::to_owned)?;
+        return Ok(Some(address));
+    }
+    if matches!(symbol, "mach_task_self_" | "stdinp" | "stdoutp") {
+        let address = cached_import_allocation(mem, symbol, 8, Permissions::read_write())?;
+        if symbol == "mach_task_self_" {
+            mem.write_u32(address, 0x7461_736b).map_err(str::to_owned)?;
+        }
+        return Ok(Some(address));
+    }
+    if matches!(
+        symbol,
+        "dispatch_main_q"
+            | "dispatch_queue_attr_concurrent"
+            | "dispatch_source_type_read"
+            | "dispatch_source_type_timer"
+    ) {
+        let value = match symbol {
+            "dispatch_main_q" => 1,
+            "dispatch_queue_attr_concurrent" => 3,
+            "dispatch_source_type_read" => 5,
+            _ => 7,
+        };
+        return Ok(Some(value));
+    }
+    Ok(None)
+}
+
 pub fn materialize_import(mem: &mut Mem64, symbol: &str) -> Result<Option<u64>, String> {
     if name(symbol) == "stack_chk_guard" {
         let guard = mem.alloc_zeroed(8).map_err(str::to_owned)?;
@@ -2931,6 +3083,9 @@ pub fn materialize_import(mem: &mut Mem64, symbol: &str) -> Result<Option<u64>, 
         mem.write_u8(pointer + bytes.len() as u64, 0)
             .map_err(str::to_owned)?;
         return Ok(Some(objc_class(mem, pointer)?));
+    }
+    if let Some(value) = materialize_arm64_data_import(mem, symbol)? {
+        return Ok(Some(value));
     }
     Ok(None)
 }

@@ -1027,7 +1027,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     context.regs[3] = apple_ptr;
     context.regs[30] = return_stub;
     let mut cpu = A64Cpu::with_backend_and_fallback(options.arm64_backend, options.arm64_fallback);
-    cpu.set_trace(false);
+    cpu.set_trace(options.verbose_logging);
     echo!("ARM64 execution transition: context loaded; entering Dynarmic with pc={:#x} sp={:#x} lr={:#x}", context.pc, context.sp, context.regs[30]);
     cpu.load_context(&context);
     let mut ticks = Some(EXECUTION_SLICE_TICKS);
@@ -1045,7 +1045,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     let trace_limit = std::env::var("TOUCHHLE_ARM64_TRACE_INSTRUCTIONS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(0);
+        .unwrap_or_else(|| if options.verbose_logging { 512 } else { 0 });
     let mut trace_count = 0_u64;
     let mut previous_pcs = VecDeque::with_capacity(20);
     let mut previous_branches = VecDeque::with_capacity(20);

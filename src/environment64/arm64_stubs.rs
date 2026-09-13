@@ -56,6 +56,23 @@ enum StubKind {
     GenericPointer,
     GenericReceiver,
     GenericZero,
+    ExceptionWhat,
+    ExceptionConstructor,
+    ExceptionPointer,
+    CryptoNoop,
+    CMTimeGetSeconds,
+    CMTimeMakeWithSeconds,
+    CVTextureCacheCreate,
+    CVTextureName,
+    CVTextureTarget,
+    DispatchDataApply,
+    Asprintf,
+    GetProgname,
+    DigitToInt,
+    IsXDigit,
+    StringCompare,
+    VmMap,
+    VmReadOverwrite,
 }
 
 fn normalized(symbol: &str) -> &str {
@@ -63,8 +80,78 @@ fn normalized(symbol: &str) -> &str {
     symbol.strip_prefix('_').unwrap_or(symbol)
 }
 
+fn compatibility_kind(symbol: &str) -> Option<StubKind> {
+    match symbol {
+        "CCHmacInit" | "CCHmacUpdate" | "CCHmacFinal" => Some(StubKind::CryptoNoop),
+        "CMTimeGetSeconds" => Some(StubKind::CMTimeGetSeconds),
+        "CMTimeMakeWithSeconds" => Some(StubKind::CMTimeMakeWithSeconds),
+        "CVOpenGLESTextureCacheCreate"
+        | "CVOpenGLESTextureCacheCreateTextureFromImage"
+        | "CVOpenGLESTextureCacheFlush" => Some(StubKind::CVTextureCacheCreate),
+        "CVOpenGLESTextureGetName" => Some(StubKind::CVTextureName),
+        "CVOpenGLESTextureGetTarget" => Some(StubKind::CVTextureTarget),
+        "dispatch_data_apply" => Some(StubKind::DispatchDataApply),
+        "dispatch_data_create" | "UTTypeCopyPreferredTagWithClass"
+        | "UTTypeCreatePreferredIdentifierForTag" => Some(StubKind::GenericPointer),
+        "dispatch_data_get_size" | "dispatch_read" | "dispatch_write" => {
+            Some(StubKind::GenericZero)
+        }
+        "asprintf" => Some(StubKind::Asprintf),
+        "getprogname" => Some(StubKind::GetProgname),
+        "digittoint" => Some(StubKind::DigitToInt),
+        "isxdigit" => Some(StubKind::IsXDigit),
+        "strcoll" => Some(StubKind::StringCompare),
+        "vm_map" => Some(StubKind::VmMap),
+        "vm_read_overwrite" => Some(StubKind::VmReadOverwrite),
+        "regcomp" | "regexec" | "readdir_r" | "nftw" | "utime" | "pathconf"
+        | "arc4random_buf" | "class_conformsToProtocol" | "protocol_getMethodDescription"
+        | "objc_exception_rethrow" | "objc_terminate" | "exception_raise"
+        | "exception_raise_state" | "exception_raise_state_identity" | "mach_make_memory_entry_64"
+        | "mach_port_mod_refs" | "mach_port_move_member" | "mach_port_request_notification"
+        | "thread_get_exception_ports" | "thread_swap_exception_ports" | "kill" | "raise"
+        | "DNSServiceNATPortMappingCreate" | "DNSServiceProcessResult" | "DNSServiceRefDeallocate"
+        | "___objc_personality_v0" | "objc_personality_v0" | "cxa_bad_cast"
+        | "ZSt17rethrow_exceptionSt13exception_ptr"
+        | "ZSt18uncaught_exceptionv" => Some(StubKind::GenericZero),
+        "cxa_get_exception_ptr" => Some(StubKind::ExceptionPointer),
+        "ZSt17current_exceptionv" => Some(StubKind::GenericPointer),
+        "_hash_create" | "hash_create" | "_hash_search" | "hash_search" | "getpwnam" => {
+            Some(StubKind::GenericPointer)
+        }
+        symbol if symbol.starts_with("ZNKSt9exception4what")
+            || symbol.starts_with("ZNKSt13runtime_error4what") => Some(StubKind::ExceptionWhat),
+        symbol if symbol.starts_with("ZNSt11logic_errorC")
+            || symbol.starts_with("ZNSt13runtime_errorC") => Some(StubKind::ExceptionConstructor),
+        symbol if symbol.starts_with("ZN7plcrash") => {
+            if symbol.contains("C1") || symbol.contains("C2") {
+                Some(StubKind::GenericReceiver)
+            } else {
+                Some(StubKind::GenericZero)
+            }
+        }
+        symbol if symbol.starts_with("ZThn") || symbol.starts_with("ZTv") => {
+            Some(StubKind::GenericReceiver)
+        }
+        symbol if symbol.starts_with("ZNSt") || symbol.starts_with("ZNKSt") || symbol.starts_with("ZSt") => {
+            if symbol.contains("D1") || symbol.contains("D2") {
+                Some(StubKind::GenericReceiver)
+            } else if symbol.contains("what") {
+                Some(StubKind::ExceptionWhat)
+            } else if symbol.contains("C1") || symbol.contains("C2") {
+                Some(StubKind::ExceptionConstructor)
+            } else {
+                Some(StubKind::GenericReceiver)
+            }
+        }
+        _ => None,
+    }
+}
+
 fn generic_kind(symbol: &str) -> Option<StubKind> {
     let symbol = normalized(symbol);
+    if let Some(kind) = compatibility_kind(symbol) {
+        return Some(kind);
+    }
     if symbol.starts_with("CFArray") {
         return Some(match symbol {
             "CFArrayCreate" => StubKind::ArrayCreate(false),
@@ -437,6 +524,130 @@ pub(super) fn dispatch(
         symbol
     );
     match kind {
+        StubKind::ExceptionWhat => {
+            let receiver = context.regs[0];
+            let message = if receiver != 0 {
+                let pointer = objc_field(mem, receiver, 56);
+                c_string(mem, pointer).filter(|bytes| !bytes.is_empty())
+            } else {
+                None
+            };
+            let message = message.unwrap_or_else(|| b"std::exception".to_vec());
+            let pointer = mem
+                .alloc_zeroed(message.len() as u64 + 1)
+                .map_err(str::to_owned)?;
+            mem.write_bytes(pointer, &message).map_err(str::to_owned)?;
+            mem.write_u8(pointer + message.len() as u64, 0)
+                .map_err(str::to_owned)?;
+            super::return_value(context, pointer);
+        }
+        StubKind::ExceptionConstructor => {
+            if context.regs[0] != 0 && mem.allocation_size(context.regs[0]).is_some() {
+                if context.regs[1] != 0 && mem.allocation_size(context.regs[1]).is_some() {
+                    let pointer = context.regs[1];
+                    set_objc_field(mem, context.regs[0], 56, pointer);
+                }
+                super::return_value(context, context.regs[0]);
+            } else {
+                super::return_value(context, 0);
+            }
+        }
+        StubKind::ExceptionPointer => super::return_value(context, context.regs[0]),
+        StubKind::CryptoNoop => {
+            if context.regs[0] != 0 && context.regs[1] != 0 {
+                let _ = mem.write_bytes(context.regs[1], &vec![0u8; 64]);
+            }
+            super::return_value(context, 0);
+        }
+        StubKind::CMTimeGetSeconds => {
+            let value = if context.regs[0] != 0 && mem.allocation_size(context.regs[0]).is_some() {
+                let numerator = mem.read_u64(context.regs[0]).unwrap_or(0) as i64;
+                let scale = mem.read_u32(context.regs[0] + 8).unwrap_or(0) as i32;
+                if scale == 0 { 0.0 } else { numerator as f64 / scale as f64 }
+            } else {
+                0.0
+            };
+            context.vectors[0][0] = value.to_bits();
+            super::return_value(context, value.to_bits());
+        }
+        StubKind::CMTimeMakeWithSeconds => {
+            let seconds = f64::from_bits(context.vectors[0][0]);
+            let timescale = context.regs[0] as i32;
+            let output = context.regs[8];
+            if output != 0 && mem.allocation_size(output).is_some() {
+                mem.write_u64(output, (seconds * timescale as f64).round() as i64 as u64)
+                    .map_err(str::to_owned)?;
+                mem.write_u32(output + 8, timescale as u32)
+                    .map_err(str::to_owned)?;
+                mem.write_u32(output + 12, 1).map_err(str::to_owned)?;
+                mem.write_u64(output + 16, 0).map_err(str::to_owned)?;
+                super::return_value(context, output);
+            } else {
+                super::return_value(context, 0);
+            }
+        }
+        StubKind::CVTextureCacheCreate => {
+            if symbol == "CVOpenGLESTextureCacheCreate" && context.regs[4] != 0 {
+                let object = objc_object(mem, A64_KIND_GENERIC)?;
+                if mem.allocation_size(context.regs[4]).is_some() {
+                    mem.write_u64(context.regs[4], object).map_err(str::to_owned)?;
+                }
+            }
+            super::return_value(context, 0);
+        }
+        StubKind::CVTextureName => {
+            super::return_value(context, objc_field(mem, context.regs[0], 56) as u32 as u64);
+        }
+        StubKind::CVTextureTarget => super::return_value(context, 0x0de1),
+        StubKind::DispatchDataApply => super::return_value(context, 1),
+        StubKind::Asprintf => {
+            let output = context.regs[0];
+            let format = c_string(mem, context.regs[1]).unwrap_or_default();
+            let pointer = mem
+                .alloc_zeroed(format.len() as u64 + 1)
+                .map_err(str::to_owned)?;
+            mem.write_bytes(pointer, &format).map_err(str::to_owned)?;
+            mem.write_u8(pointer + format.len() as u64, 0)
+                .map_err(str::to_owned)?;
+            if output != 0 && mem.allocation_size(output).is_some() {
+                mem.write_u64(output, pointer).map_err(str::to_owned)?;
+            }
+            super::return_value(context, format.len() as u64);
+        }
+        StubKind::GetProgname => {
+            let value = b"RadekHLE";
+            let pointer = mem
+                .alloc_zeroed(value.len() as u64 + 1)
+                .map_err(str::to_owned)?;
+            mem.write_bytes(pointer, value).map_err(str::to_owned)?;
+            super::return_value(context, pointer);
+        }
+        StubKind::DigitToInt => {
+            let value = (context.regs[0] as u8 as char).to_digit(16).unwrap_or(0);
+            super::return_value(context, value as u64);
+        }
+        StubKind::IsXDigit => {
+            super::return_value(context, u64::from((context.regs[0] as u8 as char).is_ascii_hexdigit()));
+        }
+        StubKind::StringCompare => {
+            let left = c_string(mem, context.regs[0]).unwrap_or_default();
+            let right = c_string(mem, context.regs[1]).unwrap_or_default();
+            let value = match left.cmp(&right) {
+                std::cmp::Ordering::Less => -1_i64,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
+            };
+            super::return_value(context, value as u64);
+        }
+        StubKind::VmMap => {
+            let size = context.regs[2].min(64 * 1024 * 1024).max(1);
+            let address = mem.alloc_zeroed(size).map_err(str::to_owned)?;
+            if context.regs[1] != 0 && mem.allocation_size(context.regs[1]).is_some() {
+                mem.write_u64(context.regs[1], address).map_err(str::to_owned)?;
+            }
+            super::return_value(context, 0);
+        }
+        StubKind::VmReadOverwrite => super::return_value(context, 0),
         StubKind::ArrayCreate(mutable) => {
             let (values, count) = if mutable {
                 (0, 0)

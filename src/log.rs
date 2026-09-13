@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 
 static FILE_LOGGING_ENABLED: AtomicBool = AtomicBool::new(true);
+static VERBOSE_LOGGING_ENABLED: AtomicBool = AtomicBool::new(false);
 static LOG_LINES: AtomicUsize = AtomicUsize::new(0);
 const LOG_FLUSH_INTERVAL: usize = 64;
 
@@ -35,6 +36,14 @@ pub fn set_file_logging(enabled: bool) {
 
 pub fn file_logging_enabled() -> bool {
     FILE_LOGGING_ENABLED.load(Ordering::Relaxed)
+}
+
+pub fn set_verbose_logging(enabled: bool) {
+    VERBOSE_LOGGING_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+pub fn verbose_logging_enabled() -> bool {
+    VERBOSE_LOGGING_ENABLED.load(Ordering::Relaxed)
 }
 pub fn append_log_line(line: &str) {
     if !file_logging_enabled() {
@@ -88,7 +97,9 @@ macro_rules! log_no_panic {
 /// when debugging.
 macro_rules! log_dbg {
     ($($arg:tt)+) => {
-        if $crate::log::ENABLED_MODULES.contains(&module_path!()) {
+        if $crate::log::verbose_logging_enabled()
+            || $crate::log::ENABLED_MODULES.contains(&module_path!())
+        {
             log!($($arg)*);
         }
     }

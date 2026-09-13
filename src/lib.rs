@@ -531,6 +531,8 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
     options.apply_power_profile(display_rate);
     window::configure_host_performance(options.high_performance, options.force_max_clocks);
     crate::log::set_file_logging(options.log_file);
+    crate::log::set_verbose_logging(options.verbose_logging);
+    crate::media_capture::log_native_capture_status();
     if options.core_audio {
         unsafe {
             std::env::set_var("TOUCHHLE_CORE_AUDIO", "1");
@@ -565,6 +567,13 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
         "Selected executable architecture: {}",
         mach_o::architecture_name(architecture)
     );
+    if architecture == mach_o::MachOArchitecture::Arm64 && !options.force_32_bit {
+        options.verbose_logging = true;
+        options.trace_gl_errors = true;
+        crate::log::set_verbose_logging(true);
+        crate::gles::configure_translator_tracing(true, true);
+        log!("ARM64 executable detected; enabling verbose logging and OpenGL error tracing automatically");
+    }
     crate::gles::present::set_onscreen_hud_architecture(mach_o::architecture_name(architecture));
     if options.llvmpipe_fallback && crate::gles::llvmpipe_fallback_available() {
         options.prefer_gles2_context = true;
