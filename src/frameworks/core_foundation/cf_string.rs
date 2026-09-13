@@ -196,6 +196,26 @@ fn CFStringGetSystemEncoding(_env: &mut Environment) -> CFStringEncoding {
     // Default system encoding
     kCFStringEncodingUTF8
 }
+fn CFStringGetMaximumSizeForEncoding(
+    _env: &mut Environment,
+    length: CFIndex,
+    encoding: CFStringEncoding,
+) -> CFIndex {
+    if length < 0 {
+        return 0;
+    }
+
+    let multiplier: i64 = match encoding {
+        kCFStringEncodingUTF16 | kCFStringEncodingUTF16BE | kCFStringEncodingUTF16LE => 2,
+        kCFStringEncodingUTF32 | kCFStringEncodingUTF32BE | kCFStringEncodingUTF32LE => 4,
+        kCFStringEncodingUTF8 => 4,
+        _ => 1,
+    };
+    let bytes = i64::from(length)
+        .saturating_mul(multiplier)
+        .saturating_add(1);
+    bytes.min(i64::from(CFIndex::MAX)) as CFIndex
+}
 
 /// Returns the encoding in which the string is most efficiently stored.
 ///
@@ -2231,6 +2251,7 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(CFStringConvertNSStringEncodingToEncoding(_)),
     export_c_func!(CFStringIsEncodingAvailable(_)),
     export_c_func!(CFStringGetSystemEncoding()),
+    export_c_func!(CFStringGetMaximumSizeForEncoding(_, _)),
     export_c_func!(CFStringGetFastestEncoding(_)),
     export_c_func!(CFStringGetSmallestEncoding(_)),
     export_c_func!(CFStringGetMostCompatibleMacStringEncoding(_)),

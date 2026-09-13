@@ -487,9 +487,9 @@ impl Mem {
     }
 
     // Soft handler for null-page accesses. No panic; returns a stub page.
-    // Rate-limited: only the first N unique (addr, is_write) pairs are logged,
+    // Rate-limited: only the first N unique (page, is_write) pairs are logged,
     // further occurrences are silently counted. This prevents the log from
-    // being flooded when the game repeatedly probes null-page addresses.
+    // being flooded when a game walks a reserved null segment byte by byte.
     #[cold]
     fn null_check_fail(at: VAddr, size: GuestUSize, is_write: bool, caller: &str) {
         use std::collections::HashSet;
@@ -500,7 +500,8 @@ impl Mem {
 
         let mut guard = SEEN.lock().unwrap();
         let set = guard.get_or_insert_with(HashSet::new);
-        let key = (if at < PAGE_SIZE { 0 } else { at }, is_write);
+        let page = at & !PAGE_SIZE_ALIGN_MASK;
+        let key = (page, is_write);
         if set.contains(&key) {
             return;
         }
@@ -528,7 +529,7 @@ impl Mem {
         };
         log!(
             "touchHLE::mem: NULL-PAGE {} at 0x{:08x} (size: 0x{:x}) from {}{} \
-             (unique sites logged: {}/{})",
+             (unique pages logged: {}/{})",
             op_type,
             at,
             size,

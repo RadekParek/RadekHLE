@@ -99,9 +99,12 @@ pub type CFComparisonResult = CFIndex;
 use crate::abi::GuestArg;
 use crate::dyld::FunctionExports;
 use crate::environment::Environment;
+use crate::frameworks::core_foundation::cf_allocator::{kCFAllocatorDefault, CFAllocatorRef};
+use crate::frameworks::core_foundation::cf_data::CFDataRef;
+use crate::frameworks::foundation::ns_property_list_serialization::NSPropertyListFormat;
 use crate::frameworks::foundation::ns_string::to_rust_string;
-use crate::mem::SafeRead;
-use crate::objc::id;
+use crate::mem::{MutPtr, Ptr, SafeRead};
+use crate::objc::{id, msg_class, nil, retain};
 use crate::{export_c_func, impl_GuestRet_for_large_struct, msg};
 
 pub const kCFNotFound: CFIndex = -1;
@@ -135,6 +138,33 @@ impl GuestArg for CFRange {
     }
 }
 
+fn CFPropertyListCreateFromXMLData(
+    env: &mut Environment,
+    allocator: CFAllocatorRef,
+    xml_data: CFDataRef,
+    mutability_option: CFOptionFlags,
+) -> CFTypeRef {
+    if allocator != kCFAllocatorDefault && !env.mem.read(allocator).is_system_default() {
+        log_dbg!("CFPropertyListCreateFromXMLData: ignoring unsupported custom allocator");
+    }
+    if xml_data.is_null() {
+        return nil;
+    }
+
+    let format: MutPtr<NSPropertyListFormat> = Ptr::null();
+    let error_description: MutPtr<id> = Ptr::null();
+    let property_list: id = msg_class![env; NSPropertyListSerialization
+        propertyListFromData:xml_data
+        mutabilityOption:mutability_option
+        format:format
+        errorDescription:error_description];
+    if property_list.is_null() {
+        nil
+    } else {
+        retain(env, property_list)
+    }
+}
+
 fn CFShow(env: &mut Environment, obj: CFTypeRef) {
     // TODO: support opaque types
     // TODO: use description callbacks if defined
@@ -145,4 +175,7 @@ fn CFShow(env: &mut Environment, obj: CFTypeRef) {
     log!("{}", to_rust_string(env, description));
 }
 
-const FUNCTIONS: FunctionExports = &[export_c_func!(CFShow(_))];
+const FUNCTIONS: FunctionExports = &[
+    export_c_func!(CFShow(_)),
+    export_c_func!(CFPropertyListCreateFromXMLData(_, _, _)),
+];

@@ -198,6 +198,24 @@ fn vm_remap(
     KERN_SUCCESS
 }
 
+fn vm_protect(
+    _env: &mut Environment,
+    target_task: vm_map_t,
+    address: mach_vm_address_t,
+    size: mach_vm_size_t,
+    _set_maximum: i32,
+    new_protection: vm_prot_t,
+) -> kern_return_t {
+    assert_eq!(target_task, MACH_TASK_SELF);
+    log_dbg!(
+        "vm_protect({:#x}, {:#x}, protection={:#x}) accepted as a guest-memory no-op",
+        address,
+        size,
+        new_protection
+    );
+    KERN_SUCCESS
+}
+
 fn vm_purgable_control(
     _env: &mut Environment,
     target_task: vm_map_t,
@@ -214,5 +232,6 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(vm_allocate(_, _, _, _)),
     export_c_func!(vm_deallocate(_, _, _)),
     export_c_func!(vm_remap(_, _, _, _, _, _, _, _, _, _, _)),
+    export_c_func!(vm_protect(_, _, _, _, _)),
     export_c_func!(vm_purgable_control(_, _, _, _)),
 ];

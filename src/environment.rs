@@ -123,6 +123,10 @@ pub struct Environment {
     /// Tracks repeated UndefinedInstruction bypasses. See `debug_cpu_error`.
     udf_bypass_last: Option<(u32, u32)>,
     udf_bypass_count: u32,
+    /// Aggregates UDF diagnostics by faulting PC so changing return addresses
+    /// cannot flood the log with otherwise identical warnings.
+    udf_log_last_pc: Option<u32>,
+    udf_log_count: u32,
 }
 
 /// What to do next when executing this thread.
@@ -784,6 +788,8 @@ impl Environment {
             panic_cell: Rc::new(Cell::new(None)),
             udf_bypass_last: None,
             udf_bypass_count: 0,
+            udf_log_last_pc: None,
+            udf_log_count: 0,
         };
 
         if env.options.dumping_options.any() {
@@ -934,6 +940,8 @@ impl Environment {
             panic_cell: Rc::new(Cell::new(None)),
             udf_bypass_last: None,
             udf_bypass_count: 0,
+            udf_log_last_pc: None,
+            udf_log_count: 0,
         };
 
         env.set_up_initial_env_vars();
@@ -996,6 +1004,8 @@ impl Environment {
             panic_cell: Rc::new(Cell::new(None)),
             udf_bypass_last: None,
             udf_bypass_count: 0,
+            udf_log_last_pc: None,
+            udf_log_count: 0,
         }
     }
 
@@ -1957,9 +1967,25 @@ impl Environment {
                     }
                 }
 
+                // A repeated UDF exactly at the first instruction after the
+                // Mach-O page-zero reservation is the Android/Dynarmic low
+                // address trap seen by Minecraft, not a useful guest routine.
+                // Keep the existing compatibility return, but do not count it
+                // as a normal return-site loop or flood the log when callers
+                // reach the same trap with different LR values.
+                if pc == self.mem.null_segment_size() && lr != 0 {
+                    log_once_fmt!(
+                        "Recovered repeated low-address UndefinedInstruction at {:#x}; returning to caller LR values without per-call warning spam",
+                        pc
+                    );
+                    self.cpu.branch(GuestFunction::from_addr_with_thumb_bit(lr));
+                    self.udf_bypass_last = None;
+                    self.udf_bypass_count = 0;
+                    return;
+                }
+
                 // Track repeated occurrences of the same bypass site.
                 const BYPASS_LIMIT: u32 = 32;
-                const LOG_RATE: u32 = 8;
                 let key = (pc, lr);
                 let count = if self.udf_bypass_last == Some(key) {
                     self.udf_bypass_count = self.udf_bypass_count.saturating_add(1);
@@ -1970,17 +1996,32 @@ impl Environment {
                     1
                 };
 
-                if count == 1 || count % LOG_RATE == 0 {
+                // The return address is often different on every call into a
+                // shared trap/abort site. Aggregate diagnostics by faulting PC
+                // so that the same UDF cannot fill the log with identical
+                // warnings. Powers of two retain useful evidence that the
+                // site is still active without printing every occurrence.
+                let site_count = if self.udf_log_last_pc == Some(pc) {
+                    self.udf_log_count = self.udf_log_count.saturating_add(1);
+                    self.udf_log_count
+                } else {
+                    self.udf_log_last_pc = Some(pc);
+                    self.udf_log_count = 1;
+                    1
+                };
+
+                if site_count.is_power_of_two() {
                     log_no_panic!(
                         "Warning: Ignored UndefinedInstruction at {:#x}. \
                          Faking function return to LR ({:#x}) to bypass crash! \
                          cpsr={:#x} thumb={} instruction_len={} \
-                         (occurrence {} of at most {})",
+                         (fault-site occurrence {}; return path {} of at most {})",
                         pc,
                         lr,
                         self.cpu.cpsr(),
                         (self.cpu.cpsr() & cpu::Cpu::CPSR_THUMB) != 0,
                         instruction_len,
+                        site_count,
                         count,
                         BYPASS_LIMIT
                     );

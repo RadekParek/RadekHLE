@@ -57,7 +57,7 @@ fn mach_msg(
     timeout: mach_msg_timeout_t,
     notify: mach_port_name_t,
 ) -> mach_msg_return_t {
-    log_once!("TODO: mach_msg send/rcv");
+    log_once!("mach_msg send/receive handled by the cooperative single-process Mach shim");
     log_dbg!(
         "mach_msg({:?}, option=0x{:x}, send={}, rcv={}, rcv_name=0x{:x}, timeout={}, notify=0x{:x})",
         msg,

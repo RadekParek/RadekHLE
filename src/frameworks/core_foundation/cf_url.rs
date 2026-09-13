@@ -10,6 +10,9 @@
 //! This is toll-free bridged to `NSURL` in Apple's implementation. Here it is
 //! the same type.
 use super::cf_allocator::{kCFAllocatorDefault, CFAllocatorRef};
+use super::cf_array::CFArrayRef;
+use super::cf_data::CFDataRef;
+use super::cf_dictionary::CFDictionaryRef;
 use super::{CFIndex, CFRelease, CFRetain};
 use crate::dyld::{export_c_func, ConstantExports, FunctionExports, HostConstant};
 use crate::frameworks::core_foundation::cf_string::{
@@ -1064,6 +1067,43 @@ fn CFURLCreateStringByAddingPercentEscapes(
     from_rust_string(env, result)
 }
 
+fn CFURLCreateDataAndPropertiesFromResource(
+    env: &mut Environment,
+    allocator: CFAllocatorRef,
+    url: CFURLRef,
+    resource_data: MutPtr<CFDataRef>,
+    properties: MutPtr<CFDictionaryRef>,
+    _desired_properties: CFArrayRef,
+    error_code: MutPtr<CFIndex>,
+) -> bool {
+    if !validate_allocator(env, allocator) || url.is_null() {
+        if !error_code.is_null() {
+            env.mem.write(error_code, -15);
+        }
+        return false;
+    }
+
+    let data: id = msg_class![env; NSData dataWithContentsOfURL:url];
+    if data.is_null() {
+        if !error_code.is_null() {
+            env.mem.write(error_code, -12);
+        }
+        return false;
+    }
+
+    if !resource_data.is_null() {
+        let retained = retain(env, data);
+        env.mem.write(resource_data, retained);
+    }
+    if !properties.is_null() {
+        env.mem.write(properties, nil);
+    }
+    if !error_code.is_null() {
+        env.mem.write(error_code, 0);
+    }
+    true
+}
+
 // MARK: - Type Info
 
 fn CFURLGetTypeID(_env: &mut Environment) -> u32 {
@@ -1089,6 +1129,7 @@ pub const FUNCTIONS: FunctionExports = &[
     )),
     // Home directory
     export_c_func!(CFCopyHomeDirectoryURL()),
+    export_c_func!(CFURLCreateDataAndPropertiesFromResource(_, _, _, _, _, _)),
     // Creation
     export_c_func!(CFURLCreateWithBytes(_, _, _, _, _)),
     export_c_func!(CFURLCreateWithString(_, _, _)),
