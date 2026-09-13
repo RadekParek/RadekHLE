@@ -649,7 +649,7 @@ pub const SEEK_END: i32 = 2;
 
 pub fn lseek(env: &mut Environment, fd: FileDescriptor, offset: off_t, whence: i32) -> off_t {
     let Some(file) = env.libc_state.posix_io.file_for_fd(fd) else {
-        log!("lseek({:?}, {:#x}, {}) => {}", fd, offset, whence, -1);
+        log_once_fmt!("lseek({:?}, {:#x}, {}) => -1 (invalid file descriptor)", fd, offset, whence);
         set_errno(env, EBADF);
         return -1;
     };

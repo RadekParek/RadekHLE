@@ -2620,7 +2620,12 @@ impl Window {
     }
 
     pub unsafe fn make_gl_context_current(&self, gl_ctx: &GLContext) {
-        self.window.gl_make_current(&gl_ctx.0).unwrap();
+        if let Err(error) = self.window.gl_make_current(&gl_ctx.0) {
+            log_once_fmt!(
+                "Unable to make the EGL context current ({}); keeping the existing context instead of panicking",
+                error
+            );
+        }
     }
 
     /// Make the internal OpenGL ES context (for splash screen and UI rendering)
@@ -2635,7 +2640,14 @@ impl Window {
                 .as_mut()
                 .unwrap()
                 .make_current_unchecked_for_window(
-                    &mut |gl_ctx| self.window.gl_make_current(&gl_ctx.0).unwrap(),
+                    &mut |gl_ctx| {
+                        if let Err(error) = self.window.gl_make_current(&gl_ctx.0) {
+                            log_once_fmt!(
+                                "Unable to reactivate the EGL context for internal rendering ({}); skipping the rebind",
+                                error
+                            );
+                        }
+                    },
                     &mut |s| self.video_ctx.gl_get_proc_address(s) as *const _,
                 )
         };
@@ -2999,7 +3011,14 @@ impl Window {
                 .as_mut()
                 .unwrap()
                 .make_current_unchecked_for_window(
-                    &mut |gl_ctx| self.window.gl_make_current(&gl_ctx.0).unwrap(),
+                    &mut |gl_ctx| {
+                        if let Err(error) = self.window.gl_make_current(&gl_ctx.0) {
+                            log_once_fmt!(
+                                "Unable to reactivate the EGL context for splash rendering ({}); skipping the rebind",
+                                error
+                            );
+                        }
+                    },
                     &mut |s| self.video_ctx.gl_get_proc_address(s) as *const _,
                 );
 

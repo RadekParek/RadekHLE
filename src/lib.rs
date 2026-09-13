@@ -518,6 +518,24 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
     }
     detect_engine_and_enable_diagnostics(&bundle, &fs, app_id, &mut options);
 
+    if options.network_access {
+        let timeout = std::time::Duration::from_millis(900);
+        let reachable = [
+            std::net::SocketAddr::from(([1, 1, 1, 1], 443)),
+            std::net::SocketAddr::from(([8, 8, 8, 8], 53)),
+        ]
+        .into_iter()
+        .any(|address| std::net::TcpStream::connect_timeout(&address, timeout).is_ok());
+        if reachable {
+            log!("Network access: enabled (host Wi-Fi/mobile-data connectivity detected)");
+        } else {
+            options.network_access = false;
+            log!("Network access: disabled for this launch (host Wi-Fi/mobile-data connectivity unavailable)");
+        }
+    } else {
+        log!("Network access: disabled by settings");
+    }
+
     if options.fps_limit.is_none() {
         if let Some(refresh_rate) = window::host_refresh_rate() {
             options.fps_limit = Some(refresh_rate);

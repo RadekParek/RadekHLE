@@ -507,6 +507,21 @@ fn getpagesize(_env: &mut Environment) -> i32 {
     PAGE_SIZE.try_into().unwrap()
 }
 
+fn getrusage(env: &mut Environment, _who: i32, usage: MutPtr<u8>) -> i32 {
+    if usage.is_null() {
+        set_errno(env, EFAULT);
+        return -1;
+    }
+    // Darwin's 32-bit struct rusage is two timeval values followed by long
+    // counters. The emulator does not expose host process accounting to the
+    // guest, but returning a zeroed, correctly-sized structure is preferable
+    // to the unresolved-symbol stub used by Unity and Mono startup code.
+    env.mem.bytes_at_mut(usage, 72).fill(0);
+    set_errno(env, 0);
+    log_dbg!("getrusage() returned zeroed guest usage counters");
+    0
+}
+
 fn readlink(
     env: &mut Environment,
     path: ConstPtr<u8>,
@@ -704,6 +719,7 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(symlink(_, _)),
     export_c_func!(gethostname(_, _)),
     export_c_func!(getpagesize()),
+    export_c_func!(getrusage(_, _)),
     export_c_func!(getgid()),
     export_c_func!(readlink(_, _, _)),
     export_c_func!(getdtablesize()),

@@ -23,6 +23,7 @@ type vm_inherit_t = u32;
 const VM_PROT_READ: vm_prot_t = 1;
 const VM_PROT_WRITE: vm_prot_t = 2;
 const VM_PROT_EXECUTE: vm_prot_t = 4;
+const KERN_INVALID_ARGUMENT: kern_return_t = 4;
 
 #[derive(Default)]
 pub struct State {
@@ -198,6 +199,49 @@ fn vm_remap(
     KERN_SUCCESS
 }
 
+fn vm_region_recurse(
+    env: &mut Environment,
+    target_task: vm_map_t,
+    address: MutPtr<mach_vm_address_t>,
+    size: MutPtr<mach_vm_size_t>,
+    depth: MutPtr<u32>,
+    info: MutPtr<u32>,
+    info_count: MutPtr<u32>,
+) -> kern_return_t {
+    if target_task != MACH_TASK_SELF
+        || address.is_null()
+        || size.is_null()
+        || depth.is_null()
+        || info_count.is_null()
+    {
+        return KERN_INVALID_ARGUMENT;
+    }
+
+    let requested = env.mem.read(address);
+    let region_start = requested & !PAGE_SIZE_ALIGN_MASK;
+    let region_size = if region_start < 0x3f00_0000 {
+        0x3f00_0000 - region_start
+    } else {
+        PAGE_SIZE
+    };
+    env.mem.write(address, region_start);
+    env.mem.write(size, region_size.max(PAGE_SIZE));
+    env.mem.write(depth, 0);
+
+    let requested_words = env.mem.read(info_count).min(16);
+    if !info.is_null() {
+        env.mem.bytes_at_mut(info.cast(), requested_words * 4).fill(0);
+    }
+    env.mem.write(info_count, requested_words);
+    log_dbg!(
+        "vm_region_recurse({:#x}) => start={:#x}, size={:#x}",
+        requested,
+        region_start,
+        region_size.max(PAGE_SIZE)
+    );
+    KERN_SUCCESS
+}
+
 fn vm_protect(
     _env: &mut Environment,
     target_task: vm_map_t,
@@ -232,6 +276,7 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(vm_allocate(_, _, _, _)),
     export_c_func!(vm_deallocate(_, _, _)),
     export_c_func!(vm_remap(_, _, _, _, _, _, _, _, _, _, _)),
+    export_c_func!(vm_region_recurse(_, _, _, _, _, _)),
     export_c_func!(vm_protect(_, _, _, _, _)),
     export_c_func!(vm_purgable_control(_, _, _, _)),
 ];

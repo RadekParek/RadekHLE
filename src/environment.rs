@@ -125,8 +125,7 @@ pub struct Environment {
     udf_bypass_count: u32,
     /// Aggregates UDF diagnostics by faulting PC so changing return addresses
     /// cannot flood the log with otherwise identical warnings.
-    udf_log_last_pc: Option<u32>,
-    udf_log_count: u32,
+    udf_log_counts: HashMap<u32, u32>,
 }
 
 /// What to do next when executing this thread.
@@ -788,8 +787,7 @@ impl Environment {
             panic_cell: Rc::new(Cell::new(None)),
             udf_bypass_last: None,
             udf_bypass_count: 0,
-            udf_log_last_pc: None,
-            udf_log_count: 0,
+            udf_log_counts: HashMap::new(),
         };
 
         if env.options.dumping_options.any() {
@@ -940,8 +938,7 @@ impl Environment {
             panic_cell: Rc::new(Cell::new(None)),
             udf_bypass_last: None,
             udf_bypass_count: 0,
-            udf_log_last_pc: None,
-            udf_log_count: 0,
+            udf_log_counts: HashMap::new(),
         };
 
         env.set_up_initial_env_vars();
@@ -1004,8 +1001,7 @@ impl Environment {
             panic_cell: Rc::new(Cell::new(None)),
             udf_bypass_last: None,
             udf_bypass_count: 0,
-            udf_log_last_pc: None,
-            udf_log_count: 0,
+            udf_log_counts: HashMap::new(),
         }
     }
 
@@ -1779,6 +1775,19 @@ impl Environment {
                 // the event as a crash and may repeat it.
                 let null_code_limit = self.mem.null_segment_size().saturating_add(mem::PAGE_SIZE);
                 let fetched_instruction: u32 = self.mem.read(mem::ConstPtr::<u32>::from_bits(pc));
+                let invalid_code_address =
+                    (pc < 0x0001_0000 || pc >= u32::MAX - 0x0001_0000) && lr != 0;
+                if invalid_code_address {
+                    log_once_fmt!(
+                        "Recovered invalid-address UndefinedInstruction at {:#x}; returning to LR ({:#x})",
+                        pc,
+                        lr
+                    );
+                    self.cpu.branch(GuestFunction::from_addr_with_thumb_bit(lr));
+                    self.udf_bypass_last = None;
+                    self.udf_bypass_count = 0;
+                    return;
+                }
                 if pc <= null_code_limit && fetched_instruction == 0 && lr != 0 {
                     log_once_fmt!(
                         "Recovered zero-filled low-address code fetch at {:#x}; returning to LR ({:#x})",
@@ -2001,13 +2010,10 @@ impl Environment {
                 // so that the same UDF cannot fill the log with identical
                 // warnings. Powers of two retain useful evidence that the
                 // site is still active without printing every occurrence.
-                let site_count = if self.udf_log_last_pc == Some(pc) {
-                    self.udf_log_count = self.udf_log_count.saturating_add(1);
-                    self.udf_log_count
-                } else {
-                    self.udf_log_last_pc = Some(pc);
-                    self.udf_log_count = 1;
-                    1
+                let site_count = {
+                    let count = self.udf_log_counts.entry(pc).or_insert(0);
+                    *count = count.saturating_add(1);
+                    *count
                 };
 
                 if site_count.is_power_of_two() {

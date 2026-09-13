@@ -1045,8 +1045,9 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     let trace_limit = std::env::var("TOUCHHLE_ARM64_TRACE_INSTRUCTIONS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or_else(|| if options.verbose_logging { 512 } else { 0 });
+        .unwrap_or_else(|| if options.verbose_logging { 64 } else { 0 });
     let mut trace_count = 0_u64;
+    let mut trace_suppression_logged = false;
     let mut previous_pcs = VecDeque::with_capacity(20);
     let mut previous_branches = VecDeque::with_capacity(20);
     let mut bootstrap_grace_slices = 0u32;
@@ -1080,6 +1081,9 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
         if trace_this_instruction {
             trace_count += 1;
             echo!("ARM64 run slice #{}: result={} entry_pc={:#x} final_pc={:#x} sp={:#x} lr={:#x} instruction={:#010x} decoded={}", trace_count, result, instruction_pc, context.pc, context.sp, context.regs[30], instruction, decode_instruction(instruction, instruction_pc));
+        } else if trace_limit > 0 && !trace_suppression_logged {
+            echo!("ARM64 slice trace suppressed after {} entries; execution remains uncapped and diagnostics continue", trace_limit);
+            trace_suppression_logged = true;
         }
         if result == -1 {
             let consumed_ticks = match (ticks_before, ticks) {
