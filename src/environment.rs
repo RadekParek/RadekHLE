@@ -82,6 +82,31 @@ impl Thread {
     }
 }
 
+#[derive(Default)]
+struct SchedulerWatchdog {
+    last_switch: Option<(ThreadId, ThreadId)>,
+    alternating_switches: u32,
+    warning_issued: bool,
+}
+
+impl SchedulerWatchdog {
+    fn record_switch(&mut self, current: ThreadId, next: ThreadId) -> bool {
+        if self.last_switch == Some((next, current)) {
+            self.alternating_switches = self.alternating_switches.saturating_add(1);
+        } else {
+            self.alternating_switches = 0;
+            self.warning_issued = false;
+        }
+        self.last_switch = Some((current, next));
+
+        if self.alternating_switches >= 64 && !self.warning_issued {
+            self.warning_issued = true;
+            return true;
+        }
+        false
+    }
+}
+
 impl std::fmt::Debug for Thread {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -132,6 +157,7 @@ pub struct Environment {
     /// Aggregates UDF diagnostics by faulting PC so changing return addresses
     /// cannot flood the log with otherwise identical warnings.
     udf_log_counts: HashMap<u32, u32>,
+    scheduler_watchdog: SchedulerWatchdog,
 }
 
 /// What to do next when executing this thread.
@@ -805,6 +831,7 @@ impl Environment {
             udf_bypass_last: None,
             udf_bypass_count: 0,
             udf_log_counts: HashMap::new(),
+            scheduler_watchdog: SchedulerWatchdog::default(),
         };
 
         if env.options.dumping_options.any() {
@@ -962,6 +989,7 @@ impl Environment {
             udf_bypass_last: None,
             udf_bypass_count: 0,
             udf_log_counts: HashMap::new(),
+            scheduler_watchdog: SchedulerWatchdog::default(),
         };
 
         env.set_up_initial_env_vars();
@@ -1030,6 +1058,7 @@ impl Environment {
             udf_bypass_last: None,
             udf_bypass_count: 0,
             udf_log_counts: HashMap::new(),
+            scheduler_watchdog: SchedulerWatchdog::default(),
         }
     }
 
@@ -1318,6 +1347,15 @@ impl Environment {
     /// they return back to the main run loop ([Environment::run]) should set
     /// `tail_call`.
     pub fn sleep(&mut self, duration: Duration) {
+        if duration == Duration::ZERO {
+            log_dbg!(
+                "Thread {} yielding without blocking for a zero-duration sleep.",
+                self.current_thread
+            );
+            self.yield_thread(ThreadBlock::NotBlocked);
+            return;
+        }
+
         log_dbg!(
             "Thread {} is going to sleep for {:?}.",
             self.current_thread,
@@ -1775,11 +1813,19 @@ impl Environment {
     fn switch_thread(&mut self, old_context: &mut Option<HostContext>, new_thread: ThreadId) {
         assert!(new_thread != self.current_thread);
         assert!(self.threads[new_thread].active);
-        log_dbg!(
-            "Switching thread: {} => {}",
-            self.current_thread,
-            new_thread
-        );
+        let old_thread = self.current_thread;
+        if self
+            .scheduler_watchdog
+            .record_switch(old_thread, new_thread)
+        {
+            log!(
+                "Warning: scheduler observed 64 alternating guest-thread switches ({} <=> {}). Both threads remain runnable; continuing with cooperative scheduling.",
+                old_thread,
+                new_thread
+            );
+            std::thread::yield_now();
+        }
+        log_dbg!("Switching thread: {} => {}", old_thread, new_thread);
         let mut guest_ctx = self.threads[new_thread].guest_context.take().unwrap();
         self.cpu.swap_context(&mut guest_ctx);
         assert!(self.threads[self.current_thread].guest_context.is_none());
