@@ -132,46 +132,60 @@ impl State {
         &mut self,
         mem: &mut crate::mem::Mem,
         thread: crate::ThreadId,
+        thread_local_storage: MutPtr<std::ffi::c_void>,
     ) -> MutPtr<i32> {
-        *self
-            .errnos
-            .entry(thread)
-            .or_insert_with(|| mem.alloc_and_write(0i32))
+        *self.errnos.entry(thread).or_insert_with(|| {
+            if thread_local_storage.is_null() {
+                mem.alloc_and_write(0i32)
+            } else {
+                thread_local_storage.cast()
+            }
+        })
     }
 
     pub fn set_errno_for_thread(
         &mut self,
         mem: &mut crate::mem::Mem,
         thread: crate::ThreadId,
+        thread_local_storage: MutPtr<std::ffi::c_void>,
         val: i32,
     ) {
-        let ptr = self.errno_ptr_for_thread(mem, thread);
+        let ptr = self.errno_ptr_for_thread(mem, thread, thread_local_storage);
         mem.write(ptr, val);
     }
 }
 
 /// Helper function, not a part of libc errno
 pub fn set_errno(env: &mut Environment, val: i32) {
-    env.libc_state
-        .errno
-        .set_errno_for_thread(&mut env.mem, env.current_thread, val);
+    let thread = env.current_thread;
+    let thread_local_storage = env.thread_local_storage(thread);
+    env.libc_state.errno.set_errno_for_thread(
+        &mut env.mem,
+        thread,
+        thread_local_storage,
+        val,
+    );
 }
 
 /// Helper to read the current thread's `errno`, mirroring the C `errno`
 /// macro. Not a libc export — used by other host code (e.g. `mkstemp`) to
 /// decide whether to retry after a failed I/O call.
 pub fn get_errno(env: &mut Environment) -> i32 {
+    let thread = env.current_thread;
+    let thread_local_storage = env.thread_local_storage(thread);
     let ptr = env
         .libc_state
         .errno
-        .errno_ptr_for_thread(&mut env.mem, env.current_thread);
+        .errno_ptr_for_thread(&mut env.mem, thread, thread_local_storage);
     env.mem.read(ptr)
 }
 
 fn __error(env: &mut Environment) -> MutPtr<i32> {
+    let thread = env.current_thread;
+    let thread_local_storage = env.thread_local_storage(thread);
     env.libc_state
         .errno
-        .errno_ptr_for_thread(&mut env.mem, env.current_thread)
+        .errno_ptr_for_thread(&mut env.mem, thread, thread_local_storage)
 }
 
 fn perror(env: &mut Environment, s: ConstPtr<u8>) {

@@ -463,23 +463,38 @@ pub fn pthread_exit(env: &mut Environment, retval: MutVoidPtr) {
 fn pthread_join(env: &mut Environment, thread: pthread_t, retval: MutPtr<MutVoidPtr>) -> i32 {
     let current_thread = env.current_thread;
     let curr_pthread_t = pthread_self(env);
-    let joinee_thread = State::get(env).threads.get_mut(&thread).unwrap().thread_id;
+    let Some(joinee_thread) = State::get(env).threads.get(&thread).map(|host| host.thread_id)
+    else {
+        log_dbg!("pthread_join({:?}) on an unknown thread, returning ESRCH", thread);
+        return ESRCH;
+    };
 
-    assert!(joinee_thread != 0);
+    if joinee_thread == 0 || joinee_thread >= env.threads.len() {
+        log_dbg!(
+            "pthread_join({:?}) references an invalid guest thread {}, returning ESRCH",
+            thread,
+            joinee_thread
+        );
+        return ESRCH;
+    }
     if joinee_thread == current_thread {
         log_dbg!("Thread attempted join with self, returning EDEADLK!");
         return EDEADLK;
     }
 
-    let host_obj_curr = State::get(env).threads.get(&curr_pthread_t).unwrap();
-    if let Some(thread) = host_obj_curr.joined_by {
-        if thread == joinee_thread {
-            log_dbg!("Thread attempted deadlocking join, returning EDEADLK!");
-            return EDEADLK;
-        }
+    let current_joined_by = State::get(env)
+        .threads
+        .get(&curr_pthread_t)
+        .and_then(|host| host.joined_by);
+    if current_joined_by == Some(joinee_thread) {
+        log_dbg!("Thread attempted deadlocking join, returning EDEADLK!");
+        return EDEADLK;
     }
 
-    let host_obj_joinee = State::get(env).threads.get_mut(&thread).unwrap();
+    let Some(host_obj_joinee) = State::get(env).threads.get_mut(&thread) else {
+        log_dbg!("pthread_join({:?}) disappeared, returning ESRCH", thread);
+        return ESRCH;
+    };
     if host_obj_joinee.attr.detachstate == PTHREAD_CREATE_DETACHED {
         log_dbg!("Thread attempted join with detached thread, returning EINVAL!");
         return EINVAL;

@@ -255,6 +255,8 @@ pub enum CpuError {
 impl Cpu {
     /// The register number of the stack pointer.
     pub const SP: usize = 13;
+    /// The register number used as the ARM EABI static-base/TLS register.
+    pub const R9: usize = 9;
     /// The register number of the link register.
     #[allow(unused)]
     pub const LR: usize = 14;

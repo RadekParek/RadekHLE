@@ -36,6 +36,10 @@ use nullable_box::NullableBox;
 /// Index into the [Vec] of threads. Thread 0 is always the main thread.
 pub type ThreadId = usize;
 
+/// Guest TLS storage attached to every emulated thread. The first word is the
+/// per-thread errno value exposed through `__error()`.
+pub const THREAD_LOCAL_STORAGE_SIZE: GuestUSize = 4096;
+
 pub type HostContext = Coroutine<Environment, Environment, Environment>;
 
 /// Bookkeeping for a thread.
@@ -47,6 +51,8 @@ pub struct Thread {
     pub blocked_by: ThreadBlock,
     /// Container for thread local state of various child modules
     pub thread_local_framework_state: frameworks::ThreadLocalState,
+    /// Guest address used as the ARM32 r9 thread-local/static-base pointer.
+    pub thread_local_storage: MutVoidPtr,
     /// After a secondary thread finishes, this is set to the returned value.
     return_value: Option<MutVoidPtr>,
     /// Context object containing the CPU state for this thread.
@@ -479,6 +485,10 @@ impl Environment {
         };
 
         let mut mem = mem::Mem::new();
+        let main_thread_tls = mem.calloc(THREAD_LOCAL_STORAGE_SIZE);
+        if main_thread_tls.is_null() {
+            return Err("Could not allocate main-thread TLS".to_string());
+        }
 
         let is_spore = bundle.bundle_identifier().starts_with("com.ea.spore");
         let is_critter_crunch = bundle
@@ -606,6 +616,11 @@ impl Environment {
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 env.with_yielder(yielder, move |env| {
                     echo!("CPU emulation begins now.");
+                    env.cpu.regs_mut()[Cpu::R9] = main_thread_tls.to_bits();
+                    log_dbg!(
+                        "Initialised main guest thread TLS: r9={:#x}",
+                        main_thread_tls.to_bits()
+                    );
                     // Some apps use the stack inside the static initializer.
                     // While properly behaving apps should be fine, some app
                     // will try to poke the top of the stack, so we'll give
@@ -758,6 +773,7 @@ impl Environment {
             host_context: Some(main_thread_init_routine),
             stack: Some(mem::Mem::MAIN_THREAD_STACK_LOW_END..=0u32.wrapping_sub(1)),
             thread_local_framework_state: Default::default(),
+            thread_local_storage: main_thread_tls,
         };
 
         let mut env = Environment {
@@ -881,6 +897,10 @@ impl Environment {
         )));
 
         let mut mem = mem::Mem::new();
+        let main_thread_tls = mem.calloc(THREAD_LOCAL_STORAGE_SIZE);
+        if main_thread_tls.is_null() {
+            return Err("Could not allocate app-picker TLS".to_string());
+        }
 
         let bins = Vec::new();
 
@@ -909,6 +929,7 @@ impl Environment {
             host_context: None,
             stack: Some(mem::Mem::MAIN_THREAD_STACK_LOW_END..=0u32.wrapping_sub(1)),
             thread_local_framework_state: Default::default(),
+            thread_local_storage: main_thread_tls,
         };
 
         let mut env = Environment {
@@ -954,6 +975,11 @@ impl Environment {
         }
 
         env.cpu.set_cpsr(cpu::Cpu::CPSR_USER_MODE);
+        env.cpu.regs_mut()[Cpu::R9] = main_thread_tls.to_bits();
+        log_dbg!(
+            "Initialised app-picker guest thread TLS: r9={:#x}",
+            main_thread_tls.to_bits()
+        );
 
         // GDB server setup would be done here, but there's no need for it.
 
@@ -1202,6 +1228,12 @@ impl Environment {
         let stack_alloc = self.mem.alloc(stack_size);
         let stack_high_addr = stack_alloc.to_bits() + stack_size;
         assert!(stack_high_addr.is_multiple_of(4));
+        let thread_local_storage = self.mem.calloc(THREAD_LOCAL_STORAGE_SIZE);
+        if thread_local_storage.is_null() {
+            log!(
+                "Warning: failed to allocate TLS for guest thread; starting it with r9=0"
+            );
+        }
 
         let thread_routine = Coroutine::new(move |yielder, mut env: Environment| {
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1209,7 +1241,15 @@ impl Environment {
                     let regs = env.cpu.regs_mut();
                     regs[cpu::Cpu::LR] = env.dyld.thread_exit_routine().addr_with_thumb_bit();
                     regs[cpu::Cpu::SP] = stack_high_addr;
+                    regs[cpu::Cpu::R9] = thread_local_storage.to_bits();
                     regs[0] = user_data.to_bits();
+                    log_dbg!(
+                        "Starting guest thread {} with r9/TLS={:#x}, entry={:?}, arg={:?}",
+                        env.current_thread,
+                        thread_local_storage.to_bits(),
+                        start_routine,
+                        user_data
+                    );
 
                     env.cpu.set_cpsr(
                         cpu::Cpu::CPSR_USER_MODE
@@ -1238,18 +1278,20 @@ impl Environment {
             host_context: Some(thread_routine),
             stack: Some(stack_alloc.to_bits()..=(stack_high_addr - 1)),
             thread_local_framework_state: Default::default(),
+            thread_local_storage,
         });
 
         let new_thread_id = self.threads.len() - 1;
 
         log!(
-            "Created guest worker thread {} for bundle={} routine={:?} arg={:?} stack={:#x}..={:#x}",
+            "Created guest worker thread {} for bundle={} routine={:?} arg={:?} stack={:#x}..={:#x} tls={:#x}",
             new_thread_id,
             self.bundle.bundle_identifier(),
             start_routine,
             user_data,
             stack_alloc.to_bits(),
-            stack_high_addr - 1
+            stack_high_addr - 1,
+            thread_local_storage.to_bits()
         );
         log_dbg!("Created new thread {} with stack {:#x}–{:#x}, will execute function {:?} with data {:?}", new_thread_id, stack_alloc.to_bits(), (stack_high_addr - 1), start_routine, user_data);
 
@@ -1259,6 +1301,14 @@ impl Environment {
     #[allow(unused)]
     pub fn get_tl_framework_state(&mut self) -> &mut frameworks::ThreadLocalState {
         &mut self.threads[self.current_thread].thread_local_framework_state
+    }
+
+    /// Return the guest TLS/static-base pointer for a thread.
+    pub fn thread_local_storage(&self, thread: ThreadId) -> MutVoidPtr {
+        self.threads
+            .get(thread)
+            .map(|thread| thread.thread_local_storage)
+            .unwrap_or_default()
     }
 
     /// Put the current thread to sleep for some duration, running other threads
@@ -1579,8 +1629,15 @@ impl Environment {
                 self = env;
                 let stack = self.threads[self.current_thread].stack.take().unwrap();
                 let stack: mem::MutVoidPtr = mem::Ptr::from_bits(*stack.start());
+                let thread_local_storage = self.threads[self.current_thread].thread_local_storage;
                 log_dbg!("Freeing thread {} stack {:?}", self.current_thread, stack);
                 self.mem.free(stack);
+                log_dbg!(
+                    "Freeing thread {} TLS {:?}",
+                    self.current_thread,
+                    thread_local_storage
+                );
+                self.mem.free(thread_local_storage);
                 None
             } else {
                 Some(curr_host_context)
@@ -2448,17 +2505,31 @@ impl Environment {
                         }
                     }
                     ThreadBlock::Joining(joinee_thread, ptr) => {
-                        if !self.threads[joinee_thread].active {
+                        let Some(joinee) = self.threads.get(joinee_thread) else {
+                            log!(
+                                "Warning: thread {} was joining missing thread {}; waking it with a null return value.",
+                                thread_id,
+                                joinee_thread
+                            );
+                            if !ptr.is_null() {
+                                self.mem.write(ptr, MutVoidPtr::null());
+                            }
+                            self.threads[thread_id].blocked_by = ThreadBlock::NotBlocked;
+                            return thread_id;
+                        };
+                        if !joinee.active {
                             log_dbg!(
                                 "Thread {} joining with now finished thread {}.",
                                 self.current_thread,
                                 joinee_thread
                             );
-                            // Write the return value, unless the pointer to
-                            // write to is null.
+                            // A thread can finish through a guest exception or
+                            // pthread_exit without producing a return value.
+                            // Joining it must not turn that situation into a
+                            // host panic or a permanent boot-image hang.
+                            let return_value = joinee.return_value.unwrap_or_default();
                             if !ptr.is_null() {
-                                self.mem
-                                    .write(ptr, self.threads[joinee_thread].return_value.unwrap());
+                                self.mem.write(ptr, return_value);
                             }
                             self.threads[thread_id].blocked_by = ThreadBlock::NotBlocked;
                             return thread_id;

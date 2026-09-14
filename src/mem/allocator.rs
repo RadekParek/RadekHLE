@@ -4,7 +4,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 use super::{GuestUSize, Mem, VAddr, PAGE_SIZE, PAGE_SIZE_ALIGN_MASK};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::num::NonZeroU32;
 
 /// iPhone OS's allocator always aligns to 16 bytes at minimum, and this
@@ -273,6 +273,7 @@ use collections::{ChunkMap, SizeBucketedChunkMap};
 pub struct Allocator {
     used_chunks: ChunkMap,
     unused_chunks: SizeBucketedChunkMap,
+    freed_bases: HashSet<VAddr>,
 }
 
 impl Allocator {
@@ -290,6 +291,7 @@ impl Allocator {
         Allocator {
             used_chunks,
             unused_chunks,
+            freed_bases: HashSet::new(),
         }
     }
 
@@ -355,6 +357,7 @@ impl Allocator {
             return 0;
         };
         self.used_chunks.insert(alloc);
+        self.freed_bases.remove(&alloc.base);
 
         alloc.base
     }
@@ -385,6 +388,17 @@ impl Allocator {
         self.used_chunks.get_size_with_base(base).is_some()
     }
 
+    pub fn allocation_containing(&self, addr: VAddr) -> Option<(VAddr, GuestUSize)> {
+        self.used_chunks
+            .iter()
+            .find(|chunk| chunk.contains(addr))
+            .map(|chunk| (chunk.base, chunk.size.get()))
+    }
+
+    pub fn was_freed(&self, base: VAddr) -> bool {
+        self.freed_bases.contains(&base)
+    }
+
     /// Returns the size of the freed chunk so it can be zeroed if desired
     #[must_use]
     pub fn free(&mut self, base: VAddr) -> GuestUSize {
@@ -392,6 +406,7 @@ impl Allocator {
             log!("Can't free {:#x}, unknown allocation!", base);
             return 0;
         };
+        self.freed_bases.insert(base);
 
         if let Some(adjacent) = self
             .unused_chunks

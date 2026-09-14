@@ -966,6 +966,14 @@ impl Mem {
         self.allocator.is_known_allocation(addr)
     }
 
+    pub fn allocation_containing(&self, addr: VAddr) -> Option<(VAddr, GuestUSize)> {
+        self.allocator.allocation_containing(addr)
+    }
+
+    pub fn was_freed(&self, addr: VAddr) -> bool {
+        self.allocator.was_freed(addr)
+    }
+
     /// Returns the original allocation for a pointer returned by
     /// `posix_memalign`/`valloc`, if its bookkeeping header is valid.
     pub fn aligned_allocation_base(&self, ptr: ConstVoidPtr) -> Option<MutVoidPtr> {
@@ -1024,6 +1032,22 @@ impl Mem {
         if !self.allocator.is_known_allocation(addr) {
             if let Some(raw) = self.aligned_allocation_base(ptr.cast_const()) {
                 self.free(raw);
+                return;
+            }
+            if let Some((base, size)) = self.allocation_containing(addr) {
+                log_once_fmt!(
+                    "Can't free {:#x}: pointer is inside live allocation {:#x} ({:#x} bytes); ignoring invalid interior free",
+                    addr,
+                    base,
+                    size
+                );
+                return;
+            }
+            if self.was_freed(addr) {
+                log_once_fmt!(
+                    "Can't free {:#x}: double free detected; repeated invalid frees are suppressed",
+                    addr
+                );
                 return;
             }
             log_once_fmt!(

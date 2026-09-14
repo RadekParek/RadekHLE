@@ -364,13 +364,30 @@ fn free(env: &mut Environment, ptr: MutVoidPtr) {
         }
         let pc = env.cpu.regs()[crate::cpu::Cpu::PC];
         let lr = env.cpu.regs()[crate::cpu::Cpu::LR];
-        log!(
-            "free({:#x}) rejected: not a known allocation \
-             (caller PC={:#x} LR={:#x})",
-            addr,
-            pc,
-            lr
-        );
+        if let Some((base, size)) = env.mem.allocation_containing(addr) {
+            log_once_fmt!(
+                "free({:#x}) rejected: pointer is inside live allocation {:#x} ({:#x} bytes); caller PC={:#x} LR={:#x}",
+                addr,
+                base,
+                size,
+                pc,
+                lr
+            );
+        } else if env.mem.was_freed(addr) {
+            log_once_fmt!(
+                "free({:#x}) rejected: double free; caller PC={:#x} LR={:#x}",
+                addr,
+                pc,
+                lr
+            );
+        } else {
+            log_once_fmt!(
+                "free({:#x}) rejected: not a known allocation (caller PC={:#x} LR={:#x})",
+                addr,
+                pc,
+                lr
+            );
+        }
         return;
     }
     env.mem.free(ptr);
