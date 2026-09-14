@@ -942,7 +942,7 @@ impl Mem {
             self.bytes_at_mut(ptr.cast(), size).fill(0);
         }
 
-        log_dbg!("Allocated {:?} ({:#x} bytes)", ptr, size);
+        log_sampled!(1024, "Allocated {:?} ({:#x} bytes)", ptr, size);
         ptr
     }
 
@@ -1065,7 +1065,7 @@ impl Mem {
             self.bytes_at_mut(ptr.cast(), size).fill(0);
         }
 
-        log_dbg!("Freed {:?} ({:#x} bytes)", ptr, size);
+        log_sampled!(1024, "Freed {:?} ({:#x} bytes)", ptr, size);
     }
 
     /// Allocate memory large enough for a value of type `T` and write the value

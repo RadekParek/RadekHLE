@@ -1443,7 +1443,7 @@ impl Dyld {
                     );
                     return None;
                 };
-                log_dbg!("Call to host function, already linked: {}", symbol);
+                log_sampled!(1024, "Call to host function, already linked: {}", symbol);
                 Some((symbol.to_owned(), f))
             }
         }

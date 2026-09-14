@@ -133,10 +133,10 @@ macro_rules! impl_CallFromGuest {
                     ($(read_next_arg::<$P>(&mut reg_offset, regs, Ptr::from_bits(regs[Cpu::SP]), &env.mem),)*)
                 };
 
-                log_dbg!("CallFromGuest"); // Убрали попытку вывести args из-за ограничений трейта Debug
+                log_sampled!(1024, "CallFromGuest");
 
                 let retval = self(env, $(args.$p),*);
-                log_dbg!("CallFromGuest => {:?}", retval);
+                log_sampled!(1024, "CallFromGuest => {:?}", retval);
                 if let Some(retval_ptr) = retval_ptr {
                     retval.to_mem(retval_ptr, &mut env.mem);
                 } else {
@@ -162,10 +162,10 @@ macro_rules! impl_CallFromGuest {
                     stack_pointer: Ptr::from_bits(regs[Cpu::SP])
                 });
 
-                log_dbg!("CallFromGuest with va_list: {:?}", va_list); // Аналогично убрали args
+                log_sampled!(1024, "CallFromGuest with va_list: {:?}", va_list);
 
                 let retval = self(env, $(args.$p,)* va_list);
-                log_dbg!("CallFromGuest => {:?}", retval);
+                log_sampled!(1024, "CallFromGuest => {:?}", retval);
                 if let Some(retval_ptr) = retval_ptr {
                     retval.to_mem(retval_ptr, &mut env.mem);
                 } else {

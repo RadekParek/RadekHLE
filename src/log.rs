@@ -126,6 +126,23 @@ macro_rules! log_once_fmt {
     }};
 }
 
+/// Sample a debug log site while preserving an initial diagnostic window.
+/// The first few messages and every `every`th message are kept in the log.
+macro_rules! log_sampled {
+    ($every:expr, $($arg:tt)+) => {{
+        if $crate::log::verbose_logging_enabled()
+            || $crate::log::ENABLED_MODULES.contains(&module_path!())
+        {
+            static SAMPLE_COUNT: std::sync::atomic::AtomicUsize =
+                std::sync::atomic::AtomicUsize::new(0);
+            let count = SAMPLE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if count < 8 || count % $every == 0 {
+                log!("[sampled #{}] {}", count + 1, format_args!($($arg)+));
+            }
+        }
+    }};
+}
+
 /// Print a message (with implicit newline). This should be used for all
 /// touchHLE output that isn't coming from the app itself.
 ///

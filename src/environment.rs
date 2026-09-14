@@ -1348,11 +1348,15 @@ impl Environment {
     /// `tail_call`.
     pub fn sleep(&mut self, duration: Duration) {
         if duration == Duration::ZERO {
-            log_dbg!(
-                "Thread {} yielding without blocking for a zero-duration sleep.",
+            log_sampled!(
+                1024,
+                "Thread {} requested a zero-duration sleep; pacing cooperative yield at 1ms.",
                 self.current_thread
             );
-            self.yield_thread(ThreadBlock::NotBlocked);
+            let until = Instant::now()
+                .checked_add(Duration::from_millis(1))
+                .unwrap();
+            self.yield_thread(ThreadBlock::Sleeping(until));
             return;
         }
 
@@ -1825,7 +1829,7 @@ impl Environment {
             );
             std::thread::yield_now();
         }
-        log_dbg!("Switching thread: {} => {}", old_thread, new_thread);
+        log_sampled!(1024, "Switching thread: {} => {}", old_thread, new_thread);
         let mut guest_ctx = self.threads[new_thread].guest_context.take().unwrap();
         self.cpu.swap_context(&mut guest_ctx);
         assert!(self.threads[self.current_thread].guest_context.is_none());
@@ -2346,7 +2350,8 @@ impl Environment {
     /// condition is met.
     pub fn yield_thread(&mut self, thread_block: ThreadBlock) {
         assert!(!self.threads[self.current_thread].is_blocked());
-        log_dbg!(
+        log_sampled!(
+            1024,
             "Thread {} yielding on {:?}",
             self.current_thread,
             thread_block

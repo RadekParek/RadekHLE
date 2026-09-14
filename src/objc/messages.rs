@@ -125,7 +125,8 @@ fn objc_msgSend_inner(
     skip_initialize: bool,
 ) {
     let _perf_scope = crate::perf::objc_scope();
-    log_dbg!(
+    log_sampled!(
+        1024,
         "Dispatching {} for {:?}",
         selector.as_str(&env.mem),
         receiver
@@ -567,7 +568,7 @@ fn objc_msgSend_inner(
             }
 
             if let Some(imp) = methods.get(&selector) {
-                log_dbg!("Found method on: {}", name);
+                log_sampled!(1024, "Found method on: {}", name);
                 match imp {
                     IMP::Host(host_imp) => {
                         // TODO: do type checks when calling GuestIMPs too.

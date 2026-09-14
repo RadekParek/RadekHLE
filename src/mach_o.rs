@@ -867,7 +867,8 @@ impl MachO {
                                     + slide;
                                 let original_location = Ptr::from_bits(addr);
                                 let old: u32 = into_mem.read(original_location);
-                                log_dbg!(
+                                log_sampled!(
+                                    4096,
                                     "Pointer rebase at {:#x} from {:#x} to {:#x}",
                                     addr,
                                     old,
@@ -900,7 +901,7 @@ impl MachO {
                                 let addr = segment_offsets[symb.segment_index]
                                     + symb.symbol_offset as u32
                                     + slide;
-                                log_dbg!("Pointer bind: {:#x} -> {}", addr, symb.name);
+                                log_sampled!(1024, "Pointer bind: {:#x} -> {}", addr, symb.name);
                                 external_relocations.push((addr, symb.name));
                             }
                             other => {
