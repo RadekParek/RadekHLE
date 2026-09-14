@@ -162,6 +162,14 @@ impl super::ObjC {
     ) -> id {
         let guest_object = objc_object { isa };
         let ptr: MutPtr<objc_object> = mem.alloc(instance_size).cast();
+        if ptr.is_null() {
+            log!(
+                "Warning: could not allocate {:#x} bytes for Objective-C object of class {:?}; returning nil",
+                instance_size,
+                isa
+            );
+            return nil;
+        }
         mem.write(ptr, guest_object);
         self.objects.insert(
             ptr,

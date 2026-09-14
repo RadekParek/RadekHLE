@@ -452,8 +452,12 @@ impl Mem {
         //        this, along with removing this special case.
         assert!(self.null_segment_size == 0);
         assert!(new_null_segment_size.is_multiple_of(0x1000));
-        self.allocator
-            .reserve(allocator::Chunk::new(0, new_null_segment_size));
+        if new_null_segment_size > PAGE_SIZE {
+            self.allocator.reserve(allocator::Chunk::new(
+                PAGE_SIZE,
+                new_null_segment_size - PAGE_SIZE,
+            ));
+        }
         self.null_segment_size = new_null_segment_size;
     }
 
@@ -1240,5 +1244,22 @@ mod mem_tests {
         let size = super::MAX_DEFENSIVE_GUEST_ALLOCATION + 1;
         assert!(mem.alloc(size).is_null());
         assert!(mem.calloc(size).is_null());
+    }
+
+    #[test]
+    fn first_allocation_skips_reserved_null_page() {
+        let mut mem = Mem::new();
+        let ptr = mem.calloc(16);
+        assert_eq!(ptr.to_bits(), super::PAGE_SIZE);
+        mem.free(ptr);
+    }
+
+    #[test]
+    fn allocation_stays_after_extended_null_segment() {
+        let mut mem = Mem::new();
+        mem.set_null_segment_size(super::PAGE_SIZE * 2);
+        let ptr = mem.calloc(16);
+        assert_eq!(ptr.to_bits(), super::PAGE_SIZE * 2);
+        mem.free(ptr);
     }
 }

@@ -485,10 +485,6 @@ impl Environment {
         };
 
         let mut mem = mem::Mem::new();
-        let main_thread_tls = mem.calloc(THREAD_LOCAL_STORAGE_SIZE);
-        if main_thread_tls.is_null() {
-            return Err("Could not allocate main-thread TLS".to_string());
-        }
 
         let is_spore = bundle.bundle_identifier().starts_with("com.ea.spore");
         let is_critter_crunch = bundle
@@ -577,6 +573,11 @@ impl Environment {
                     dylib
                 );
             }
+        }
+
+        let main_thread_tls = mem.calloc(THREAD_LOCAL_STORAGE_SIZE);
+        if main_thread_tls.is_null() {
+            return Err("Could not allocate main-thread TLS".to_string());
         }
 
         let entry_point_addr = executable
@@ -897,6 +898,7 @@ impl Environment {
         )));
 
         let mut mem = mem::Mem::new();
+        mem.set_null_segment_size(mem::PAGE_SIZE);
         let main_thread_tls = mem.calloc(THREAD_LOCAL_STORAGE_SIZE);
         if main_thread_tls.is_null() {
             return Err("Could not allocate app-picker TLS".to_string());

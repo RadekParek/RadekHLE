@@ -212,6 +212,16 @@ fn objc_msgSend_inner(
         return;
     }
 
+    if env.mem.was_freed(receiver.to_bits()) {
+        log_once_fmt!(
+            "Warning: ignoring message \"{}\" sent to previously freed object {:?}",
+            selector.as_str(&env.mem),
+            receiver
+        );
+        env.cpu.regs_mut()[0..2].fill(0);
+        return;
+    }
+
     let orig_class = super2.unwrap_or_else(|| ObjC::read_isa(receiver, &env.mem));
     // Graceful exit if isa is nil — this typically means the object was
     // already deallocated (use-after-free in guest code) or was never

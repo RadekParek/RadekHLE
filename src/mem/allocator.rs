@@ -280,10 +280,12 @@ impl Allocator {
     pub fn new() -> Allocator {
         let main_thread_stack =
             Chunk::new(Mem::MAIN_THREAD_STACK_LOW_END, Mem::MAIN_THREAD_STACK_SIZE);
-        let rest = Chunk::new(0, Mem::MAIN_THREAD_STACK_LOW_END);
+        let null_page = Chunk::new(0, PAGE_SIZE);
+        let rest = Chunk::new(PAGE_SIZE, Mem::MAIN_THREAD_STACK_LOW_END - PAGE_SIZE);
 
         let mut used_chunks: ChunkMap = Default::default();
         used_chunks.insert(main_thread_stack);
+        used_chunks.insert(null_page);
 
         let mut unused_chunks: SizeBucketedChunkMap = Default::default();
         unused_chunks.insert(rest);
