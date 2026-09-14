@@ -245,8 +245,8 @@ fn posix_memalign(
         return 0;
     }
     // Over-allocate so that we definitely have room for an aligned slice
-    // plus a 4-byte header storing the original allocation pointer.
-    let header: GuestUSize = std::mem::size_of::<u32>() as GuestUSize;
+    // plus an 8-byte header storing a magic value and the original allocation pointer.
+    let header: GuestUSize = (std::mem::size_of::<u32>() * 2) as GuestUSize;
     let Some(over) = size
         .checked_add(alignment)
         .and_then(|s| s.checked_add(header))
@@ -259,12 +259,20 @@ fn posix_memalign(
     }
     let raw_bits = raw.to_bits();
     // Align up to `alignment` while leaving at least `header` bytes free
-    // before the aligned address for our bookkeeping word.
-    let aligned_bits = (raw_bits + header + alignment - 1) & !(alignment - 1);
-    debug_assert!(aligned_bits >= raw_bits + header);
+    // before the aligned address for our bookkeeping words.
+    let Some(aligned_bits) = raw_bits
+        .checked_add(header)
+        .and_then(|value| value.checked_add(alignment - 1))
+        .map(|value| value & !(alignment - 1))
+    else {
+        env.mem.free(raw);
+        return crate::libc::errno::ENOMEM;
+    };
     let aligned: MutVoidPtr = MutVoidPtr::from_bits(aligned_bits);
-    let header_ptr: MutPtr<u32> = MutPtr::from_bits(aligned_bits - header);
-    env.mem.write(header_ptr, raw_bits);
+    let magic_ptr: MutPtr<u32> = MutPtr::from_bits(aligned_bits - header);
+    let raw_ptr: MutPtr<u32> = MutPtr::from_bits(aligned_bits - std::mem::size_of::<u32>() as u32);
+    env.mem.write(magic_ptr, crate::mem::ALIGNED_ALLOCATION_MAGIC);
+    env.mem.write(raw_ptr, raw_bits);
     env.mem.write(memptr, aligned);
     0
 }
@@ -350,6 +358,10 @@ fn free(env: &mut Environment, ptr: MutVoidPtr) {
     // This catches cases where a buggy stub returned garbage that the guest
     // later hands back to free() (e.g. misinterpreting a float as a pointer).
     if !env.mem.is_known_allocation(addr) {
+        if let Some(raw) = env.mem.aligned_allocation_base(ptr.cast_const()) {
+            env.mem.free(raw);
+            return;
+        }
         let pc = env.cpu.regs()[crate::cpu::Cpu::PC];
         let lr = env.cpu.regs()[crate::cpu::Cpu::LR];
         log!(

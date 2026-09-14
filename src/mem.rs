@@ -304,6 +304,7 @@ pub const PAGE_SIZE: GuestUSize = 4096;
 pub const PAGE_SIZE_ALIGN_MASK: GuestUSize = 0xfff;
 const MAX_DEFENSIVE_GUEST_ACCESS: GuestUSize = 64 * 1024 * 1024;
 const MAX_DEFENSIVE_GUEST_ALLOCATION: GuestUSize = 512 * 1024 * 1024;
+pub(crate) const ALIGNED_ALLOCATION_MAGIC: u32 = 0xA11C_0CA7;
 
 /// The type that owns the guest memory and provides accessors for it.
 pub struct Mem {
@@ -965,6 +966,25 @@ impl Mem {
         self.allocator.is_known_allocation(addr)
     }
 
+    /// Returns the original allocation for a pointer returned by
+    /// `posix_memalign`/`valloc`, if its bookkeeping header is valid.
+    pub fn aligned_allocation_base(&self, ptr: ConstVoidPtr) -> Option<MutVoidPtr> {
+        let addr = ptr.to_bits();
+        if addr < 8 {
+            return None;
+        }
+        let magic: u32 = self.read(ConstPtr::from_bits(addr - 8));
+        if magic != ALIGNED_ALLOCATION_MAGIC {
+            return None;
+        }
+        let raw_bits: u32 = self.read(ConstPtr::from_bits(addr - 4));
+        if self.allocator.is_known_allocation(raw_bits) {
+            Some(MutVoidPtr::from_bits(raw_bits))
+        } else {
+            None
+        }
+    }
+
     pub fn realloc(&mut self, old_ptr: MutVoidPtr, size: GuestUSize) -> MutVoidPtr {
         if old_ptr.is_null() {
             return self.alloc(size);
@@ -1002,6 +1022,10 @@ impl Mem {
         }
         // Reject obviously bogus pointers before passing to the allocator.
         if !self.allocator.is_known_allocation(addr) {
+            if let Some(raw) = self.aligned_allocation_base(ptr.cast_const()) {
+                self.free(raw);
+                return;
+            }
             log_once_fmt!(
                 "Can't free {:#x}: unknown allocation; repeated invalid frees are suppressed",
                 addr
