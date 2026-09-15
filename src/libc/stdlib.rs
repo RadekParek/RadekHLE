@@ -16,7 +16,9 @@ use crate::libc::wchar::wchar_t;
 use crate::mem::{ConstPtr, ConstVoidPtr, GuestUSize, MutPtr, MutVoidPtr, Ptr, SafeRead};
 use crate::objc::id;
 use crate::{impl_GuestRet_for_large_struct, Environment};
+use std::io::Read;
 use std::str::FromStr;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod qsort;
 
@@ -470,10 +472,33 @@ fn srand(env: &mut Environment, seed: u32) {
     env.libc_state.stdlib.rand = seed;
 }
 
+fn host_entropy_seed() -> u32 {
+    let mut bytes = [0u8; 4];
+    if let Ok(mut source) = std::fs::File::open("/dev/urandom") {
+        if source.read_exact(&mut bytes).is_ok() {
+            let seed = u32::from_ne_bytes(bytes);
+            if seed != 0 {
+                return seed;
+            }
+        }
+    }
+
+    let clock = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos() as u64)
+        .unwrap_or(0);
+    let address = (&bytes as *const [u8; 4]) as usize as u64;
+    let mixed = clock ^ address.rotate_left(17) ^ (clock >> 29);
+    let seed = (mixed as u32) ^ ((mixed >> 32) as u32);
+    if seed == 0 { 0x6d2b79f5 } else { seed }
+}
+
 fn sranddev(env: &mut Environment) {
-    let seed = arc4random(env);
+    let seed = host_entropy_seed();
     env.libc_state.stdlib.rand = seed;
-    log!("sranddev() stubbed: seeded rand with {}", seed);
+    env.libc_state.stdlib.random = seed.rotate_left(13);
+    env.libc_state.stdlib.arc4random = seed.rotate_left(7);
+    log_dbg!("sranddev() seeded libc PRNGs from host entropy");
 }
 
 fn rand(env: &mut Environment) -> i32 {

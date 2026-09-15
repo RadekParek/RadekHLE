@@ -117,6 +117,33 @@ macro_rules! log_once {
     }};
 }
 
+/// Like [log_once], but keeps normal logs focused on warnings and errors.
+macro_rules! log_dbg_once {
+    ($msg:literal) => {{
+        static LOG_ONCE: std::sync::Once = std::sync::Once::new();
+        LOG_ONCE.call_once(|| {
+            if $crate::log::verbose_logging_enabled()
+                || $crate::log::ENABLED_MODULES.contains(&module_path!())
+            {
+                log!("{} [this debug log will only be shown once]", $msg);
+            }
+        });
+    }};
+}
+
+macro_rules! log_dbg_once_fmt {
+    ($($arg:tt)+) => {{
+        static LOG_ONCE: std::sync::Once = std::sync::Once::new();
+        LOG_ONCE.call_once(|| {
+            if $crate::log::verbose_logging_enabled()
+                || $crate::log::ENABLED_MODULES.contains(&module_path!())
+            {
+                log!($($arg)+);
+            }
+        });
+    }};
+}
+
 macro_rules! log_once_fmt {
     ($($arg:tt)+) => {{
         static LOG_ONCE: std::sync::Once = std::sync::Once::new();

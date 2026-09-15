@@ -1399,7 +1399,7 @@ fn render_audio_unit_once(env: &mut Environment, audio_unit: AudioUnit) {
         }
         return;
     };
-    log_once!("render_audio_unit: entering callback for the first time");
+    log_dbg_once!("render_audio_unit: entering callback for the first time");
 
     let now = Instant::now();
     let mut queued_buffers = 0;

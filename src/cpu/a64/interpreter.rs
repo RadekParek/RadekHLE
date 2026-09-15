@@ -115,7 +115,6 @@ impl A64Interpreter {
             return Ok(None);
         }
         if instruction & 0x1fe0_0000 == 0x1a80_0000
-            || instruction & 0x1fe0_0000 == 0x5a80_0000
             || instruction & 0x1fe0_0000 == 0x1ac0_0000
         {
             self.execute_conditional_select(context, instruction)?;

@@ -865,7 +865,7 @@ impl Environment {
 
             echo!("Debugger client connected on {}.", client_addr);
             let mut gdb_server = gdb::GdbServer::new(client);
-            let step = gdb_server.wait_for_debugger(None, &mut env.cpu, &mut env.mem);
+            let step = gdb_server.wait_for_debugger(None, &mut env);
 
             assert!(!step, "Can't step right now!"); // TODO?
             env.gdb_server = Some(Box::new(gdb_server));
@@ -1734,11 +1734,20 @@ impl Environment {
                     } else {
                         None
                     };
-                    let will_step = self.gdb_server.as_deref_mut().unwrap().wait_for_debugger(
-                        reason.clone(),
-                        self.cpu.as_mut(),
-                        self.mem.as_mut(),
-                    );
+                    let mut gdb_server = self.gdb_server.take().unwrap();
+                    let will_step = gdb_server.wait_for_debugger(reason.clone(), &mut self);
+                    let resume_thread = gdb_server.take_resume_thread();
+                    self.gdb_server = Some(gdb_server);
+                    if let Some(resume_thread) = resume_thread {
+                        let can_resume_thread = resume_thread != self.current_thread
+                            && self
+                                .threads
+                                .get(resume_thread)
+                                .is_some_and(|thread| thread.active && !thread.is_blocked());
+                        if can_resume_thread {
+                            self.switch_thread(&mut old_context, resume_thread);
+                        }
+                    }
                     if will_step {
                         stepping = true;
                     }

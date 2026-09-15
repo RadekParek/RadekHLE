@@ -38,7 +38,6 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Write;
 use std::iter::Peekable;
-use std::string::FromUtf16Error;
 
 pub type NSStringEncoding = NSUInteger;
 pub const NSASCIIStringEncoding: NSUInteger = 1;
@@ -424,10 +423,16 @@ impl StringHostObject {
             }
         }
     }
-    fn to_utf8(&self) -> Result<Cow<'static, str>, FromUtf16Error> {
+    fn has_malformed_utf16(&self) -> bool {
         match self {
-            StringHostObject::Utf8(utf8) => Ok(utf8.clone()),
-            StringHostObject::Utf16(utf16) => Ok(Cow::Owned(String::from_utf16(utf16)?)),
+            StringHostObject::Utf8(_) => false,
+            StringHostObject::Utf16(utf16) => String::from_utf16(utf16).is_err(),
+        }
+    }
+    fn to_utf8_lossy(&self) -> Cow<'static, str> {
+        match self {
+            StringHostObject::Utf8(utf8) => utf8.clone(),
+            StringHostObject::Utf16(utf16) => Cow::Owned(String::from_utf16_lossy(utf16)),
         }
     }
     fn convert_to_utf16_inplace(&mut self) -> (&mut Utf16String, bool) {
@@ -512,7 +517,7 @@ impl CodeUnitIterator<'_> {
 
 pub fn with_format(env: &mut Environment, format: id, args: VaList) -> String {
     let format_string = to_rust_string(env, format);
-    println!("Formatting {:?} ({:?})", format, format_string);
+    log_dbg!("Formatting {:?} ({:?})", format, format_string);
 
     let res = crate::libc::stdio::printf::printf_inner::<true, _>(
         env,
@@ -2787,10 +2792,14 @@ pub fn to_rust_string(env: &mut Environment, string: id) -> Cow<'static, str> {
     if string == nil {
         return Cow::Borrowed("");
     }
-    env.objc
-        .borrow_mut::<StringHostObject>(string)
-        .to_utf8()
-        .unwrap()
+    let host_object = env.objc.borrow::<StringHostObject>(string);
+    if host_object.has_malformed_utf16() {
+        log_once_fmt!(
+            "NSString formatting received malformed UTF-16 for {:?}; using replacement characters",
+            string
+        );
+    }
+    host_object.to_utf8_lossy()
 }
 
 /// Returns the encoding in which `string`'s underlying code units can be

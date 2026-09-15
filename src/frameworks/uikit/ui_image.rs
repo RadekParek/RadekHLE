@@ -21,7 +21,7 @@ use crate::objc::{
 use crate::Environment;
 use std::collections::HashMap;
 
-const CACHE_SIZE: usize = 10;
+const CACHE_SIZE: usize = 128;
 
 #[derive(Default)]
 pub struct State {
@@ -79,7 +79,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     let path: id = msg![env; bundle pathForResource:name ofType:nil];
     let name_str = ns_string::to_rust_string(env, name).to_string();
 
-    if State::get(env).cached_images.len() > CACHE_SIZE {
+    if State::get(env).cached_images.len() >= CACHE_SIZE {
         let cache = std::mem::take(&mut State::get_mut(env).cached_images);
         for (_, img) in cache {
             release(env, img);

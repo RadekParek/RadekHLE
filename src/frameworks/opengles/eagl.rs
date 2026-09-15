@@ -610,7 +610,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     // First-frame breadcrumb. presentRenderbuffer is called every frame, so a
     // plain log!() would flood, but the very first call is a key signal that
     // the app actually got past splash/init and is rendering.
-    log_once!("[EAGLContext presentRenderbuffer:] first call (app reached first frame)");
+    log_dbg_once!("[EAGLContext presentRenderbuffer:] first call (app reached first frame)");
 
     // Frame-count milestones. presentRenderbuffer is called every frame, so we
     // want a small, fixed number of log lines that prove the render loop is

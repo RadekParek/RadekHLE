@@ -1176,10 +1176,14 @@ pub fn decode_buffer(
             } else {
                 let mut peekable_packets = packets.peekable();
 
-                while peekable_packets.peek().is_some() {
-                    let left = peekable_packets.next().unwrap();
+                while let Some(left) = peekable_packets.next() {
+                    let Some(right) = peekable_packets.next() else {
+                        log!(
+                            "Warning: decode_buffer: stereo IMA4 data ended with an unpaired channel packet."
+                        );
+                        break;
+                    };
                     let left_pcm_packet: [i16; 64] = decode_ima4(left.try_into().unwrap());
-                    let right = peekable_packets.next().unwrap();
                     let right_pcm_packet: [i16; 64] = decode_ima4(right.try_into().unwrap());
 
                     for (l, r) in left_pcm_packet.iter().zip(right_pcm_packet.iter()) {
@@ -1196,6 +1200,14 @@ pub fn decode_buffer(
             }
         }
         kAudioFormatLinearPCM => {
+            if format.bytes_per_frame == 0 {
+                log!("Warning: decode_buffer: PCM format has zero bytes_per_frame; returning silence.");
+                return (
+                    al::AL_FORMAT_MONO16,
+                    format.sample_rate.max(8000.0) as ALsizei,
+                    Vec::new(),
+                );
+            }
             let misaligned_by = data_slice.len() % (format.bytes_per_frame as usize);
             let data_slice = if misaligned_by != 0 {
                 &data_slice[..data_slice.len() - misaligned_by]
@@ -1216,7 +1228,11 @@ pub fn decode_buffer(
                 let mut processed_data = Vec::<u8>::with_capacity(processed_frame_count);
 
                 for frame in data_slice.chunks(actual_bytes_per_frame as usize) {
-                    let frame_bytes = &frame[frame.len() - format.bytes_per_frame as usize..];
+                    let frame_width = format.bytes_per_frame as usize;
+                    if frame.len() < frame_width {
+                        continue;
+                    }
+                    let frame_bytes = &frame[frame.len() - frame_width..];
 
                     match format.bytes_per_frame {
                         1 => processed_data.extend(
@@ -1765,8 +1781,17 @@ fn prime_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
         }
 
         let next_buffer_idx = al_buffers_queued;
-        let next_buffer_ref = host_object.buffer_queue[next_buffer_idx];
-        let next_buffer = env.mem.read(next_buffer_ref);
+        let Some(next_buffer_ref) = host_object.buffer_queue.get(next_buffer_idx).copied() else {
+            log!(
+                "Warning: audio queue {:?} lost its guest buffer bookkeeping; stopping refill.",
+                in_aq
+            );
+            break;
+        };
+        let Some(next_buffer) = try_read_audio_queue_buffer(&env.mem, next_buffer_ref) else {
+            host_object.buffer_queue.remove(next_buffer_idx);
+            break;
+        };
 
         log_dbg!(
             "Decoding buffer {:?} for queue {:?}",
@@ -1836,12 +1861,20 @@ fn prime_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
         let supplied_frames = frames_for_al_buffer(al_format, data.len());
         host_object.supplied_frames = host_object.supplied_frames.saturating_add(supplied_frames);
 
+        let Ok(data_len) = i32::try_from(data.len()) else {
+            log!(
+                "Warning: audio queue {:?} decoded buffer is too large for OpenAL; dropping this refill.",
+                in_aq
+            );
+            host_object.al_unused_buffers.push(next_al_buffer);
+            break;
+        };
         unsafe {
             context.BufferData(
                 next_al_buffer,
                 al_format,
                 data.as_ptr() as *const ALvoid,
-                data.len().try_into().unwrap(),
+                data_len,
                 al_frequency,
             )
         };
@@ -1954,6 +1987,28 @@ fn unqueue_buffers<F: FnMut(ALuint)>(al_source: ALuint, context: &OpenAL<'_>, mu
     }
 }
 
+fn try_read_audio_queue_buffer(
+    mem: &Mem,
+    buffer_ref: AudioQueueBufferRef,
+) -> Option<AudioQueueBuffer> {
+    if buffer_ref.is_null() {
+        log_dbg!("AudioQueue received a null guest buffer; skipping it");
+        return None;
+    }
+
+    let allocation_size = mem.malloc_size(buffer_ref.cast_const().cast());
+    if allocation_size < guest_size_of::<AudioQueueBuffer>() {
+        log_once_fmt!(
+            "AudioQueue received invalid buffer {:?} (allocation size {:#x}); skipping it",
+            buffer_ref,
+            allocation_size
+        );
+        return None;
+    }
+
+    Some(mem.read(buffer_ref))
+}
+
 pub fn handle_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
     let is_input = State::get(&mut env.framework_state)
         .audio_queues
@@ -2034,7 +2089,16 @@ pub fn handle_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
     let is_running = host_object.is_running;
 
     for buffer_ref in buffers_to_reuse.drain(..) {
-        let buffer_size = env.mem.read(buffer_ref).audio_data_byte_size;
+        let Some(buffer) = try_read_audio_queue_buffer(&env.mem, buffer_ref) else {
+            if let Some(queue) = State::get(&mut env.framework_state)
+                .audio_queues
+                .get_mut(&in_aq)
+            {
+                queue.buffer_queue.retain(|candidate| *candidate != buffer_ref);
+            }
+            continue;
+        };
+        let buffer_size = buffer.audio_data_byte_size;
         if let Some(queue) = State::get(&mut env.framework_state)
             .audio_queues
             .get_mut(&in_aq)
@@ -2052,7 +2116,11 @@ pub fn handle_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
             callback_user_data
         );
 
-        let () = callback_proc.call_from_host(env, (callback_user_data, in_aq, buffer_ref));
+        if callback_proc.addr_with_thumb_bit() != 0 {
+            let () = callback_proc.call_from_host(env, (callback_user_data, in_aq, buffer_ref));
+        } else {
+            log_dbg!("AudioQueue {:?} has no output callback; leaving recycled buffer untouched", in_aq);
+        }
     }
 
     prime_audio_queue(env, in_aq);
@@ -2102,6 +2170,12 @@ pub fn handle_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
                     "Warning: audio queue {:?} could not query stop state.",
                     in_aq
                 );
+                if let Some(queue) = State::get(&mut env.framework_state)
+                    .audio_queues
+                    .get_mut(&in_aq)
+                {
+                    queue.is_running_handler = false;
+                }
                 return;
             }
         }
@@ -2161,9 +2235,19 @@ fn handle_input_audio_queue(env: &mut Environment, in_aq: AudioQueueRef) {
             continue;
         };
         queue.buffer_queue.remove(position);
-        let buffer = env.mem.read(buffer_ref);
+        let Some(buffer) = try_read_audio_queue_buffer(&env.mem, buffer_ref) else {
+            continue;
+        };
         let capacity = buffer.audio_data_bytes_capacity as usize;
         if capacity == 0 {
+            continue;
+        }
+        let audio_allocation_size = env.mem.malloc_size(buffer.audio_data.cast_const().cast());
+        if audio_allocation_size < capacity as GuestUSize {
+            log_once_fmt!(
+                "AudioQueue input buffer {:?} points to an undersized audio allocation; skipping capture",
+                buffer_ref
+            );
             continue;
         }
         let native = media_capture::take_microphone_pcm(capacity.max(4096));
@@ -2246,7 +2330,9 @@ fn AudioQueuePrime(
         let format = &host_object.format;
 
         for &buffer_ref in &host_object.buffer_queue {
-            let buffer = env.mem.read(buffer_ref);
+            let Some(buffer) = try_read_audio_queue_buffer(&env.mem, buffer_ref) else {
+                continue;
+            };
             let size = buffer.audio_data_byte_size;
 
             if format.bytes_per_packet > 0 && format.frames_per_packet > 0 {

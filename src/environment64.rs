@@ -167,7 +167,6 @@ fn decode_instruction(instruction: u32, pc: u64) -> String {
         let immediate = ((((instruction >> 5) & 0x3fff) as i32) << 18 >> 16) as i64;
         format!("tbz/tbnz {:#x}", pc.wrapping_add_signed(immediate))
     } else if (instruction & 0x1fe0_0000 == 0x1a80_0000
-        || instruction & 0x1fe0_0000 == 0x5a80_0000
         || instruction & 0x1fe0_0000 == 0x1ac0_0000)
         && instruction & 0x0000_0810 == 0
     {

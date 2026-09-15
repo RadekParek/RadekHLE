@@ -1039,12 +1039,21 @@ impl Mem {
                 return;
             }
             if let Some((base, size)) = self.allocation_containing(addr) {
-                log_once_fmt!(
-                    "Ignoring invalid interior free {:#x}: live allocation {:#x} ({:#x} bytes) was left intact",
-                    addr,
-                    base,
-                    size
-                );
+                if base == PAGE_SIZE && addr < self.null_segment_size {
+                    log_dbg_once_fmt!(
+                        "Ignoring free of {:#x} inside the reserved null segment; live allocation {:#x} ({:#x} bytes) was left intact",
+                        addr,
+                        base,
+                        size
+                    );
+                } else {
+                    log_once_fmt!(
+                        "Ignoring invalid interior free {:#x}: live allocation {:#x} ({:#x} bytes) was left intact",
+                        addr,
+                        base,
+                        size
+                    );
+                }
                 return;
             }
             if self.was_freed(addr) {

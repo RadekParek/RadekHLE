@@ -12,8 +12,9 @@
 //!   - `include/gdb/signals.def` for the meanings of signal numbers
 //!   - `gdb/arch/arm.h` for ARMv6 register numbers
 
-use crate::cpu::{Cpu, CpuError};
-use crate::mem::{GuestUSize, Mem, Ptr};
+use crate::cpu::CpuError;
+use crate::environment::{Environment, ThreadId};
+use crate::mem::{GuestUSize, Ptr};
 use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::net::TcpStream;
@@ -31,6 +32,9 @@ const TARGET_XML: &str = r#"
 pub struct GdbServer {
     reader: BufReader<TcpStream>,
     first_halt: bool,
+    general_thread: Option<ThreadId>,
+    continue_thread: Option<ThreadId>,
+    resume_thread: Option<ThreadId>,
 }
 
 impl GdbServer {
@@ -54,6 +58,9 @@ impl GdbServer {
         GdbServer {
             reader: BufReader::with_capacity(4096, connection),
             first_halt: true,
+            general_thread: None,
+            continue_thread: None,
+            resume_thread: None,
         }
     }
 
@@ -126,6 +133,110 @@ impl GdbServer {
         log_dbg!("Sent packet: {:?}", body);
     }
 
+    fn thread_is_live(env: &Environment, thread_id: ThreadId) -> bool {
+        env.threads.get(thread_id).is_some_and(|thread| thread.active)
+    }
+
+    fn wire_thread_id(thread_id: ThreadId) -> String {
+        format!("{:x}", thread_id.saturating_add(1))
+    }
+
+    fn parse_thread_selector(
+        spec: &str,
+        env: &Environment,
+    ) -> Result<Option<ThreadId>, ()> {
+        if spec == "-1" || spec == "0" {
+            return Ok(None);
+        }
+        let wire_id = u64::from_str_radix(spec, 16).map_err(|_| ())?;
+        let thread_id = wire_id
+            .checked_sub(1)
+            .and_then(|id| usize::try_from(id).ok())
+            .ok_or(())?;
+        if Self::thread_is_live(env, thread_id) {
+            Ok(Some(thread_id))
+        } else {
+            Err(())
+        }
+    }
+
+    fn selected_general_thread(&self, env: &Environment) -> ThreadId {
+        self.general_thread
+            .filter(|&thread_id| Self::thread_is_live(env, thread_id))
+            .unwrap_or(env.current_thread)
+    }
+
+    fn selected_continue_thread(&self, env: &Environment) -> ThreadId {
+        self.continue_thread
+            .filter(|&thread_id| Self::thread_is_live(env, thread_id))
+            .unwrap_or(env.current_thread)
+    }
+
+    fn registers_for_thread(env: &Environment, thread_id: ThreadId) -> Option<([u32; 16], u32)> {
+        if thread_id == env.current_thread {
+            return Some((*env.cpu.regs(), env.cpu.cpsr()));
+        }
+        env.threads
+            .get(thread_id)
+            .and_then(|thread| thread.guest_context.as_ref())
+            .map(|context| (context.regs, context.cpsr))
+    }
+
+    fn write_registers_for_thread(
+        env: &mut Environment,
+        thread_id: ThreadId,
+        regs: [u32; 16],
+        cpsr: u32,
+    ) -> bool {
+        if thread_id == env.current_thread {
+            env.cpu.regs_mut().copy_from_slice(&regs);
+            env.cpu.set_cpsr(cpsr);
+            return true;
+        }
+        let Some(context) = env
+            .threads
+            .get_mut(thread_id)
+            .and_then(|thread| thread.guest_context.as_mut())
+        else {
+            return false;
+        };
+        context.regs = regs;
+        context.cpsr = cpsr;
+        true
+    }
+
+    fn set_pc_for_thread(env: &mut Environment, thread_id: ThreadId, address: u32) -> bool {
+        let function = crate::abi::GuestFunction::from_addr_with_thumb_bit(address);
+        if thread_id == env.current_thread {
+            env.cpu.branch(function);
+            return true;
+        }
+        let Some(context) = env
+            .threads
+            .get_mut(thread_id)
+            .and_then(|thread| thread.guest_context.as_mut())
+        else {
+            return false;
+        };
+        context.regs[crate::cpu::Cpu::PC] = function.addr_without_thumb_bit();
+        context.cpsr = (context.cpsr & !crate::cpu::Cpu::CPSR_THUMB)
+            | ((function.is_thumb() as u32) * crate::cpu::Cpu::CPSR_THUMB);
+        true
+    }
+
+    fn send_stop_reply(&mut self, signal: &str, env: &Environment) {
+        self.send_packet(&format!(
+            "{signal};thread:{};",
+            Self::wire_thread_id(env.current_thread)
+        ));
+    }
+
+    /// Return the thread selected by the next continue/step command, if GDB
+    /// explicitly selected one with `Hc` or `vCont`.
+    pub fn take_resume_thread(&mut self) -> Option<ThreadId> {
+        self.resume_thread.take()
+    }
+
     /// Communciates with the debugger, returning only once it requests
     /// execution should continue. Returns [true] if the CPU should step and
     /// then resume debugging, or [false] if it should resume normal execution.
@@ -133,271 +244,406 @@ impl GdbServer {
     pub fn wait_for_debugger(
         &mut self,
         stop_reason: Option<CpuError>,
-        cpu: &mut Cpu,
-        mem: &mut Mem,
+        env: &mut Environment,
     ) -> bool {
         echo!("Waiting for debugger to continue.");
 
-        // Send reply to continue/step packet that gdb sent earlier, so it knows
-        // why execution was stopped.
         match stop_reason {
-            None => {
-                if self.first_halt {
-                    // The debugger has just connected, it hasn't sent anything
-                    // yet.
-                    self.first_halt = false;
-                } else {
-                    // The debugger previously requested stepping and no errors
-                    // occurred.
-                    self.send_packet("S05"); // SIGTRAP
-                }
+            None if self.first_halt => {
+                self.first_halt = false;
             }
-            // GDB uses an undefined instruction for software breakpoints in
-            // normal Arm code, and the BKPT instruction in Thumb code.
-            // It apparently expects SIGTRAP instead of SIGILL even in the
-            // former case.
+            None => self.send_stop_reply("S05", env),
             Some(CpuError::UndefinedInstruction) | Some(CpuError::Breakpoint) => {
-                self.send_packet("S05"); // SIGTRAP
+                self.send_stop_reply("S05", env)
             }
-            Some(CpuError::MemoryError) => {
-                self.send_packet("S0b"); // SIGSEGV
-            }
+            Some(CpuError::MemoryError) => self.send_stop_reply("S0b", env),
         }
 
         let do_step = loop {
-            let Some(p) = self.read_packet() else {
+            let Some(packet) = self.read_packet() else {
                 continue;
             };
-
-            if p.is_empty() {
+            if packet.is_empty() {
                 continue;
-            };
+            }
 
-            match p.as_bytes()[0] {
-                // Query for target halt reason when first connecting
+            match packet.as_bytes()[0] {
                 b'?' => {
-                    assert!(stop_reason.is_none());
-                    self.send_packet("S00"); // no signal
-                }
-                // Read general registers
-                b'g' => {
-                    let mut packet = String::with_capacity(16 * 4 * 2);
-                    for reg in cpu.regs() {
-                        // Rust always prints in big-endian, but GDB expects
-                        // little-endian.
-                        let reg = u32::from_be_bytes(reg.to_le_bytes());
-                        write!(packet, "{reg:08x}").unwrap();
-                    }
-                    self.send_packet(&packet);
-                }
-                // Write general registers
-                b'G' => {
-                    let data = &p[1..];
-                    let regs = cpu.regs_mut();
-                    assert!(data.len() == regs.len() * 4 * 2);
-                    for (i, reg) in regs.iter_mut().enumerate() {
-                        let word = &data[i * 4 * 2..][..4 * 2];
-                        let word = u32::from_str_radix(word, 16).unwrap();
-                        // Rust decodes in big-endian, but GDB supplies
-                        // little-endian.
-                        let word = u32::from_le_bytes(word.to_be_bytes());
-                        *reg = word;
-                    }
-                    self.send_packet("OK");
-                }
-                // Read single register by number
-                b'p' => {
-                    let num = usize::from_str_radix(&p[1..], 16).unwrap();
-                    // ARM register numbering (GDB arm-tdep.c):
-                    //   0-15: R0-R15 (general purpose)
-                    //   16-24: f0-f7 + fps (legacy FPA, unused on iOS)
-                    //   25: CPSR
-                    //   26-57: d0-d15 (VFP double-precision, 64-bit each)
-                    //   58: FPSCR (VFP status/control)
-                    // Since dynarmic doesn't expose VFP state to us yet,
-                    // report zeros for FP registers (apps don't debug FP
-                    // state through GDB in practice). This prevents GDB
-                    // from disconnecting on "E00" for every FP register.
-                    let reg = if num < 16 {
-                        Some(cpu.regs()[num])
-                    } else if num == 25 {
-                        Some(cpu.cpsr())
-                    } else if (26..=57).contains(&num) {
-                        // VFP d0-d15: report as 64-bit zero
-                        // GDB expects 8 bytes for these (handled below)
-                        None // special case
-                    } else if num == 58 {
-                        // FPSCR: report as zero (no exceptions, round-to-nearest)
-                        Some(0u32)
-                    } else if (16..=24).contains(&num) {
-                        // Legacy FPA registers: report zero
-                        Some(0u32)
-                    } else {
-                        None
+                    let signal = match stop_reason {
+                        Some(CpuError::MemoryError) => "S0b",
+                        Some(CpuError::UndefinedInstruction) | Some(CpuError::Breakpoint) => "S05",
+                        None => "S00",
                     };
-
-                    if (26..=57).contains(&num) {
-                        // 64-bit VFP register: send 16 hex chars (8 bytes LE)
+                    self.send_stop_reply(signal, env);
+                }
+                b'g' => {
+                    let thread_id = self.selected_general_thread(env);
+                    let Some((regs, _cpsr)) = Self::registers_for_thread(env, thread_id) else {
+                        self.send_packet("E01");
+                        continue;
+                    };
+                    let mut response = String::with_capacity(regs.len() * 8);
+                    for reg in regs {
+                        write!(response, "{:08x}", u32::from_be_bytes(reg.to_le_bytes())).unwrap();
+                    }
+                    self.send_packet(&response);
+                }
+                b'G' => {
+                    let data = &packet[1..];
+                    if data.len() != 16 * 8 {
+                        self.send_packet("E01");
+                        continue;
+                    }
+                    let mut regs = [0u32; 16];
+                    let mut valid = true;
+                    for (index, reg) in regs.iter_mut().enumerate() {
+                        let word = &data[index * 8..index * 8 + 8];
+                        match u32::from_str_radix(word, 16) {
+                            Ok(value) => *reg = u32::from_le_bytes(value.to_be_bytes()),
+                            Err(_) => {
+                                valid = false;
+                                break;
+                            }
+                        }
+                    }
+                    if !valid {
+                        self.send_packet("E01");
+                        continue;
+                    }
+                    let thread_id = self.selected_general_thread(env);
+                    let Some((_, cpsr)) = Self::registers_for_thread(env, thread_id) else {
+                        self.send_packet("E01");
+                        continue;
+                    };
+                    if Self::write_registers_for_thread(env, thread_id, regs, cpsr) {
+                        self.send_packet("OK");
+                    } else {
+                        self.send_packet("E01");
+                    }
+                }
+                b'p' => {
+                    let Ok(number) = usize::from_str_radix(&packet[1..], 16) else {
+                        self.send_packet("E01");
+                        continue;
+                    };
+                    let thread_id = self.selected_general_thread(env);
+                    let Some((regs, cpsr)) = Self::registers_for_thread(env, thread_id) else {
+                        self.send_packet("E01");
+                        continue;
+                    };
+                    if (26..=57).contains(&number) {
                         self.send_packet("0000000000000000");
-                    } else if let Some(reg) = reg {
-                        // Rust always prints in big-endian, but GDB expects
-                        // little-endian.
-                        let reg = u32::from_be_bytes(reg.to_le_bytes());
-                        self.send_packet(&format!("{reg:08x}"));
+                    } else if number < 16 {
+                        let value = u32::from_be_bytes(regs[number].to_le_bytes());
+                        self.send_packet(&format!("{value:08x}"));
+                    } else if number == 25 {
+                        let value = u32::from_be_bytes(cpsr.to_le_bytes());
+                        self.send_packet(&format!("{value:08x}"));
+                    } else if (16..=24).contains(&number) || number == 58 {
+                        self.send_packet("00000000");
                     } else {
-                        // Error 0
                         self.send_packet("E00");
                     }
                 }
-                // Write single register by number
                 b'P' => {
-                    let (num, word) = p[1..].split_once('=').unwrap();
-                    let num = usize::from_str_radix(num, 16).unwrap();
-                    if num < 16 {
-                        let word = u32::from_str_radix(word, 16).unwrap();
-                        let word = u32::from_le_bytes(word.to_be_bytes());
-                        cpu.regs_mut()[num] = word;
+                    let Some((number, encoded)) = packet[1..].split_once('=') else {
+                        self.send_packet("E01");
+                        continue;
+                    };
+                    let Ok(number) = usize::from_str_radix(number, 16) else {
+                        self.send_packet("E01");
+                        continue;
+                    };
+                    let Ok(encoded) = u32::from_str_radix(encoded, 16) else {
+                        self.send_packet("E01");
+                        continue;
+                    };
+                    if (26..=57).contains(&number) || (16..=24).contains(&number) || number == 58 {
                         self.send_packet("OK");
-                    } else if num == 25 {
-                        let word = u32::from_str_radix(word, 16).unwrap();
-                        let word = u32::from_le_bytes(word.to_be_bytes());
-                        cpu.set_cpsr(word);
-                        self.send_packet("OK");
-                    } else if (26..=57).contains(&num) || num == 58 || (16..=24).contains(&num) {
-                        // VFP / FPA registers: accept the write silently
-                        // (we can't actually set them without dynarmic exposure)
+                        continue;
+                    }
+                    let thread_id = self.selected_general_thread(env);
+                    let Some((mut regs, mut cpsr)) = Self::registers_for_thread(env, thread_id) else {
+                        self.send_packet("E01");
+                        continue;
+                    };
+                    let value = u32::from_le_bytes(encoded.to_be_bytes());
+                    if number < 16 {
+                        regs[number] = value;
+                    } else if number == 25 {
+                        cpsr = value;
+                    } else {
+                        self.send_packet("E00");
+                        continue;
+                    }
+                    if Self::write_registers_for_thread(env, thread_id, regs, cpsr) {
                         self.send_packet("OK");
                     } else {
-                        // Error 0
-                        self.send_packet("E00");
+                        self.send_packet("E01");
                     }
                 }
-                // Read memory
                 b'm' => {
-                    let (addr, length) = p[1..].split_once(',').unwrap();
-                    let addr = GuestUSize::from_str_radix(addr, 16).unwrap();
-                    let length = GuestUSize::from_str_radix(length, 16).unwrap();
-                    let mut packet = String::with_capacity(length as usize * 2);
-                    match mem.get_bytes_fallible(Ptr::from_bits(addr), length) {
-                        Some(data) => {
-                            for byte in data {
-                                write!(packet, "{byte:02x}").unwrap();
-                            }
-                        }
-                        None => {
-                            // Error 0
-                            write!(packet, "E00").unwrap()
-                        }
+                    let Some((address, length)) = packet[1..].split_once(',') else {
+                        self.send_packet("E01");
+                        continue;
+                    };
+                    let Ok(address) = GuestUSize::from_str_radix(address, 16) else {
+                        self.send_packet("E01");
+                        continue;
+                    };
+                    let Ok(length) = GuestUSize::from_str_radix(length, 16) else {
+                        self.send_packet("E01");
+                        continue;
+                    };
+                    const MAX_GDB_MEMORY_TRANSFER: GuestUSize = 1024 * 1024;
+                    if length > MAX_GDB_MEMORY_TRANSFER {
+                        self.send_packet("E01");
+                        continue;
                     }
-                    self.send_packet(&packet);
+                    let Some(data) = env.mem.get_bytes_fallible(Ptr::from_bits(address), length) else {
+                        self.send_packet("E00");
+                        continue;
+                    };
+                    let mut response = String::with_capacity(data.len() * 2);
+                    for byte in data {
+                        write!(response, "{byte:02x}").unwrap();
+                    }
+                    self.send_packet(&response);
                 }
-                // Write memory
                 b'M' => {
-                    let (header, data) = p[1..].split_once(':').unwrap();
-                    let (addr, length) = header.split_once(',').unwrap();
-                    let addr = GuestUSize::from_str_radix(addr, 16).unwrap();
-                    let length = GuestUSize::from_str_radix(length, 16).unwrap();
-                    assert!(data.len() == length as usize * 2);
-
-                    match mem.get_bytes_fallible_mut(Ptr::from_bits(addr), length) {
-                        Some(dest) => {
-                            for i in 0..(length as usize) {
-                                let byte = &data[i * 2..][..2];
-                                let byte = u8::from_str_radix(byte, 16).unwrap();
-                                dest[i] = byte;
-                            }
-                            // Important for e.g. software breakpoints.
-                            cpu.invalidate_cache_range(addr, length);
+                    let Some((header, data)) = packet[1..].split_once(':') else {
+                        self.send_packet("E01");
+                        continue;
+                    };
+                    let Some((address, length)) = header.split_once(',') else {
+                        self.send_packet("E01");
+                        continue;
+                    };
+                    let Ok(address) = GuestUSize::from_str_radix(address, 16) else {
+                        self.send_packet("E01");
+                        continue;
+                    };
+                    let Ok(length) = GuestUSize::from_str_radix(length, 16) else {
+                        self.send_packet("E01");
+                        continue;
+                    };
+                    let Some(expected_len) = (length as usize).checked_mul(2) else {
+                        self.send_packet("E01");
+                        continue;
+                    };
+                    if data.len() != expected_len || length > 1024 * 1024 {
+                        self.send_packet("E01");
+                        continue;
+                    }
+                    let Some(destination) = env.mem.get_bytes_fallible_mut(Ptr::from_bits(address), length) else {
+                        self.send_packet("E00");
+                        continue;
+                    };
+                    let mut valid = true;
+                    for (index, byte) in data.as_bytes().chunks_exact(2).enumerate() {
+                        let Ok(value) = u8::from_str_radix(std::str::from_utf8(byte).unwrap_or(""), 16) else {
+                            valid = false;
+                            break;
+                        };
+                        destination[index] = value;
+                    }
+                    if valid {
+                        env.cpu.invalidate_cache_range(address, length);
+                        self.send_packet("OK");
+                    } else {
+                        self.send_packet("E01");
+                    }
+                }
+                b'H' => {
+                    if packet.len() < 3 {
+                        self.send_packet("E01");
+                        continue;
+                    }
+                    let kind = packet.as_bytes()[1] as char;
+                    match Self::parse_thread_selector(&packet[2..], env) {
+                        Ok(thread_id) if kind == 'g' => {
+                            self.general_thread = thread_id;
                             self.send_packet("OK");
                         }
-                        None => {
-                            // Error 0
-                            self.send_packet("E00");
+                        Ok(thread_id) if kind == 'c' => {
+                            self.continue_thread = thread_id;
+                            self.send_packet("OK");
                         }
+                        _ => self.send_packet("E01"),
                     }
                 }
-                // Continue or Step
+                b'T' => {
+                    match Self::parse_thread_selector(&packet[1..], env) {
+                        Ok(Some(_)) => self.send_packet("OK"),
+                        Ok(None) if Self::thread_is_live(env, env.current_thread) => {
+                            self.send_packet("OK")
+                        }
+                        _ => self.send_packet("E01"),
+                    }
+                }
                 b'c' | b's' => {
-                    let addr = &p[1..];
-                    if !addr.is_empty() {
-                        // GDB requested resume at a specific address.
-                        // Parse the hex address and set the PC before resuming.
-                        if let Ok(new_pc) = u32::from_str_radix(addr, 16) {
-                            log!("GDB: Resume at address {:#x}", new_pc);
-                            let func = crate::abi::GuestFunction::from_addr_with_thumb_bit(new_pc);
-                            cpu.branch(func);
-                        } else {
-                            log!("GDB: Could not parse resume address {:?}, ignoring", addr);
+                    let thread_id = self.selected_continue_thread(env);
+                    let address = &packet[1..];
+                    if !address.is_empty() {
+                        let Ok(address) = u32::from_str_radix(address, 16) else {
+                            self.send_packet("E01");
+                            continue;
+                        };
+                        if !Self::set_pc_for_thread(env, thread_id, address) {
+                            self.send_packet("E01");
+                            continue;
                         }
                     }
-                    break p.as_bytes()[0] == b's';
+                    self.resume_thread = self.continue_thread;
+                    break packet.as_bytes()[0] == b's';
                 }
-                // "Continue with signal" or "Step with signal".
-                // Presumably "with" means "ignoring"?
                 b'C' | b'S' => {
-                    // Signal is just ignored for now (TODO?)
-                    if let Some((_signal, addr)) = p[1..].split_once(';') {
-                        if !addr.is_empty() {
-                            if let Ok(new_pc) = u32::from_str_radix(addr, 16) {
-                                log!("GDB: Resume with signal at address {:#x}", new_pc);
-                                let func =
-                                    crate::abi::GuestFunction::from_addr_with_thumb_bit(new_pc);
-                                cpu.branch(func);
-                            } else {
-                                log!("GDB: Could not parse resume address {:?}, ignoring", addr);
+                    let thread_id = self.selected_continue_thread(env);
+                    if let Some((_signal, address)) = packet[1..].split_once(';') {
+                        if !address.is_empty() {
+                            let Ok(address) = u32::from_str_radix(address, 16) else {
+                                self.send_packet("E01");
+                                continue;
+                            };
+                            if !Self::set_pc_for_thread(env, thread_id, address) {
+                                self.send_packet("E01");
+                                continue;
                             }
                         }
                     }
-                    break p.as_bytes()[0] == b'S';
+                    self.resume_thread = self.continue_thread;
+                    break packet.as_bytes()[0] == b'S';
                 }
-                // Kill
-                b'k' => {
-                    panic!("Debugger requested kill.");
+                b'v' if packet == "vCont?" => {
+                    self.send_packet("vCont;c;s");
+                }
+                b'v' if packet.starts_with("vCont;") => {
+                    let action = packet[6..].split(';').next().unwrap_or("");
+                    let (action, thread_spec) = action.split_once(':').map_or((action, None), |(action, thread)| (action, Some(thread)));
+                    if let Some(thread_spec) = thread_spec {
+                        match Self::parse_thread_selector(thread_spec, env) {
+                            Ok(thread_id) => self.continue_thread = thread_id,
+                            Err(()) => {
+                                self.send_packet("E01");
+                                continue;
+                            }
+                        }
+                    }
+                    if action == "c" || action == "s" {
+                        self.resume_thread = self.continue_thread;
+                        break action == "s";
+                    }
+                    self.send_packet("E01");
+                }
+                b'k' => panic!("Debugger requested kill."),
+                b'D' => {
+                    self.send_packet("OK");
+                    break false;
                 }
                 _ => {
-                    // Query whether we're attaching to an existing or new
-                    // process
-                    if p == "qAttached" {
-                        // New process
+                    if packet == "qAttached" {
                         self.send_packet("0");
-                    // Query for supported features
-                    } else if p == "qSupported" || p.starts_with("qSupported:") {
-                        // Tell GDB we can send it an XML target description.
-                        self.send_packet("qXfer:features:read+");
-                    // Read XML target description
-                    } else if let Some(params) = p.strip_prefix("qXfer:features:read:") {
-                        let (annex, params) = params.split_once(':').unwrap();
-                        let (offset, length) = params.split_once(',').unwrap();
-                        let offset = usize::from_str_radix(offset, 16).unwrap();
-                        let length = usize::from_str_radix(length, 16).unwrap();
+                    } else if packet == "qC" {
+                        self.send_packet(&format!("QC{}", Self::wire_thread_id(env.current_thread)));
+                    } else if packet == "qfThreadInfo" {
+                        let ids = env
+                            .threads
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, thread)| thread.active)
+                            .map(|(id, _)| Self::wire_thread_id(id))
+                            .collect::<Vec<_>>();
+                        if ids.is_empty() {
+                            self.send_packet("l");
+                        } else {
+                            self.send_packet(&format!("m{}", ids.join(",")));
+                        }
+                    } else if packet == "qsThreadInfo" {
+                        self.send_packet("l");
+                    } else if let Some(thread_spec) = packet.strip_prefix("qThreadExtraInfo,") {
+                        match Self::parse_thread_selector(thread_spec, env) {
+                            Ok(Some(thread_id)) => {
+                                let thread = &env.threads[thread_id];
+                                let description = format!(
+                                    "guest thread {} active={} blocked={:?}",
+                                    Self::wire_thread_id(thread_id),
+                                    thread.active,
+                                    thread.blocked_by
+                                );
+                                let mut encoded = String::with_capacity(description.len() * 2);
+                                for byte in description.bytes() {
+                                    write!(encoded, "{byte:02x}").unwrap();
+                                }
+                                self.send_packet(&encoded);
+                            }
+                            Ok(None) if Self::thread_is_live(env, env.current_thread) => {
+                                self.send_packet("63757272656e7420");
+                            }
+                            _ => self.send_packet("E01"),
+                        }
+                    } else if packet == "qSupported" || packet.starts_with("qSupported:") {
+                        self.send_packet("PacketSize=1000;qXfer:features:read+;qXfer:threads:read+;multiprocess+;vContSupported+");
+                    } else if let Some(params) = packet.strip_prefix("qXfer:features:read:") {
+                        let Some((annex, range)) = params.split_once(':') else {
+                            self.send_packet("E01");
+                            continue;
+                        };
+                        let Some((offset, length)) = range.split_once(',') else {
+                            self.send_packet("E01");
+                            continue;
+                        };
+                        let (Ok(offset), Ok(length)) = (usize::from_str_radix(offset, 16), usize::from_str_radix(length, 16)) else {
+                            self.send_packet("E01");
+                            continue;
+                        };
                         let bytes = TARGET_XML.as_bytes();
                         if annex == "target.xml" && offset <= bytes.len() {
-                            let bytes = &bytes[offset..];
-                            let length_read = length.min(bytes.len());
-                            let mut packet = String::with_capacity(1 + length_read);
-                            if length_read < length {
-                                // Read data, more remains
-                                packet.push('l');
-                            } else {
-                                // Read data, none left
-                                packet.push('m');
-                            }
-                            // This packet uses the modern style of binary
-                            // data where most bytes are unescaped.
-                            // We happen to know none of the bytes in the XML
-                            // need escaping, and that they're all ASCII.
-                            packet.push_str(std::str::from_utf8(&bytes[..length_read]).unwrap());
-                            self.send_packet(&packet);
+                            let end = offset.saturating_add(length).min(bytes.len());
+                            let marker = if end < bytes.len() { 'm' } else { 'l' };
+                            let mut response = String::with_capacity(1 + end.saturating_sub(offset));
+                            response.push(marker);
+                            response.push_str(std::str::from_utf8(&bytes[offset..end]).unwrap_or(""));
+                            self.send_packet(&response);
                         } else {
-                            // Unsupported annex or invalid offset
                             self.send_packet("E00");
                         }
+                    } else if let Some(params) = packet.strip_prefix("qXfer:threads:read:") {
+                        let Some((annex, range)) = params.split_once(':') else {
+                            self.send_packet("E01");
+                            continue;
+                        };
+                        let Some((offset, length)) = range.split_once(',') else {
+                            self.send_packet("E01");
+                            continue;
+                        };
+                        let (Ok(offset), Ok(length)) = (usize::from_str_radix(offset, 16), usize::from_str_radix(length, 16)) else {
+                            self.send_packet("E01");
+                            continue;
+                        };
+                        if !annex.is_empty() && annex != "threads" {
+                            self.send_packet("E00");
+                            continue;
+                        }
+                        let mut xml = String::from("<threads>");
+                        for (id, thread) in env.threads.iter().enumerate() {
+                            if thread.active {
+                                write!(xml, "<thread id=\"{}\" name=\"guest-{}\"/>", Self::wire_thread_id(id), id).unwrap();
+                            }
+                        }
+                        xml.push_str("</threads>");
+                        let bytes = xml.as_bytes();
+                        if offset > bytes.len() {
+                            self.send_packet("E00");
+                            continue;
+                        }
+                        let end = offset.saturating_add(length).min(bytes.len());
+                        let marker = if end < bytes.len() { 'm' } else { 'l' };
+                        let mut response = String::with_capacity(1 + end.saturating_sub(offset));
+                        response.push(marker);
+                        response.push_str(std::str::from_utf8(&bytes[offset..end]).unwrap_or(""));
+                        self.send_packet(&response);
                     } else {
-                        log_dbg!("Unhandled packet.");
-                        // Tell GDB we don't understand this packet.
-                        // In some cases this causes convenient fallbacks:
-                        // Since we don't support 'Z', GDB will implement
-                        // software breakpoints for us with trap instructions.
+                        log_dbg!("Unhandled GDB packet: {:?}", packet);
                         self.send_packet("");
                     }
                 }
