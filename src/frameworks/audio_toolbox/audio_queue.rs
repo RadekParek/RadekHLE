@@ -2311,35 +2311,15 @@ fn notify_aq_property_listeners(
     }
 }
 
-fn startup_buffer_size(format: &AudioStreamBasicDescription) -> u32 {
-    if matches!(
-        format.format_id,
-        kAudioFormatMPEGLayer3 | kAudioFormatMPEG4AAC
-    ) {
-        return 4096;
-    }
-    let bytes_per_frame = u64::from(format.bytes_per_frame.max(1));
-    let frames = if format.sample_rate.is_finite() && format.sample_rate > 0.0 {
-        (format.sample_rate / 50.0).round().clamp(256.0, 4096.0) as u64
-    } else {
-        1024
-    };
-    frames
-        .saturating_mul(bytes_per_frame)
-        .clamp(4096, 32 * 1024) as u32
-}
-
 fn ensure_output_buffers(env: &mut Environment, in_aq: AudioQueueRef) {
-    let Some((format, callback_proc, callback_user_data, should_allocate, mut buffers)) =
+    let Some((callback_proc, callback_user_data, buffers)) =
         State::get(&mut env.framework_state)
             .audio_queues
             .get(&in_aq)
             .map(|queue| {
                 (
-                    queue.format,
                     queue.callback_proc,
                     queue.callback_user_data,
-                    !queue.is_input && queue.buffers.is_empty(),
                     queue.buffers.clone(),
                 )
             })
@@ -2347,40 +2327,9 @@ fn ensure_output_buffers(env: &mut Environment, in_aq: AudioQueueRef) {
         return;
     };
 
-    if should_allocate {
-        const STARTUP_BUFFER_COUNT: usize = 4;
-        let buffer_size = startup_buffer_size(&format);
-        for _ in 0..STARTUP_BUFFER_COUNT {
-            let audio_data = env.mem.alloc(buffer_size);
-            let buffer_ptr = env.mem.alloc_and_write(AudioQueueBuffer {
-                audio_data_bytes_capacity: buffer_size,
-                audio_data,
-                audio_data_byte_size: 0,
-                user_data: Ptr::null(),
-                packet_description_capacity: 0,
-                _packet_descriptions: Ptr::null(),
-                _packet_description_count: 0,
-            });
-            let Some(queue) = State::get(&mut env.framework_state)
-                .audio_queues
-                .get_mut(&in_aq)
-            else {
-                env.mem.free(audio_data);
-                env.mem.free(buffer_ptr.cast());
-                return;
-            };
-            queue.buffers.push(buffer_ptr);
-            buffers.push(buffer_ptr);
-        }
-
-        log!(
-            "AudioQueueStart: allocated {} startup guest buffers of {} bytes for queue {:?}",
-            STARTUP_BUFFER_COUNT,
-            buffer_size,
-            in_aq
-        );
-    }
-
+    // AudioQueue Services does not own or pre-allocate guest buffers. The app
+    // allocates them explicitly and owns their lifetime; this helper only
+    // primes buffers that the app has already provided.
     let is_input = State::get(&mut env.framework_state)
         .audio_queues
         .get(&in_aq)
@@ -2389,12 +2338,6 @@ fn ensure_output_buffers(env: &mut Environment, in_aq: AudioQueueRef) {
         return;
     }
 
-    // A number of older games allocate their output buffers before starting
-    // the queue, then expect AudioQueueStart to make the first output callback.
-    // The previous implementation only did that for buffers allocated by our
-    // fallback path, so a queue could start with two guest buffers but zero
-    // OpenAL buffers. OpenAL then stopped immediately and background music was
-    // silent until the app happened to refill the queue later.
     for buffer_ptr in buffers {
         let should_callback = State::get(&mut env.framework_state)
             .audio_queues
@@ -2418,17 +2361,16 @@ fn ensure_output_buffers(env: &mut Environment, in_aq: AudioQueueRef) {
                     .get_mut(&in_aq)
                 {
                     queue.callbacks = queue.callbacks.saturating_add(1);
-                    queue.requested_frames =
-                        queue
-                            .requested_frames
-                            .saturating_add(frames_for_audio_bytes(
-                                &queue.format,
-                                produced_bytes as usize,
-                            ));
+                    queue.requested_frames = queue
+                        .requested_frames
+                        .saturating_add(frames_for_audio_bytes(
+                            &queue.format,
+                            produced_bytes as usize,
+                        ));
                 }
             } else {
-                log!(
-                    "Warning: AudioQueueStart({:?}) callback left startup buffer {:?} empty",
+                log_dbg!(
+                    "AudioQueueStart({:?}) callback left app-owned buffer {:?} empty; waiting for the next callback",
                     in_aq,
                     buffer_ptr
                 );
@@ -2493,9 +2435,12 @@ pub fn log_audio_queue_state(env: &mut Environment, label: &str) {
             queue.callbacks,
             queue.underruns,
         );
-        if queue.buffers.is_empty() {
-            log!(
-                "AudioQueue state [{}]: queue={:?} has no guest buffers; playback cannot receive data until a buffer is allocated",
+        if queue.buffers.is_empty()
+            && queue.is_running == AudioQueueIsRunning::Running
+            && queue.buffer_queue.is_empty()
+        {
+            log_dbg!(
+                "AudioQueue state [{}]: queue={:?} is running without guest buffers; waiting for AudioQueueAllocateBuffer",
                 label,
                 queue_ref
             );
@@ -2600,8 +2545,8 @@ pub fn AudioQueueStart(
                 );
             }
         } else {
-            log!(
-                "Warning: AudioQueueStart({:?}) has no decoded buffers after the initial callback",
+            log_dbg!(
+                "AudioQueueStart({:?}) has no decoded buffers yet; waiting for the guest callback",
                 in_aq
             );
         }

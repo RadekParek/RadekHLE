@@ -208,7 +208,7 @@ fn objc_msgSend_inner(
 
     if receiver == nil {
         // https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/ObjectiveC/Chapters/ocObjectsClasses.html#//apple_ref/doc/uid/TP30001163-CH11-SW7
-        log_dbg!("[nil {}]", selector.as_str(&env.mem));
+        log_once_fmt!("[nil {}] (repeated nil receivers suppressed)", selector.as_str(&env.mem));
         env.cpu.regs_mut()[0..2].fill(0);
         return;
     }

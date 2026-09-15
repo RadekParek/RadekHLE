@@ -18,8 +18,8 @@ use crate::cpu::Cpu;
 use crate::libc::semaphore::sem_t;
 use crate::mem::{GuestUSize, MutPtr, MutVoidPtr};
 use crate::{
-    abi, bundle, cpu, dyld, frameworks, fs, gdb, image, libc, mach_o, mem, objc, options, stack,
-    window,
+    abi, bundle, cpu, dyld, frameworks, fs, gdb, image, libc, mach_o, mem, msg_class, objc,
+    options, stack, window,
 };
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -642,6 +642,8 @@ impl Environment {
         let main_thread_init_routine = Coroutine::new(move |yielder, mut env: Environment| {
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 env.with_yielder(yielder, move |env| {
+                    let _implicit_autorelease_pool: objc::id =
+                        msg_class![env; NSAutoreleasePool new];
                     echo!("CPU emulation begins now.");
                     env.cpu.regs_mut()[Cpu::R9] = main_thread_tls.to_bits();
                     log_dbg!(
@@ -1267,6 +1269,8 @@ impl Environment {
         let thread_routine = Coroutine::new(move |yielder, mut env: Environment| {
             let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 env.with_yielder(yielder, move |env| {
+                    let _implicit_autorelease_pool: objc::id =
+                        msg_class![env; NSAutoreleasePool new];
                     let regs = env.cpu.regs_mut();
                     regs[cpu::Cpu::LR] = env.dyld.thread_exit_routine().addr_with_thumb_bit();
                     regs[cpu::Cpu::SP] = stack_high_addr;

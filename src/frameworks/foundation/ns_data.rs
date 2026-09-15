@@ -194,10 +194,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     let bundle_root = env.bundle.bundle_path().as_str().trim_end_matches('/');
     let relative_path = path_str.trim_start_matches("./");
     let data_relative_path = relative_path.strip_prefix("Data/").unwrap_or(relative_path);
-    if path_str == "Data/data.unity3d" || path_str == "data.unity3d" {
-        candidates.push(format!("{bundle_root}/Data/globalgamemanagers").into());
-        candidates.push(format!("{bundle_root}/Data/level0").into());
-    } else if !path_str.starts_with('/') {
+    if !path_str.starts_with('/') {
         candidates.push(format!("{bundle_root}/{relative_path}").into());
         candidates.push(format!("{bundle_root}/Data/{data_relative_path}").into());
     }
