@@ -137,6 +137,13 @@ mod collections {
         pub fn get_size_with_base(&self, base: VAddr) -> Option<NonZeroU32> {
             self.chunks.get(&base).copied()
         }
+
+        #[inline]
+        pub fn find_containing(&self, addr: VAddr) -> Option<Chunk> {
+            let (&base, &size) = self.chunks.range(..=addr).next_back()?;
+            let chunk = Chunk { base, size };
+            chunk.contains(addr).then_some(chunk)
+        }
     }
 
     #[derive(Default, Debug)]
@@ -303,6 +310,16 @@ mod allocator_tests {
             .expect("adjacent freed chunks should be reusable as one range");
         assert_eq!(merged.base, first);
     }
+    #[test]
+    fn finds_the_live_chunk_containing_an_address() {
+        let mut allocator = Allocator::new();
+        let base = allocator.alloc(PAGE_SIZE * 2);
+        assert_eq!(
+            allocator.allocation_containing(base + PAGE_SIZE),
+            Some((base, PAGE_SIZE * 2))
+        );
+        assert_eq!(allocator.allocation_containing(base + PAGE_SIZE * 2), None);
+    }
 }
 
 impl Allocator {
@@ -453,8 +470,7 @@ impl Allocator {
 
     pub fn allocation_containing(&self, addr: VAddr) -> Option<(VAddr, GuestUSize)> {
         self.used_chunks
-            .iter()
-            .find(|chunk| chunk.contains(addr))
+            .find_containing(addr)
             .map(|chunk| (chunk.base, chunk.size.get()))
     }
 

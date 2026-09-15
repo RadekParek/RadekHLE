@@ -401,6 +401,8 @@ pub struct Dyld {
     thread_exit_routine: Option<GuestFunction>,
     constants_to_link_later: Vec<(MutPtr<ConstVoidPtr>, &'static HostConstant)>,
     non_lazy_host_functions: HashMap<&'static str, GuestFunction>,
+    host_function_cache: HashMap<String, Option<(&'static str, HostFunction)>>,
+    host_constant_cache: HashMap<String, Option<&'static HostConstant>>,
 }
 
 impl Dyld {
@@ -431,7 +433,34 @@ impl Dyld {
             thread_exit_routine: None,
             constants_to_link_later: Vec::new(),
             non_lazy_host_functions: HashMap::new(),
+            host_function_cache: HashMap::new(),
+            host_constant_cache: HashMap::new(),
         }
+    }
+
+    fn lookup_host_function(
+        &mut self,
+        symbol: &str,
+    ) -> Option<(&'static str, HostFunction)> {
+        if let Some(cached) = self.host_function_cache.get(symbol) {
+            return *cached;
+        }
+        let result = search_host_dylibs(|dylib| dylib.function_exports, symbol)
+            .map(|entry| (entry.0, entry.1));
+        self.host_function_cache
+            .insert(symbol.to_owned(), result);
+        result
+    }
+
+    fn lookup_host_constant(&mut self, symbol: &str) -> Option<&'static HostConstant> {
+        if let Some(cached) = self.host_constant_cache.get(symbol) {
+            return *cached;
+        }
+        let result = search_host_dylibs(|dylib| dylib.constant_exports, symbol)
+            .map(|entry| &entry.1);
+        self.host_constant_cache
+            .insert(symbol.to_owned(), result);
+        result
     }
 
     pub fn return_to_host_routine(&self) -> GuestFunction {
@@ -609,7 +638,7 @@ impl Dyld {
                 ","
             };
             let symbol = symbol.as_ref().unwrap();
-            if let Some(&(_, _)) = search_host_dylibs(|dylib| dylib.function_exports, symbol) {
+            if self.lookup_host_function(symbol).is_some() {
                 writeln!(
                     file,
                     "        {{ \"symbol\": \"{symbol}\", \"linked_to\": \"host\"}}{comma}"
@@ -930,9 +959,7 @@ impl Dyld {
                 } else {
                     "_objc_msgSendSuper2_stret"
                 };
-                if let Some((sym, _)) =
-                    search_host_dylibs(|dylib| dylib.function_exports, target_name)
-                {
+                if let Some((sym, _)) = self.lookup_host_function(target_name) {
                     let trampoline_ptr = self
                         .create_proc_address_no_inval(mem, sym)
                         .unwrap()
@@ -1071,9 +1098,7 @@ impl Dyld {
             {
                 // Often used for C++ RTTI
                 Ptr::from_bits(external_addr)
-            } else if let Some((symbol, _)) =
-                search_host_dylibs(|dylib| dylib.function_exports, name)
-            {
+            } else if let Some((symbol, _)) = self.lookup_host_function(name) {
                 // We want the same symbol name to always point to the same
                 // function.
                 let trampoline_ptr = self
@@ -1087,9 +1112,7 @@ impl Dyld {
                     trampoline_ptr
                 );
                 trampoline_ptr
-            } else if let Some((_, template)) =
-                search_host_dylibs(|dylib| dylib.constant_exports, name)
-            {
+            } else if let Some(template) = self.lookup_host_constant(name) {
                 // Constants from host dylibs need late linking (they may
                 // require a full Environment to resolve, e.g. NSString
                 // objects). Store for resolution in do_late_linking().
@@ -1166,7 +1189,7 @@ impl Dyld {
                 continue;
             }
 
-            if let Some((symbol, _)) = search_host_dylibs(|dylib| dylib.function_exports, symbol) {
+            if self.lookup_host_function(symbol).is_some() {
                 // We want the same symbol name to always point to the same
                 // function. It could point to a specific stub entry, but it's
                 // easier to just create a new function and point all the stub
@@ -1184,8 +1207,7 @@ impl Dyld {
                 log_dbg!("{:?}", self.non_lazy_host_functions);
                 continue;
             }
-            if let Some((_, template)) = search_host_dylibs(|dylib| dylib.constant_exports, symbol)
-            {
+            if let Some(template) = self.lookup_host_constant(symbol) {
                 // Delay linking of constant until we have a `&mut Environment`,
                 // that makes it much easier to build NSString objects etc.
                 self.constants_to_link_later.push((ptr_ptr, template));
@@ -1594,7 +1616,7 @@ impl Dyld {
             }
         }
 
-        if let Some(&(symbol, f)) = search_host_dylibs(|dylib| dylib.function_exports, symbol) {
+        if let Some((symbol, f)) = self.lookup_host_function(symbol) {
             // Allocate an SVC ID for this host function
             let idx: u32 = self.linked_host_functions.len().try_into().unwrap();
             let mut svc = idx + Self::SVC_LINKED_FUNCTIONS_BASE;
@@ -1697,7 +1719,7 @@ impl Dyld {
             return Ok(function_ptr);
         }
 
-        let &(symbol, f) = search_host_dylibs(|dylib| dylib.function_exports, symbol).ok_or(())?;
+        let (symbol, f) = self.lookup_host_function(symbol).ok_or(())?;
         if let Some(&cached_fn) = self.non_lazy_host_functions.get(symbol) {
             return Ok(cached_fn);
         }

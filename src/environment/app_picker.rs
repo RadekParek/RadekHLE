@@ -1175,7 +1175,7 @@ fn app_picker_inner(
     let mut quick_options_graphics_api = crate::options::GraphicsApi::Default;
     let mut quick_options_audio_backend = crate::options::AudioBackend::Default;
     let mut quick_options_texture_filtering = crate::options::TextureFiltering::Default;
-    let mut quick_options_pvrtc_decoding = crate::options::PvrtcDecoding::Auto;
+    let mut quick_options_pvrtc_decoding = crate::options::PvrtcDecoding::Software;
     let mut quick_options_memory_management = crate::options::MemoryManagement::Balanced;
     let mut quick_options_gles_override = crate::options::GlesOverrideVersion::Default;
     let mut quick_options_arm64_backend = crate::options::Arm64Backend::Interpreter;

@@ -38,6 +38,20 @@ fn is_optional_unity_telemetry(method: &str, url: &str) -> bool {
             || url.starts_with("https://stats.unity3d.com/"))
 }
 
+fn log_request_failure(error: &str) {
+    if error.contains("Dns Failed") || error.contains("failed to lookup address information") {
+        log_once_fmt!(
+            "NSURLConnection: request failed: {} [repeated DNS failures suppressed]",
+            error
+        );
+    } else {
+        log_once_fmt!(
+            "NSURLConnection: request failed: {} [repeated transport failures suppressed]",
+            error
+        );
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct NetworkResponse {
     pub(crate) status_code: u16,
@@ -337,7 +351,7 @@ fn notify_delegate_success(
                 make_data_from_bytes(env, &result.body),
             ),
             Err(error) => {
-                log!("NSURLConnection: request failed: {}", error);
+                log_request_failure(&error);
                 notify_delegate_failure(env, connection, delegate);
                 return;
             }
@@ -403,7 +417,7 @@ pub const CLASSES: ClassExports = objc_classes! {
             make_data_from_bytes(env, &result.body)
         }
         Err(error) => {
-            log!("NSURLConnection sendSynchronousRequest: request failed: {}", error);
+            log_request_failure(&error);
             if !response_ptr.is_null() {
                 env.mem.write(response_ptr, nil);
             }
@@ -456,7 +470,7 @@ pub const CLASSES: ClassExports = objc_classes! {
             let _: () = invoke.call_from_host(env, (handler, response, data, nil));
         }
         Err(error_message) => {
-            log!("NSURLConnection asynchronous request failed: {}", error_message);
+            log_request_failure(&error_message);
             let error = make_network_error(env);
             let _: () = invoke.call_from_host(env, (handler, nil, nil, error));
         }

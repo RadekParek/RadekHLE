@@ -1040,7 +1040,7 @@ impl Mem {
             }
             if let Some((base, size)) = self.allocation_containing(addr) {
                 log_once_fmt!(
-                    "Can't free {:#x}: pointer is inside live allocation {:#x} ({:#x} bytes); ignoring invalid interior free",
+                    "Ignoring invalid interior free {:#x}: live allocation {:#x} ({:#x} bytes) was left intact",
                     addr,
                     base,
                     size

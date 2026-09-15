@@ -23,6 +23,7 @@ use crate::dyld::{
     export_c_func, export_c_func_aliased, ConstantExports, FunctionExports, HostConstant, HostDylib,
 };
 use crate::MutexId;
+use std::any::TypeId;
 use std::collections::{HashMap, HashSet};
 
 mod classes;
@@ -114,6 +115,9 @@ pub struct ObjC {
     ///
     /// If an object isn't in this map, we will consider it not to exist.
     objects: HashMap<id, HostObjectEntry>,
+
+    /// Isolated compatibility state for mutable access to a missing object.
+    missing_objects: HashMap<(id, TypeId), Box<dyn AnyHostObject>>,
 
     /// Known classes.
     ///
@@ -223,6 +227,7 @@ impl ObjC {
             class_names: HashMap::new(),
             class_name_ptrs: HashMap::new(),
             objects: HashMap::new(),
+            missing_objects: HashMap::new(),
             classes: HashMap::new(),
             sync_mutexes: HashMap::new(),
             property_locks: HashMap::new(),

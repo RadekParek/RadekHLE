@@ -8,6 +8,9 @@
 use super::gles11_raw as gles11; // constants only
 use super::gles11_raw::types::{GLenum, GLfixed, GLfloat, GLint, GLsizei};
 use super::GLES;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::{Mutex, OnceLock};
 
 /// Convert a fixed-point scalar to a floating-point scalar.
 ///
@@ -183,6 +186,69 @@ impl ParamTable {
 /// return `true` *without* uploading anything, so the caller doesn't
 /// re-attempt (the data is unusable either way) and the rest of the frame
 /// can still draw.
+#[derive(Clone, Copy, Eq, PartialEq, Hash)]
+struct PvrtcCacheKey {
+    digest: u64,
+    width: u32,
+    height: u32,
+    is_2bit: bool,
+    is_opaque: bool,
+}
+
+static PVRTC_CACHE: OnceLock<Mutex<HashMap<PvrtcCacheKey, Vec<u32>>>> = OnceLock::new();
+
+fn cached_pvrtc_pixels(
+    data: &[u8],
+    is_2bit: bool,
+    width: u32,
+    height: u32,
+    is_opaque: bool,
+) -> Option<Vec<u32>> {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    data.hash(&mut hasher);
+    let key = PvrtcCacheKey {
+        digest: hasher.finish(),
+        width,
+        height,
+        is_2bit,
+        is_opaque,
+    };
+    let cache = PVRTC_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(pixels) = cache.lock().unwrap().get(&key) {
+        return Some(pixels.clone());
+    }
+
+    let pixels = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::image::decode_pvrtc_with_alpha(data, is_2bit, width, height, is_opaque)
+    }))
+    .ok()?;
+    let mut cache = cache.lock().unwrap();
+    const MAX_ENTRIES: usize = 64;
+    const MAX_BYTES: usize = 16 * 1024 * 1024;
+    let pixel_bytes = pixels.len().saturating_mul(std::mem::size_of::<u32>());
+    if pixel_bytes <= MAX_BYTES {
+        let mut cached_bytes: usize = cache
+            .values()
+            .map(|value| value.len().saturating_mul(std::mem::size_of::<u32>()))
+            .sum();
+        while !cache.is_empty()
+            && (cache.len() >= MAX_ENTRIES
+                || cached_bytes.saturating_add(pixel_bytes) > MAX_BYTES)
+        {
+            let Some(evicted) = cache.keys().next().copied() else {
+                break;
+            };
+            if let Some(value) = cache.remove(&evicted) {
+                cached_bytes = cached_bytes.saturating_sub(
+                    value.len().saturating_mul(std::mem::size_of::<u32>()),
+                );
+            }
+        }
+        cache.insert(key, pixels.clone());
+    }
+    Some(pixels)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn try_decode_pvrtc(
     gles: &mut dyn GLES,
@@ -251,8 +317,18 @@ pub fn try_decode_pvrtc(
         gles11::COMPRESSED_RGB_PVRTC_4BPPV1_IMG | gles11::COMPRESSED_RGB_PVRTC_2BPPV1_IMG
     );
     let upload_format = gles11::RGBA;
-    let pixels =
-        crate::image::decode_pvrtc_with_alpha(pvrtc_data, is_2bit, width_u, height_u, is_opaque);
+    let Some(pixels) = cached_pvrtc_pixels(
+        pvrtc_data,
+        is_2bit,
+        width_u,
+        height_u,
+        is_opaque,
+    ) else {
+        log_once_fmt!(
+            "Warning: PVRTC decoder rejected malformed texture data; upload skipped and repeated failures are suppressed"
+        );
+        return true;
+    };
     let (upload_pixels, upload_width, upload_height) =
         upscale_rgba8_words(&pixels, width_u, height_u, crate::gles::texture_upscaler())
             .map_or((pixels, width_u, height_u), |value| value);

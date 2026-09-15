@@ -188,7 +188,7 @@ pub enum PvrtcDecoding {
 
 impl Default for PvrtcDecoding {
     fn default() -> Self {
-        Self::Auto
+        Self::Software
     }
 }
 
@@ -1161,7 +1161,7 @@ mod tests {
 
     #[test]
     fn parses_software_graphics_and_pvrtc_modes() {
-        assert_eq!(PvrtcDecoding::default(), PvrtcDecoding::Auto);
+        assert_eq!(PvrtcDecoding::default(), PvrtcDecoding::Software);
         let mut options = Options::default();
         options.parse_argument("--graphics-api=software").unwrap();
         assert_eq!(options.graphics_api, GraphicsApi::Software);
