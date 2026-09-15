@@ -124,7 +124,8 @@ impl Environment {
     /// Relock mutex that was just unblocked. This should probably only be used
     /// by the thread scheduler.
     pub fn relock_unblocked_mutex_for_thread(&mut self, thread_id: ThreadId, mutex_id: MutexId) {
-        log_dbg!(
+        log_sampled!(
+            1024,
             "Relocking unblocked mutex {} for thread {}, waiting count {}",
             mutex_id,
             self.current_thread,
@@ -160,7 +161,12 @@ impl Environment {
         let mutex: &mut _ = self.mutex_state.mutexes.get_mut(&mutex_id).unwrap();
 
         let Some((locking_thread, lock_count)) = mutex.locked else {
-            log_dbg!("Locked mutex #{} for thread {}.", mutex_id, current_thread);
+            log_sampled!(
+                1024,
+                "Locked mutex #{} for thread {}.",
+                mutex_id,
+                current_thread
+            );
             mutex.locked = Some((current_thread, NonZeroU32::new(1).unwrap()));
             return Ok(1);
         };
@@ -251,7 +257,8 @@ impl Environment {
         }
 
         if lock_count.get() == 1 {
-            log_dbg!(
+            log_sampled!(
+                1024,
                 "Unlocked mutex #{} for thread {}.",
                 mutex_id,
                 current_thread

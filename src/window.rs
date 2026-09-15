@@ -1809,13 +1809,13 @@ impl Window {
             let event = if let Some(e) = previous_event.take() {
                 match e {
                     E::Unknown { .. } => (),
-                    _ => log_dbg!("Consuming previous event: {:?}", e),
+                    _ => log_sampled!(256, "Consuming previous event: {:?}", e),
                 }
                 e
             } else if let Some(e) = self.event_pump.poll_event() {
                 match e {
                     E::Unknown { .. } => (),
-                    _ => log_dbg!("Consuming new event: {:?}", e),
+                    _ => log_sampled!(256, "Consuming new event: {:?}", e),
                 }
                 e
             } else {
@@ -1869,7 +1869,7 @@ impl Window {
                     x, y, mousestate, ..
                 } if mousestate.left() => {
                     let coords = transform_input_coords(self, (x as f32, y as f32), false);
-                    log_dbg!("MouseMotion x {}, y {}, coords {:?}", x, y, coords);
+                    log_sampled!(256, "MouseMotion x {}, y {}, coords {:?}", x, y, coords);
                     Event::TouchesMove(HashMap::from([(FingerId::Mouse, coords)]))
                 }
                 E::MouseButtonUp {
@@ -2095,7 +2095,7 @@ impl Window {
                     y,
                     ..
                 } => {
-                    log_dbg!("Starting multi-touch for {:?}", event);
+                    log_sampled!(256, "Starting multi-touch for {:?}", event);
                     // To implement multi-touch we accumulate here same touch
                     // events at the same timestamp. This is consistent with
                     // UIKit, but could be broken if events come out of order.
@@ -2104,12 +2104,12 @@ impl Window {
                     let curr_timestamp = timestamp;
                     let abs_coords = finger_absolute_coords(self, (x, y));
                     let coords = transform_input_coords(self, abs_coords, false);
-                    log_dbg!("Finger event x {}, y {}, coords {:?}", x, y, coords);
+                    log_sampled!(256, "Finger event x {}, y {}, coords {:?}", x, y, coords);
                     let mut map = HashMap::from([(FingerId::Touch(finger_id), coords)]);
                     while let Some(next) = self.event_pump.poll_event() {
                         match next {
                             E::Unknown { .. } => (),
-                            _ => log_dbg!("Next possible multi-touch event: {:?}", next),
+                            _ => log_sampled!(256, "Next possible multi-touch event: {:?}", next),
                         }
                         match next {
                             E::FingerUp {
@@ -2151,7 +2151,7 @@ impl Window {
                             }
                         }
                     }
-                    log_dbg!("Finishing multi-touch for {:?} with {:?}", event, map);
+                    log_sampled!(256, "Finishing multi-touch for {:?} with {:?}", event, map);
                     match event {
                         E::FingerUp { .. } => Event::TouchesUp(map),
                         E::FingerMotion { .. } => Event::TouchesMove(map),

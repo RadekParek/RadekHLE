@@ -97,8 +97,8 @@ fn __cxa_guard_abort(env: &mut Environment, guard: MutPtr<u8>) {
 // app-level frame above it.
 //
 // This is wrong in the strict sense — destructors of automatic objects
-// in skipped frames don't run, the exception object leaks, and the
-// caller's local state may be inconsistent — but it lets games that
+// in skipped frames don't run and the caller's local state may be inconsistent
+// — but it lets games that
 // throw recoverable errors (parse failures, missing assets, etc.) keep
 // running instead of crashing on a NULL-page indirect call.
 
@@ -148,6 +148,19 @@ fn unwind_to_app_frame(env: &mut Environment) -> bool {
     false
 }
 
+fn terminate_current_thread_after_exception(env: &mut Environment, reason: &str) {
+    log!(
+        "Warning: terminating guest thread {} after unrecoverable C++ exception loop ({})",
+        env.current_thread,
+        reason
+    );
+    let thread_exit = env.dyld.thread_exit_routine();
+    let regs = env.cpu.regs_mut();
+    regs[0] = 0;
+    regs[Cpu::LR] = thread_exit.addr_with_thumb_bit();
+    env.cpu.branch(thread_exit);
+}
+
 // === Exception-loop detection (shared) ===
 //
 // touchHLE's exception "bypass" can return control to a caller that
@@ -181,8 +194,9 @@ fn note_exception_throw(key: &str) -> u32 {
 // We allocate the requested storage prefixed by a fake __cxa_exception
 // header, so that pointer arithmetic in the app's exception-handling
 // code (ABI offsets, exception_class field, etc.) lands inside live
-// memory. We never actually free the storage — exceptions are extremely
-// rare and the leak is bounded.
+// memory. The compatibility unwinder bypasses guest catch frames, so release
+// the storage when the throw is handled to avoid a retry loop exhausting the
+// guest heap.
 
 const CXA_EXCEPTION_HEADER_SIZE: GuestUSize = 0x60;
 
@@ -205,15 +219,24 @@ fn __cxa_allocate_exception(env: &mut Environment, thrown_size: GuestUSize) -> M
     Ptr::from_bits(block.to_bits() + CXA_EXCEPTION_HEADER_SIZE)
 }
 
-fn __cxa_free_exception(_env: &mut Environment, _thrown: MutVoidPtr) {
-    // Leak — see comment above.
+fn free_exception_storage(env: &mut Environment, thrown: MutVoidPtr) {
+    let Some(base) = thrown.to_bits().checked_sub(CXA_EXCEPTION_HEADER_SIZE) else {
+        return;
+    };
+    if env.mem.is_known_allocation(base) {
+        env.mem.free(Ptr::from_bits(base));
+    }
+}
+
+fn __cxa_free_exception(env: &mut Environment, thrown: MutVoidPtr) {
+    free_exception_storage(env, thrown);
 }
 
 fn __cxa_decrement_exception_refcount(_env: &mut Environment, _exception: MutVoidPtr) {}
 
 fn __cxa_increment_exception_refcount(_env: &mut Environment, _exception: MutVoidPtr) {}
 
-fn __cxa_throw(env: &mut Environment, _exc: MutVoidPtr, tinfo: ConstVoidPtr, _dtor: GuestFunction) {
+fn __cxa_throw(env: &mut Environment, exc: MutVoidPtr, tinfo: ConstVoidPtr, _dtor: GuestFunction) {
     // Itanium type_info layout (32-bit):
     //   +0  vptr
     //   +4  const char *name
@@ -231,6 +254,8 @@ fn __cxa_throw(env: &mut Environment, _exc: MutVoidPtr, tinfo: ConstVoidPtr, _dt
     } else {
         "(null type_info)".to_owned()
     };
+
+    free_exception_storage(env, exc);
 
     // Throw-rate limiter: if the app enters an exception loop (e.g. because
     // our SjLj bypass returns it to a `while (true) new X;` path that throws
@@ -250,22 +275,23 @@ fn __cxa_throw(env: &mut Environment, _exc: MutVoidPtr, tinfo: ConstVoidPtr, _dt
     }
     if count >= THROW_LOOP_LIMIT {
         log!(
-            "Warning: Exception loop detected: {} threw {} times in a row. \
-             touchHLE's SjLj bypass is returning into a caller that re-throws \
-             every iteration. Returning to caller to break the loop; the \
-             guest will likely abort on its own shortly.",
+            "Warning: Exception loop detected: {} threw {} times in a row; \
+             terminating only the current guest thread instead of aborting the \
+             emulator.",
             type_name,
             count
         );
+        terminate_current_thread_after_exception(env, &type_name);
         return;
     }
 
     if !unwind_to_app_frame(env) {
         log!(
             "Warning: Could not unwind past C++ exception ({}); no app-level \
-             frame on the stack. Returning to caller; guest will likely abort.",
+             frame on the stack; terminating only the current guest thread.",
             type_name
         );
+        terminate_current_thread_after_exception(env, &type_name);
     }
 }
 
@@ -273,9 +299,10 @@ fn __cxa_rethrow(env: &mut Environment) {
     log_once!("__cxa_rethrow — bypassing; repeated calls are suppressed");
     if !unwind_to_app_frame(env) {
         log!(
-            "Warning: Could not unwind past __cxa_rethrow; no app-level frame. \
-             Returning to caller; guest will likely abort."
+            "Warning: Could not unwind past __cxa_rethrow; no app-level frame; \
+             terminating only the current guest thread."
         );
+        terminate_current_thread_after_exception(env, "__cxa_rethrow");
     }
 }
 
@@ -381,21 +408,19 @@ fn _Unwind_SjLj_RaiseException(env: &mut Environment, _exc: MutVoidPtr) -> i32 {
     if count >= THROW_LOOP_LIMIT {
         log!(
             "Warning: SjLj exception loop detected (site={:#x} raised {} times \
-             in a row). Returning _URC_FATAL_PHASE1_ERROR to break the loop; \
-             the guest will likely abort on its own shortly.",
+             in a row); terminating only the current guest thread.",
             site,
             count
         );
-        // _URC_FATAL_PHASE1_ERROR
-        return 3;
+        terminate_current_thread_after_exception(env, &format!("site={site:#x}"));
+        return 0;
     }
     if !unwind_to_app_frame(env) {
         log!(
             "Warning: _Unwind_SjLj_RaiseException with no recoverable frame; \
-             returning _URC_FATAL_PHASE1_ERROR to caller."
+             terminating only the current guest thread."
         );
-        // _URC_FATAL_PHASE1_ERROR
-        return 3;
+        terminate_current_thread_after_exception(env, &format!("site={site:#x}"));
     }
     0
 }
@@ -405,9 +430,10 @@ fn _Unwind_SjLj_Resume(env: &mut Environment, _exc: MutVoidPtr) {
     log_once!("_Unwind_SjLj_Resume — bypassing; repeated resume calls are suppressed");
     if !unwind_to_app_frame(env) {
         log!(
-            "Warning: _Unwind_SjLj_Resume with no recoverable frame; returning \
-             to caller. Guest will likely abort."
+            "Warning: _Unwind_SjLj_Resume with no recoverable frame; \
+             terminating only the current guest thread."
         );
+        terminate_current_thread_after_exception(env, "_Unwind_SjLj_Resume");
     }
 }
 
@@ -417,10 +443,9 @@ fn _Unwind_SjLj_Resume_or_Rethrow(env: &mut Environment, _exc: MutVoidPtr) -> i3
     if !unwind_to_app_frame(env) {
         log!(
             "Warning: _Unwind_SjLj_Resume_or_Rethrow with no recoverable frame; \
-             returning _URC_FATAL_PHASE2_ERROR."
+             terminating only the current guest thread."
         );
-        // _URC_FATAL_PHASE2_ERROR
-        return 2;
+        terminate_current_thread_after_exception(env, "_Unwind_SjLj_Resume_or_Rethrow");
     }
     0
 }

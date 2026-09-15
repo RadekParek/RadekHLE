@@ -250,6 +250,9 @@ mod collections {
             // Exact match has been ruled out, find the smallest chunk in the
             // next largest non-empty bucket.
 
+            if bucket + 1 >= self.chunks_by_log2_size.len() {
+                return None;
+            }
             let bucket = self.chunks_by_log2_size[bucket + 1..]
                 .iter()
                 .position(|bucket| !bucket.is_empty())?
@@ -274,6 +277,32 @@ pub struct Allocator {
     used_chunks: ChunkMap,
     unused_chunks: SizeBucketedChunkMap,
     freed_bases: HashSet<VAddr>,
+}
+
+#[cfg(test)]
+mod allocator_tests {
+    use super::{Allocator, PAGE_SIZE};
+
+    #[test]
+    fn coalesces_both_sides_before_retrying_a_large_allocation() {
+        let mut allocator = Allocator::new();
+        let first = allocator.alloc(PAGE_SIZE);
+        let middle = allocator.alloc(PAGE_SIZE);
+        let last = allocator.alloc(PAGE_SIZE);
+        assert_eq!(middle, first + PAGE_SIZE);
+        assert_eq!(last, middle + PAGE_SIZE);
+
+        let _ = allocator.free(first);
+        let _ = allocator.free(last);
+        let _ = allocator.free(middle);
+        allocator.coalesce_unused_chunks();
+
+        let merged = allocator
+            .unused_chunks
+            .allocate(PAGE_SIZE * 3)
+            .expect("adjacent freed chunks should be reusable as one range");
+        assert_eq!(merged.base, first);
+    }
 }
 
 impl Allocator {
@@ -331,6 +360,31 @@ impl Allocator {
         self.used_chunks.insert(chunk);
     }
 
+    fn coalesce_unused_chunks(&mut self) {
+        let mut chunks: Vec<Chunk> = self.unused_chunks.iter().collect();
+        chunks.sort_unstable_by_key(|chunk| chunk.base);
+        let mut merged: Vec<Chunk> = Vec::with_capacity(chunks.len());
+        for chunk in chunks {
+            if let Some(previous) = merged.last_mut() {
+                let adjacent = previous.last_byte().checked_add(1) == Some(chunk.base);
+                let combined_size = previous.size.get().checked_add(chunk.size.get());
+                let can_merge = adjacent
+                    && combined_size.is_some_and(|size| {
+                        size < PAGE_SIZE || previous.base & PAGE_SIZE_ALIGN_MASK == 0
+                    });
+                if let (true, Some(size)) = (can_merge, combined_size) {
+                    *previous = Chunk::new(previous.base, size);
+                    continue;
+                }
+            }
+            merged.push(chunk);
+        }
+        self.unused_chunks = Default::default();
+        for chunk in merged {
+            self.unused_chunks.insert(chunk);
+        }
+    }
+
     pub fn alloc(&mut self, size: GuestUSize) -> VAddr {
         // ИСПРАВЛЕНИЕ: Выравнивание может привести к переполнению (overflow),
         // если игра запрашивает гигантский объем памяти (например, 0xffffffff).
@@ -351,12 +405,19 @@ impl Allocator {
             return 0;
         };
 
-        let Some(alloc) = self.unused_chunks.allocate(aligned_size) else {
-            log_once_fmt!(
-                "Warning: Allocator::alloc: out of memory (first failed request was {:#x} bytes); repeated allocation failures are suppressed.",
-                aligned_size
-            );
-            return 0;
+        let alloc = match self.unused_chunks.allocate(aligned_size) {
+            Some(alloc) => alloc,
+            None => {
+                self.coalesce_unused_chunks();
+                let Some(alloc) = self.unused_chunks.allocate(aligned_size) else {
+                    log_once_fmt!(
+                        "Warning: Allocator::alloc: out of memory (first failed request was {:#x} bytes); repeated allocation failures are suppressed.",
+                        aligned_size
+                    );
+                    return 0;
+                };
+                alloc
+            }
         };
         self.used_chunks.insert(alloc);
         self.freed_bases.remove(&alloc.base);

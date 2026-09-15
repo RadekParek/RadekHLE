@@ -1261,9 +1261,7 @@ impl Environment {
         assert!(stack_high_addr.is_multiple_of(4));
         let thread_local_storage = self.mem.calloc(THREAD_LOCAL_STORAGE_SIZE);
         if thread_local_storage.is_null() {
-            log!(
-                "Warning: failed to allocate TLS for guest thread; starting it with r9=0"
-            );
+            log!("Warning: failed to allocate TLS for guest thread; starting it with r9=0");
         }
 
         let thread_routine = Coroutine::new(move |yielder, mut env: Environment| {
@@ -1429,7 +1427,8 @@ impl Environment {
     /// Like all other thread blocking functions, this will suspend
     /// execution of the current host thread.
     pub fn block_on_mutex(&mut self, mutex_id: MutexId) {
-        log_dbg!(
+        log_sampled!(
+            1024,
             "Thread {} blocking on mutex #{}.",
             self.current_thread,
             mutex_id
@@ -1604,15 +1603,12 @@ impl Environment {
         let mut curr_host_context = self.threads[0].host_context.take().unwrap();
         let panic_cell = self.panic_cell.clone();
         let mut stepping = false;
+        let normal_execution_slice = 100_000;
         loop {
             if stepping {
                 self.remaining_ticks = None;
             } else {
-                // 100,000 ticks is an arbitrary number. It needs to be
-                // reasonably large so we aren't jumping in and out of dynarmic
-                // or trying to poll for events too often. At the same time,
-                // very large values are bad for responsiveness.
-                self.remaining_ticks = Some(100_000);
+                self.remaining_ticks = Some(normal_execution_slice);
             }
             let mut kill_current_thread = false;
             if let Some(w) = self.window.as_mut() {

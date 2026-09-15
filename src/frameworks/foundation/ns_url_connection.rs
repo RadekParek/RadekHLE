@@ -32,6 +32,11 @@ const NS_URL_ERROR_NOT_CONNECTED_TO_INTERNET: i32 = -1009;
 fn fake_network_success_enabled() -> bool {
     std::env::var_os("TOUCHHLE_FAKE_NETWORK_SUCCESS").is_some()
 }
+fn is_optional_unity_telemetry(method: &str, url: &str) -> bool {
+    method.eq_ignore_ascii_case("POST")
+        && (url.starts_with("http://stats.unity3d.com/")
+            || url.starts_with("https://stats.unity3d.com/"))
+}
 
 #[derive(Debug)]
 pub(crate) struct NetworkResponse {
@@ -70,8 +75,17 @@ pub(crate) fn perform_request(
     } else {
         method
     };
+    if is_optional_unity_telemetry(&method, &url) {
+        log_once!("NSURLConnection: ignoring optional Unity telemetry upload to stats.unity3d.com");
+        return Ok(NetworkResponse {
+            status_code: 204,
+            headers: Vec::new(),
+            body: Vec::new(),
+        });
+    }
+
     let timeout: f64 = msg![env; request timeoutInterval];
-    let timeout = timeout.clamp(1.0, 120.0);
+    let timeout = timeout.clamp(1.0, 20.0);
 
     let body_object: id = msg![env; request HTTPBody];
     let body_length: u32 = if body_object == nil {
@@ -86,7 +100,28 @@ pub(crate) fn perform_request(
         env.mem.bytes_at(bytes.cast::<u8>(), body_length).to_vec()
     };
 
-    log!(
+    let mut request_headers = Vec::new();
+    let header_fields: id = msg![env; request allHTTPHeaderFields];
+    if header_fields != nil {
+        let keys: id = msg![env; header_fields allKeys];
+        let key_count: u32 = msg![env; keys count];
+        for index in 0..key_count {
+            let key: id = msg![env; keys objectAtIndex:index];
+            let value: id = msg![env; header_fields objectForKey:key];
+            if key != nil && value != nil {
+                let key =
+                    crate::frameworks::foundation::ns_string::to_rust_string(env, key).into_owned();
+                let value = crate::frameworks::foundation::ns_string::to_rust_string(env, value)
+                    .into_owned();
+                if !key.is_empty() && !value.is_empty() {
+                    request_headers.push((key, value));
+                }
+            }
+        }
+    }
+
+    log_sampled!(
+        16,
         "NSURLConnection: fetching {} {} (timeout {:.0}s)",
         method,
         url,
@@ -97,7 +132,15 @@ pub(crate) fn perform_request(
         .timeout(Duration::from_secs_f64(timeout))
         .build();
     let mut builder = agent.request(&method, &url);
-    builder = builder.set("User-Agent", "RadekHLE9.0");
+    let has_user_agent = request_headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("User-Agent"));
+    for (name, value) in &request_headers {
+        builder = builder.set(name, value);
+    }
+    if !has_user_agent {
+        builder = builder.set("User-Agent", "RadekHLE9.0");
+    }
     let result = if body.is_empty() && method.eq_ignore_ascii_case("GET") {
         builder.call()
     } else {
@@ -123,7 +166,8 @@ pub(crate) fn perform_request(
         .into_reader()
         .read_to_end(&mut response_body)
         .map_err(|error| error.to_string())?;
-    log!(
+    log_sampled!(
+        16,
         "NSURLConnection: received HTTP {} ({} bytes)",
         status_code,
         response_body.len()

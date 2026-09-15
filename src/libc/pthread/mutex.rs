@@ -233,7 +233,12 @@ pub fn pthread_mutex_lock(env: &mut Environment, mutex: MutPtr<pthread_mutex_t>)
     };
     let mutex_data = env.mem.read(mutex);
     let mutex_id = mutex_data.mutex_id;
-    log_dbg!("About to lock mutex #{} ({:#x})", mutex_id, mutex.to_bits());
+    log_sampled!(
+        1024,
+        "About to lock mutex #{} ({:#x})",
+        mutex_id,
+        mutex.to_bits()
+    );
     env.lock_mutex(mutex_id).err().unwrap_or(0)
 }
 
@@ -266,7 +271,8 @@ pub fn pthread_mutex_unlock(env: &mut Environment, mutex: MutPtr<pthread_mutex_t
     };
     let mutex_data = env.mem.read(mutex);
     let mutex_id = mutex_data.mutex_id;
-    log_dbg!(
+    log_sampled!(
+        1024,
         "About to unlock mutex #{} ({:#x})",
         mutex_id,
         mutex.to_bits()

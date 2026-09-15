@@ -96,9 +96,22 @@ public:
   bool trace_enabled = false;
   std::uint64_t code_fetches = 0;
   std::uint64_t memory_faults = 0;
+  std::uint64_t trace_sample_count = 0;
 
   void trace(const char* format, ...) {
     if (!trace_enabled) return;
+    char message[768];
+    va_list args;
+    va_start(args, format);
+    std::vsnprintf(message, sizeof(message), format, args);
+    va_end(args);
+    touchHLE_cpu_a64_log(message);
+  }
+
+  void trace_sampled(const char* format, ...) {
+    if (!trace_enabled) return;
+    const auto count = ++trace_sample_count;
+    if (count > 16 && count % 1024 != 0) return;
     char message[768];
     va_list args;
     va_start(args, format);
@@ -219,11 +232,11 @@ private:
     }
   }
   void AddTicks(std::uint64_t n) override {
-    trace("DYNARMIC_TICKS_ADD n=%llu before=%llu", static_cast<unsigned long long>(n), static_cast<unsigned long long>(ticks_remaining));
+    trace_sampled("DYNARMIC_TICKS_ADD n=%llu before=%llu", static_cast<unsigned long long>(n), static_cast<unsigned long long>(ticks_remaining));
     ticks_remaining = n > ticks_remaining ? 0 : ticks_remaining - n;
   }
   std::uint64_t GetTicksRemaining() override {
-    trace("DYNARMIC_TICKS_GET remaining=%llu", static_cast<unsigned long long>(ticks_remaining));
+    trace_sampled("DYNARMIC_TICKS_GET remaining=%llu", static_cast<unsigned long long>(ticks_remaining));
     return ticks_remaining;
   }
   std::uint64_t GetCNTPCT() override { return 0x10000000000ULL - ticks_remaining; }
@@ -280,59 +293,63 @@ public:
     const auto pc = cpu->GetPC();
     bool code_error = false;
     const auto instruction = touchHLE_cpu_read_u32_64(mem, pc, &code_error);
-    env.trace("execution enter #%llu: mode=%s pc=%#llx instruction=%#010x fetch=%s sp=%#llx lr=%#llx ticks=%s%llu",
-              static_cast<unsigned long long>(execution_calls),
-              ticks ? "run" : "step",
-              static_cast<unsigned long long>(pc),
-              instruction,
-              code_error ? "fault" : "ok",
-              static_cast<unsigned long long>(cpu->GetSP()),
-              static_cast<unsigned long long>(cpu->GetRegister(30)),
-              ticks ? "" : "none",
-              ticks ? static_cast<unsigned long long>(*ticks) : 0);
+    env.trace_sampled("execution enter #%llu: mode=%s pc=%#llx instruction=%#010x fetch=%s sp=%#llx lr=%#llx ticks=%s%llu",
+                      static_cast<unsigned long long>(execution_calls),
+                      ticks ? "run" : "step",
+                      static_cast<unsigned long long>(pc),
+                      instruction,
+                      code_error ? "fault" : "ok",
+                      static_cast<unsigned long long>(cpu->GetSP()),
+                      static_cast<unsigned long long>(cpu->GetRegister(30)),
+                      ticks ? "" : "none",
+                      ticks ? static_cast<unsigned long long>(*ticks) : 0);
     if (code_error) {
       env.trace("execution entry fetch failed: pc=%#llx; Dynarmic will be allowed to report the execution fault", static_cast<unsigned long long>(pc));
     }
     Dynarmic::HaltReason reason;
-    const auto watchdog_ms = [] {
+    const auto watchdog_ms = []() -> std::optional<std::uint64_t> {
       const char* value = std::getenv("TOUCHHLE_ARM64_DYNARMIC_WATCHDOG_MS");
-      if (!value) return std::uint64_t{2000};
+      if (!value) return std::nullopt;
       char* end = nullptr;
       const auto parsed = std::strtoull(value, &end, 10);
-      return static_cast<std::uint64_t>(end != value && *end == '\0' && parsed > 0 ? parsed : 2000ULL);
+      if (end == value || *end != '\0' || parsed == 0) return std::nullopt;
+      return parsed;
     }();
     std::atomic<bool> execution_returned{false};
-    std::thread watchdog([&] {
-      const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(watchdog_ms);
-      while (!execution_returned.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-      }
-      if (!execution_returned.load(std::memory_order_acquire)) {
-        tracef("ARM64 dynarmic watchdog: Run/Step did not return within %llu ms; pc=%#llx sp=%#llx lr=%#llx ticks=%s%llu; aborting", static_cast<unsigned long long>(watchdog_ms), static_cast<unsigned long long>(cpu->GetPC()), static_cast<unsigned long long>(cpu->GetSP()), static_cast<unsigned long long>(cpu->GetRegister(30)), ticks ? "" : "none", ticks ? static_cast<unsigned long long>(*ticks) : 0);
-        std::abort();
-      }
-    });
+    std::thread watchdog;
+    if (watchdog_ms) {
+      watchdog = std::thread([&, timeout = *watchdog_ms] {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout);
+        while (!execution_returned.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (!execution_returned.load(std::memory_order_acquire)) {
+          tracef("ARM64 dynarmic watchdog: Run/Step did not return within %llu ms; pc=%#llx sp=%#llx lr=%#llx ticks=%s%llu; aborting", static_cast<unsigned long long>(timeout), static_cast<unsigned long long>(cpu->GetPC()), static_cast<unsigned long long>(cpu->GetSP()), static_cast<unsigned long long>(cpu->GetRegister(30)), ticks ? "" : "none", ticks ? static_cast<unsigned long long>(*ticks) : 0);
+          std::abort();
+        }
+      });
+    }
     if (ticks) {
       env.ticks_remaining = *ticks;
-      env.trace("Dynarmic configuration: Run mode, single_step=false, cycle_counting=true, tick_budget=%llu, watchdog_ms=%llu", static_cast<unsigned long long>(*ticks), static_cast<unsigned long long>(watchdog_ms));
-      env.trace("DYNARMIC_RUN_ENTER");
+      env.trace_sampled("Dynarmic configuration: Run mode, single_step=false, cycle_counting=true, tick_budget=%llu, watchdog=%s", static_cast<unsigned long long>(*ticks), watchdog_ms ? "enabled" : "disabled");
+      env.trace_sampled("DYNARMIC_RUN_ENTER");
       reason = cpu->Run();
-      env.trace("DYNARMIC_RUN_RETURN reason=%#x pc=%#llx", static_cast<unsigned>(reason), static_cast<unsigned long long>(cpu->GetPC()));
+      env.trace_sampled("DYNARMIC_RUN_RETURN reason=%#x pc=%#llx", static_cast<unsigned>(reason), static_cast<unsigned long long>(cpu->GetPC()));
     } else {
-      env.trace("Dynarmic configuration: Step mode, cycle_counting=true, watchdog_ms=%llu", static_cast<unsigned long long>(watchdog_ms));
-      env.trace("DYNARMIC_STEP_ENTER");
+      env.trace_sampled("Dynarmic configuration: Step mode, cycle_counting=true, watchdog=%s", watchdog_ms ? "enabled" : "disabled");
+      env.trace_sampled("DYNARMIC_STEP_ENTER");
       reason = cpu->Step();
-      env.trace("DYNARMIC_STEP_RETURN reason=%#x pc=%#llx", static_cast<unsigned>(reason), static_cast<unsigned long long>(cpu->GetPC()));
+      env.trace_sampled("DYNARMIC_STEP_RETURN reason=%#x pc=%#llx", static_cast<unsigned>(reason), static_cast<unsigned long long>(cpu->GetPC()));
       const auto step_bit = Dynarmic::HaltReason::Step;
       const bool completed_step = Dynarmic::Has(reason, step_bit);
-      env.trace("single-step completion: completed=%s reason=%#x pc=%#llx", completed_step ? "true" : "false", static_cast<unsigned>(reason), static_cast<unsigned long long>(cpu->GetPC()));
+      env.trace_sampled("single-step completion: completed=%s reason=%#x pc=%#llx", completed_step ? "true" : "false", static_cast<unsigned>(reason), static_cast<unsigned long long>(cpu->GetPC()));
       if (completed_step) {
         cpu->ClearHalt(step_bit);
       }
     }
     execution_returned.store(true, std::memory_order_release);
-    watchdog.join();
-    env.trace("execution return #%llu: reason=%#x (%s) pc=%#llx sp=%#llx lr=%#llx code_fetches=%llu memory_faults=%llu regs={%s}",
+    if (watchdog.joinable()) watchdog.join();
+    env.trace_sampled("execution return #%llu: reason=%#x (%s) pc=%#llx sp=%#llx lr=%#llx code_fetches=%llu memory_faults=%llu regs={%s}",
               static_cast<unsigned long long>(execution_calls),
               static_cast<unsigned>(reason), halt_reason_name(reason),
               static_cast<unsigned long long>(cpu->GetPC()),

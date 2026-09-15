@@ -887,7 +887,12 @@ impl Dyld {
                 // The relocation addend (usually +8) is applied below, so we
                 // return the vtable base here.
                 let target = link_cxxabi_vtable(name, &mut cxxabi_vtable_addrs, mem);
-                log_dbg!("Stubbed C++ vtable {} -> {:#x}", name, target.to_bits());
+                log_sampled!(
+                    1024,
+                    "Stubbed C++ vtable {} -> {:#x}",
+                    name,
+                    target.to_bits()
+                );
                 target
             } else if name == "___gxx_personality_sj0" {
                 // C++ SjLj exception personality routine. Called by the
@@ -1075,7 +1080,8 @@ impl Dyld {
                     .create_proc_address_no_inval(mem, symbol)
                     .unwrap()
                     .to_ptr();
-                log_dbg!(
+                log_sampled!(
+                    1024,
                     "Linked external relocation to host function {} at {:?}",
                     symbol,
                     trampoline_ptr
@@ -1339,7 +1345,12 @@ impl Dyld {
                 // A non-lazy symbol pointer holds the plain address of the
                 // named symbol (no addend), so it resolves to the vtable base.
                 mem.write(ptr_ptr, target);
-                log_dbg!("Stubbed C++ vtable {} -> {:#x}", symbol, target.to_bits());
+                log_sampled!(
+                    1024,
+                    "Stubbed C++ vtable {} -> {:#x}",
+                    symbol,
+                    target.to_bits()
+                );
                 continue;
             }
 
