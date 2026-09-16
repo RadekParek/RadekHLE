@@ -11,10 +11,11 @@ use super::posix_io::{
 };
 use crate::dyld::{export_c_func, ConstantExports, FunctionExports, HostConstant};
 use crate::fs::{FsError, GuestPath};
-use crate::libc::errno::{set_errno, EACCES, EINVAL, ENOENT, ENOTDIR, ENOTEMPTY};
+use crate::libc::errno::{set_errno, EACCES, EBUSY, EINVAL, ENOENT, ENOTDIR, ENOTEMPTY};
 use crate::libc::string::strlen;
 use crate::mem::{ConstPtr, ConstVoidPtr, GuestUSize, Mem, MutPtr, MutVoidPtr, Ptr, SafeRead};
 use crate::Environment;
+use crate::environment::{ThreadBlock, ThreadId};
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -30,12 +31,14 @@ struct FILEHostObject {
     pushbacks: Vec<u8>,
     /// `ferror()` implementation
     error: bool,
+    lock_count: u32,
+    owning_thread: Option<ThreadId>,
 }
 
 #[allow(clippy::upper_case_acronyms)]
 /// C `FILE` struct. This is an opaque type in C, so the definition here is our
 /// own.
-struct FILE {
+pub(crate) struct FILE {
     fd: posix_io::FileDescriptor,
 }
 unsafe impl SafeRead for FILE {}
@@ -88,10 +91,45 @@ impl State {
             FILEHostObject {
                 pushbacks: Vec::new(),
                 error: false,
+                lock_count: 0,
+                owning_thread: None,
             }
         });
         self.file_streams.get_mut(&file_ptr).unwrap()
     }
+
+    pub(crate) fn try_acquire_file_object_lock(
+        &mut self,
+        mem: &mut Mem,
+        file_ptr: MutPtr<FILE>,
+        thread_id: ThreadId,
+    ) -> bool {
+        let FILEHostObject {
+            lock_count,
+            owning_thread,
+            ..
+        } = self.get_file_host_obj_mut(mem, file_ptr);
+        if *lock_count == 0 {
+            assert!(owning_thread.is_none());
+            *lock_count = 1;
+            *owning_thread = Some(thread_id);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+fn _touchHLE_check_file_object_lock(env: &mut Environment, file_ptr: MutPtr<FILE>) {
+    let FILEHostObject {
+        lock_count,
+        owning_thread,
+        ..
+    } = env
+        .libc_state
+        .stdio
+        .get_file_host_obj_mut(&mut env.mem, file_ptr);
+    assert!((owning_thread.is_none() && *lock_count == 0) || *owning_thread == Some(env.current_thread));
 }
 
 #[allow(non_camel_case_types)]
@@ -163,6 +201,8 @@ fn fopen(env: &mut Environment, filename: ConstPtr<u8>, mode: ConstPtr<u8>) -> M
                 FILEHostObject {
                     pushbacks: Vec::new(),
                     error: false,
+                    lock_count: 0,
+                    owning_thread: None,
                 },
             );
             res
@@ -837,27 +877,66 @@ fn fileno(env: &mut Environment, file_ptr: MutPtr<FILE>) -> posix_io::FileDescri
 /// Since the emulator is single-threaded, this is a no-op, but it is a proper
 /// implementation: in a single-threaded context the calling thread always has
 /// exclusive access to the FILE.
-fn flockfile(_env: &mut Environment, _file_ptr: MutPtr<FILE>) {
-    log_dbg!("flockfile({:?}) (no-op, single-threaded)", _file_ptr);
+fn flockfile(env: &mut Environment, file_ptr: MutPtr<FILE>) {
+    let FILEHostObject {
+        lock_count,
+        owning_thread,
+        ..
+    } = env
+        .libc_state
+        .stdio
+        .get_file_host_obj_mut(&mut env.mem, file_ptr);
+    match owning_thread {
+        Some(thread_id) if *thread_id != env.current_thread => {
+            env.yield_thread(ThreadBlock::FileObjectLock(file_ptr));
+        }
+        _ => {
+            *lock_count = lock_count.checked_add(1).unwrap();
+            *owning_thread = Some(env.current_thread);
+        }
+    }
 }
 
 /// `funlockfile()` — release ownership of a FILE stream.
 ///
 /// Counterpart to `flockfile()`. Single-threaded no-op.
-fn funlockfile(_env: &mut Environment, _file_ptr: MutPtr<FILE>) {
-    log_dbg!("funlockfile({:?}) (no-op, single-threaded)", _file_ptr);
+fn funlockfile(env: &mut Environment, file_ptr: MutPtr<FILE>) {
+    let FILEHostObject {
+        lock_count,
+        owning_thread,
+        ..
+    } = env
+        .libc_state
+        .stdio
+        .get_file_host_obj_mut(&mut env.mem, file_ptr);
+    assert_eq!(*owning_thread, Some(env.current_thread));
+    *lock_count = lock_count.checked_sub(1).unwrap();
+    if *lock_count == 0 {
+        *owning_thread = None;
+    }
 }
 
 /// `ftrylockfile()` — try to acquire ownership of a FILE stream.
 ///
 /// Returns 0 on success. In a single-threaded emulator the lock is always
 /// available, so this always succeeds.
-fn ftrylockfile(_env: &mut Environment, _file_ptr: MutPtr<FILE>) -> i32 {
-    log_dbg!(
-        "ftrylockfile({:?}) => 0 (no-op, single-threaded)",
-        _file_ptr
-    );
-    0 // success
+fn ftrylockfile(env: &mut Environment, file_ptr: MutPtr<FILE>) -> i32 {
+    let FILEHostObject {
+        lock_count,
+        owning_thread,
+        ..
+    } = env
+        .libc_state
+        .stdio
+        .get_file_host_obj_mut(&mut env.mem, file_ptr);
+    match owning_thread {
+        Some(thread_id) if *thread_id != env.current_thread => EBUSY,
+        _ => {
+            *lock_count = lock_count.checked_add(1).unwrap();
+            *owning_thread = Some(env.current_thread);
+            0
+        }
+    }
 }
 
 /// Size of Darwin's `__sFILE` struct on 32-bit ARM (88 bytes).

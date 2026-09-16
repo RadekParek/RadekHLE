@@ -173,7 +173,7 @@ pub struct State {
     stdlib: stdlib::State,
     string: string::State,
     signal: signal::State,
-    stdio: stdio::State,
+    pub(crate) stdio: stdio::State,
     time: time::State,
     errno: errno::State,
     clocale: clocale::State,

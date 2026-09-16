@@ -647,6 +647,23 @@ pub const CLASSES: ClassExports = objc_classes! {
 
     let fullscreen_layer = find_fullscreen_eagl_layer(env);
 
+    let fallback_renderbuffer = {
+        let bindings = env
+            .objc
+            .borrow::<EAGLContextHostObject>(this)
+            .renderbuffer_drawable_bindings
+            .borrow();
+        bindings
+            .iter()
+            .find(|(_, drawable)| **drawable == fullscreen_layer && **drawable != nil)
+            .or_else(|| {
+                (bindings.len() == 1)
+                    .then(|| bindings.iter().find(|(_, drawable)| **drawable != nil))
+                    .flatten()
+            })
+            .map(|(&renderbuffer, &drawable)| (renderbuffer, drawable))
+    };
+
     // Unclear from documentation if this method requires the context to be
     // current, but it would be weird if it didn't?
     let window = env.window.as_mut().expect("OpenGL ES is not supported in headless mode");
@@ -672,6 +689,17 @@ pub const CLASSES: ClassExports = objc_classes! {
     let renderbuffer: GLuint = unsafe {
         let mut renderbuffer = 0;
         gles.GetIntegerv(gles11::RENDERBUFFER_BINDING_OES, &mut renderbuffer);
+        if renderbuffer == 0 {
+            if let Some((fallback, drawable)) = fallback_renderbuffer {
+                gles.BindRenderbufferOES(gles11::RENDERBUFFER_OES, fallback);
+                log_once_fmt!(
+                    "Using fallback renderbuffer {} bound to drawable {:?}",
+                    fallback,
+                    drawable
+                );
+                renderbuffer = fallback as _;
+            }
+        }
         renderbuffer as _
     };
 
@@ -713,16 +741,16 @@ pub const CLASSES: ClassExports = objc_classes! {
                 env.current_thread,
             );
             maybe_gles.map(|gles| {
-                if gles.is_native_es1() {
-                    "native-es1-readback"
-                } else if gles.is_translator() {
+                if gles.is_translator() {
                     "translator-readback"
+                } else if gles.is_native_es1() {
+                    "native-es1-direct"
                 } else {
                     "shader-direct"
                 }
             })
         };
-        if matches!(presentation_mode, Some("native-es1-readback" | "translator-readback")) {
+        if matches!(presentation_mode, Some("translator-readback")) {
             log_once_fmt!(
                 "Layer {:?} uses {}; presenting renderbuffer {:?} through resolved RAM readback to preserve tile contents and alpha.",
                 drawable,
@@ -730,7 +758,7 @@ pub const CLASSES: ClassExports = objc_classes! {
                 renderbuffer,
             );
             unsafe {
-                present_renderbuffer_readback(env, drawable);
+                present_renderbuffer_readback(env, drawable, Some(renderbuffer));
             }
         } else {
             log_dbg!(
@@ -780,7 +808,7 @@ pub const CLASSES: ClassExports = objc_classes! {
                 env.current_thread,
             );
             match maybe_gles {
-                Some(mut gles) => Some(unsafe { read_renderbuffer(gles.as_mut(), pixels_vec) }),
+                Some(mut gles) => Some(unsafe { read_renderbuffer(gles.as_mut(), pixels_vec, Some(renderbuffer)) }),
                 None => {
                     log!(
                         "[EAGLContext presentRenderbuffer:{:#x}] lost GL \
@@ -832,7 +860,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 };
 
-unsafe fn present_renderbuffer_readback(env: &mut Environment, drawable: id) {
+unsafe fn present_renderbuffer_readback(env: &mut Environment, drawable: id, renderbuffer: Option<GLuint>) {
     let read_result = {
         let maybe_gles = super::sync_context(
             &mut env.framework_state.opengles,
@@ -841,7 +869,7 @@ unsafe fn present_renderbuffer_readback(env: &mut Environment, drawable: id) {
             env.current_thread,
         );
         match maybe_gles {
-            Some(mut gles) => Some(read_renderbuffer(gles.as_mut(), Vec::new())),
+            Some(mut gles) => Some(read_renderbuffer(gles.as_mut(), Vec::new(), renderbuffer)),
             None => None,
         }
     };
@@ -986,8 +1014,12 @@ unsafe fn get_renderbuffer_size(gles: &mut dyn GLES) -> (GLsizei, GLsizei) {
 /// The returned values are the [Vec], the width and height.
 ///
 /// The provided context must be current.
-unsafe fn read_renderbuffer(gles: &mut dyn GLES, mut pixel_buffer: Vec<u8>) -> (Vec<u8>, u32, u32) {
-    let renderbuffer: GLuint = get_int(gles, gles11::RENDERBUFFER_BINDING_OES) as _;
+unsafe fn read_renderbuffer(gles: &mut dyn GLES, mut pixel_buffer: Vec<u8>, override_renderbuffer: Option<GLuint>) -> (Vec<u8>, u32, u32) {
+    let current_renderbuffer: GLuint = get_int(gles, gles11::RENDERBUFFER_BINDING_OES) as _;
+    let renderbuffer: GLuint = override_renderbuffer.unwrap_or(current_renderbuffer);
+    if renderbuffer != current_renderbuffer {
+        gles.BindRenderbufferOES(gles11::RENDERBUFFER_OES, renderbuffer);
+    }
     let (width, height) = get_renderbuffer_size(gles);
     let width_u32: u32 = width.try_into().unwrap();
     let height_u32: u32 = height.try_into().unwrap();
@@ -1056,6 +1088,9 @@ unsafe fn read_renderbuffer(gles: &mut dyn GLES, mut pixel_buffer: Vec<u8>) -> (
     if !use_bound_framebuffer {
         gles.DeleteFramebuffersOES(1, &src_framebuffer);
         gles.BindFramebufferOES(gles11::FRAMEBUFFER_OES, old_framebuffer);
+    }
+    if renderbuffer != current_renderbuffer {
+        gles.BindRenderbufferOES(gles11::RENDERBUFFER_OES, current_renderbuffer);
     }
 
     (pixel_buffer, width_u32, height_u32)
@@ -1808,7 +1843,7 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
     if gles.is_es2() {
         if frame_generation {
             std::mem::drop(gles_boxed);
-            present_renderbuffer_readback(env, drawable);
+            present_renderbuffer_readback(env, drawable, None);
         } else {
             present_renderbuffer_es2(gles, viewport, rotation_matrix, virtual_cursor_visible_at);
             std::mem::drop(gles_boxed);
@@ -1908,17 +1943,14 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
     // the renderbuffer to it — this matches the pre-fix behaviour and
     // lets weird non-iOS-pattern apps still present *something*.
     let mut src_framebuffer: GLuint = 0;
-    let used_app_fbo = old_framebuffer != 0;
-    if !used_app_fbo {
-        gles.GenFramebuffersOES(1, &mut src_framebuffer);
-        gles.BindFramebufferOES(gles11::FRAMEBUFFER_OES, src_framebuffer);
-        gles.FramebufferRenderbufferOES(
-            gles11::FRAMEBUFFER_OES,
-            gles11::COLOR_ATTACHMENT0_OES,
-            gles11::RENDERBUFFER_OES,
-            renderbuffer,
-        );
-    }
+    gles.GenFramebuffersOES(1, &mut src_framebuffer);
+    gles.BindFramebufferOES(gles11::FRAMEBUFFER_OES, src_framebuffer);
+    gles.FramebufferRenderbufferOES(
+        gles11::FRAMEBUFFER_OES,
+        gles11::COLOR_ATTACHMENT0_OES,
+        gles11::RENDERBUFFER_OES,
+        renderbuffer,
+    );
     {
         static SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -1926,11 +1958,7 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
             gles,
             trace_gl_errors,
             &SEEN,
-            if used_app_fbo {
-                "after using app's bound FBO as copy source (no FBO switch)"
-            } else {
-                "after fallback FBO create+bind+attach (old_framebuffer==0)"
-            },
+            "after temporary FBO create+bind+attach",
         );
     }
 
@@ -1978,14 +2006,8 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
     }
     // Diagnostic probe: read a few pixels of the renderbuffer the guest
     // just rendered into, so we can tell apart "renderbuffer is empty /
-    // all-black" (a guest-side or attach-side / tile-resolve bug) from
-    // "renderbuffer has content but present_frame is mis-displaying it"
-    // (a present-side bug). At this point the read source FBO is
-    // whichever copy source we used above: the app's own FBO
-    // (used_app_fbo, normal iOS pattern) or the throwaway src_framebuffer
-    // (fallback for old_framebuffer == 0). Either way, ReadPixels reads
-    // from FRAMEBUFFER_BINDING, so the values logged here describe the
-    // pixels CopyTexImage2D just copied.
+    // all-black" from a presentation-side bug. The probe reads from the
+    // temporary source FBO used by CopyTexImage2D.
     //
     // We sample several frames (the very first frame is often just a
     // glClear and shows zeros even on healthy drivers — we need to also
@@ -2083,7 +2105,7 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
             let current_color = qf4(gles, gles11::CURRENT_COLOR);
             log!(
                 "[--trace-gl-errors] present_renderbuffer renderbuffer-content probe \
-                 (frame={}, used_app_fbo={}, viewport={:?}, renderbuffer={}x{}): \
+                 (frame={}, source=temporary-fbo, viewport={:?}, renderbuffer={}x{}): \
                  BL=({},{},{},{}) BR=({},{},{},{}) TL=({},{},{},{}) TR=({},{},{},{}) \
                  CENTER=({},{},{},{}) \
                  | guest GL state: app_fbo={} app_tex2d={} \
@@ -2093,7 +2115,6 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
                  vertex_arr={} color_arr={} texcoord_arr={} \
                  clear_color=({:.3},{:.3},{:.3},{:.3}) current_color=({:.3},{:.3},{:.3},{:.3})",
                 count,
-                used_app_fbo,
                 viewport,
                 width,
                 height,
@@ -2184,15 +2205,8 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
 
     // Stop using the source FBO so the present_frame quad below renders
     // to the default framebuffer (the SDL window) instead of the
-    // renderbuffer / our throwaway FBO. In the no-FBO-switch path we
-    // simply unbind the app's FBO; we'll restore it again at the end of
-    // this function. In the fallback path, deleting the throwaway FBO
-    // also implicitly unbinds it, leaving FRAMEBUFFER_BINDING == 0.
-    if used_app_fbo {
-        gles.BindFramebufferOES(gles11::FRAMEBUFFER_OES, 0);
-    } else {
-        gles.DeleteFramebuffersOES(1, &src_framebuffer);
-    }
+    // renderbuffer / our throwaway FBO.
+    gles.DeleteFramebuffersOES(1, &src_framebuffer);
     {
         static SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -2200,11 +2214,7 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
             gles,
             trace_gl_errors,
             &SEEN,
-            if used_app_fbo {
-                "after BindFramebufferOES(0) (release app's FBO for present)"
-            } else {
-                "after DeleteFramebuffersOES (fallback path)"
-            },
+            "after DeleteFramebuffersOES (release source FBO)",
         );
     }
 

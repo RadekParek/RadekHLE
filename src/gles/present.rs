@@ -318,10 +318,19 @@ fn gpu_percent() -> Option<f32> {
 }
 
 pub fn centered_texture_rotation(rotation_matrix: Matrix<2>) -> Matrix<4> {
-    let r = Matrix::<4>::from(&rotation_matrix);
-    let to_center = Matrix::<4>::translate_3d(-0.5, -0.5, 0.0);
-    let from_center = Matrix::<4>::translate_3d(0.5, 0.5, 0.0);
-    from_center.multiply(&r).multiply(&to_center)
+    let columns = rotation_matrix.columns();
+    let r00 = columns[0][0];
+    let r01 = columns[1][0];
+    let r10 = columns[0][1];
+    let r11 = columns[1][1];
+    let tx = 0.5 - 0.5 * (r00 + r01);
+    let ty = 0.5 - 0.5 * (r10 + r11);
+    Matrix::from_columns([
+        [r00, r10, 0.0, 0.0],
+        [r01, r11, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [tx, ty, 0.0, 1.0],
+    ])
 }
 
 /// Present the the latest frame (e.g. the app's splash screen or rendering

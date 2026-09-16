@@ -763,17 +763,190 @@ fn xmlNodeGetContent(env: &mut Environment, node: u32) -> u32 {
     take_xml_chars(env, p)
 }
 
+fn guest_u32(env: &Environment, address: u32) -> Option<u32> {
+    let (base, size) = env.mem.allocation_containing(address)?;
+    let end = address.checked_add(4)?;
+    if end > base.checked_add(size)? {
+        return None;
+    }
+    let bytes = env
+        .mem
+        .get_bytes_fallible(Ptr::<u8, false>::from_bits(address).cast_void(), 4)?;
+    Some(u32::from_le_bytes(bytes.try_into().ok()?))
+}
+
+fn guest_cstring(env: &Environment, address: u32) -> Option<String> {
+    if address == 0 {
+        return None;
+    }
+    let (base, size) = env.mem.allocation_containing(address)?;
+    let end = base.checked_add(size)?;
+    let max_len = end.checked_sub(address)?.min(1024 * 1024);
+    let bytes = env.mem.get_bytes_fallible(
+        Ptr::<u8, false>::from_bits(address).cast_void(),
+        max_len,
+    )?;
+    let nul = bytes.iter().position(|&byte| byte == 0)?;
+    Some(String::from_utf8_lossy(&bytes[..nul]).into_owned())
+}
+
+fn append_xml_escaped(out: &mut String, value: &str, attribute: bool) {
+    for character in value.chars() {
+        match character {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' if attribute => out.push_str("&quot;"),
+            '\'' if attribute => out.push_str("&apos;"),
+            _ => out.push(character),
+        }
+    }
+}
+
+fn append_guest_xml_text(
+    env: &Environment,
+    node: u32,
+    out: &mut String,
+    depth: usize,
+    count: &mut usize,
+) {
+    if node == 0 || depth > 128 || *count >= 10000 {
+        return;
+    }
+    *count += 1;
+    let node_type = guest_u32(env, node + 4).unwrap_or(0);
+    if matches!(node_type, 3 | 4) {
+        if let Some(content) = guest_cstring(env, guest_u32(env, node + 40).unwrap_or(0)) {
+            out.push_str(&content);
+        }
+        return;
+    }
+    let mut child = guest_u32(env, node + 12).unwrap_or(0);
+    while child != 0 && *count < 10000 {
+        append_guest_xml_text(env, child, out, depth + 1, count);
+        child = guest_u32(env, child + 24).unwrap_or(0);
+    }
+}
+
+fn append_guest_xml_node(
+    env: &Environment,
+    node: u32,
+    out: &mut String,
+    depth: usize,
+    count: &mut usize,
+    active: &mut Vec<u32>,
+) -> bool {
+    if node == 0 || depth > 128 || *count >= 10000 || active.contains(&node) {
+        return false;
+    }
+    let Some(node_type) = guest_u32(env, node + 4) else {
+        return false;
+    };
+    *count += 1;
+    active.push(node);
+    let result = match node_type {
+        1 => {
+            let Some(name) = guest_cstring(env, guest_u32(env, node + 8).unwrap_or(0)) else {
+                active.pop();
+                return false;
+            };
+            out.push('<');
+            out.push_str(&name);
+
+            let mut attribute = guest_u32(env, node + 44).unwrap_or(0);
+            let mut attribute_count = 0;
+            while attribute != 0 && attribute_count < 256 {
+                let attr_name = guest_cstring(env, guest_u32(env, attribute + 8).unwrap_or(0));
+                let mut value = String::new();
+                let mut value_count = 0;
+                append_guest_xml_text(
+                    env,
+                    guest_u32(env, attribute + 12).unwrap_or(0),
+                    &mut value,
+                    depth + 1,
+                    &mut value_count,
+                );
+                if let Some(attr_name) = attr_name {
+                    out.push(' ');
+                    out.push_str(&attr_name);
+                    out.push_str("=\"");
+                    append_xml_escaped(out, &value, true);
+                    out.push('\"');
+                }
+                attribute = guest_u32(env, attribute + 24).unwrap_or(0);
+                attribute_count += 1;
+            }
+
+            out.push('>');
+            let mut child = guest_u32(env, node + 12).unwrap_or(0);
+            while child != 0 && *count < 10000 {
+                append_guest_xml_node(env, child, out, depth + 1, count, active);
+                child = guest_u32(env, child + 24).unwrap_or(0);
+            }
+            out.push_str("</");
+            out.push_str(&name);
+            out.push('>');
+            true
+        }
+        3 | 4 => {
+            if let Some(content) = guest_cstring(env, guest_u32(env, node + 40).unwrap_or(0)) {
+                append_xml_escaped(out, &content, false);
+            }
+            true
+        }
+        8 => {
+            out.push_str("<!--");
+            if let Some(content) = guest_cstring(env, guest_u32(env, node + 40).unwrap_or(0)) {
+                out.push_str(&content);
+            }
+            out.push_str("-->");
+            true
+        }
+        9 | 13 => {
+            let mut child = guest_u32(env, node + 12).unwrap_or(0);
+            while child != 0 && *count < 10000 {
+                append_guest_xml_node(env, child, out, depth + 1, count, active);
+                child = guest_u32(env, child + 24).unwrap_or(0);
+            }
+            true
+        }
+        _ => {
+            if let Some(content) = guest_cstring(env, guest_u32(env, node + 40).unwrap_or(0)) {
+                append_xml_escaped(out, &content, false);
+            }
+            true
+        }
+    };
+    active.pop();
+    result
+}
+
+fn guest_node_to_xml_string(env: &Environment, node: u32) -> Option<String> {
+    let mut output = String::new();
+    let mut count = 0;
+    let mut active = Vec::new();
+    if append_guest_xml_node(env, node, &mut output, 0, &mut count, &mut active)
+        && !output.is_empty()
+    {
+        Some(output)
+    } else {
+        None
+    }
+}
+
 /// Compatibility helper for bundled GDataXML implementations.
 ///
-/// Some apps call GDataXML's `nodeConsumingXMLNode:` / `initBorrowingXMLNode:`
-/// with one of our opaque libxml2 node handles. GDataXML then dereferences it
-/// as a real `_xmlNode *`, which fails. This helper serializes that host
-/// libxml node back into XML so the ObjC message hook can build its own small
-/// DOM without exposing host pointers or fake guest libxml structs.
+/// The normal upstream path passes real guest `xmlNode *` pointers. Older
+/// RadekHLE builds used opaque host handles, so retain that path when one is
+/// encountered and use the guest structure directly otherwise.
 pub(crate) fn compat_node_handle_to_xml_string(
-    _env: &mut Environment,
+    env: &mut Environment,
     node: u32,
 ) -> Option<String> {
+    if !is_handle(node) {
+        return guest_node_to_xml_string(env, node);
+    }
+
     let n = h2node(node);
     if n.is_null() {
         return None;

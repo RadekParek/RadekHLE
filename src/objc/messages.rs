@@ -1408,13 +1408,11 @@ fn try_nsarray_indexed_subscript_interpose(
 // GDataXML compatibility layer
 // ============================================================================
 //
-// Some games bundle Google's GDataXML classes. Those classes directly
-// dereference libxml2's xmlNode/xmlAttr structs, but touchHLE's libxml2 shim
-// intentionally gives the guest opaque handle IDs instead of guest-visible
-// structs. Trying to fake libxml2 structs in libxml2.rs can make the guest walk
-// bad/cyclic XML graphs. Intercepting the tiny GDataXML surface the game uses
-// is safer: parse XML into a small Rust DOM and return real Objective-C objects
-// for GDataXMLDocument/GDataXMLElement/GDataXMLNode/GDataXMLAttribute methods.
+// Some games bundle Google's GDataXML classes. These classes directly
+// dereference libxml2's xmlNode/xmlAttr structs. The normal path now uses the
+// real guest libxml2 dylib, but older RadekHLE builds used opaque host handles;
+// this compatibility layer accepts either representation and parses the small
+// GDataXML surface used by affected games into Objective-C objects.
 
 #[derive(Clone)]
 struct GDataCompatNode {

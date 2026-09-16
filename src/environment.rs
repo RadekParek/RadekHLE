@@ -28,6 +28,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::libc::pthread::cond::pthread_cond_t;
+use crate::libc::stdio::FILE;
 use crate::window::DeviceFamily;
 use corosensei::{Coroutine, Yielder};
 pub use mutex::{MutexId, MutexType, PTHREAD_MUTEX_DEFAULT};
@@ -192,6 +193,8 @@ pub enum ThreadBlock {
     // resuming.
     #[allow(dead_code)]
     Suspended(usize, Box<ThreadBlock>),
+    // Thread is waiting on a FILE object lock.
+    FileObjectLock(MutPtr<FILE>),
 }
 
 struct BinaryDependencyNode {
@@ -569,6 +572,11 @@ impl Environment {
                         // We build `libsqlite3` from sources with our OSS
                         // toolchain, the base address is already set and
                         // sliding is not needed.
+                        0
+                    }
+                    "libxml2.2.dylib" | "libxml2.dylib" | "libxml2.2.7.8.dylib" => {
+                        // The bundled ARM32 dylib is loaded at its preferred guest
+                        // address, so no additional slide is needed.
                         0
                     }
                     _ => {
@@ -2604,6 +2612,17 @@ impl Environment {
                     ThreadBlock::Suspended(cnt, _) => {
                         // Original enforced assertion
                         assert!(cnt > 0);
+                    }
+                    ThreadBlock::FileObjectLock(file_ptr) => {
+                        let acquired = self.libc_state.stdio.try_acquire_file_object_lock(
+                            &mut self.mem,
+                            file_ptr,
+                            thread_id,
+                        );
+                        if acquired {
+                            self.threads[thread_id].blocked_by = ThreadBlock::NotBlocked;
+                            return thread_id;
+                        }
                     }
                 }
             }

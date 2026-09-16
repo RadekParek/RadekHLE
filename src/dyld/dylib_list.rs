@@ -216,7 +216,6 @@ pub const DYLIB_LIST: &[&super::HostDylib] = &[
     &frameworks::uikit::DYLIB,
     &frameworks::libicucore::DYLIB,
     &frameworks::libsqlite3::DYLIB,
-    &frameworks::libxml2::DYLIB,
     &frameworks::libbz2::DYLIB,
     &frameworks::common_crypto::DYLIB,
     &frameworks::core_video::DYLIB,
