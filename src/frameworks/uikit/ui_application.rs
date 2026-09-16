@@ -182,26 +182,20 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (())setStatusBarOrientation:(UIInterfaceOrientation)orientation {
-    match orientation {
-        UIDeviceOrientationUnknown => {
-            // Per Apple docs UIDeviceOrientationUnknown (0) means the
-            // orientation cannot be determined.  Ignore it.
-        }
-        UIDeviceOrientationPortrait => {
-            env.on_parent_stack_in_coroutine(|window, _| window.rotate_device(DeviceOrientation::Portrait));
-        }
-        UIDeviceOrientationPortraitUpsideDown => {
-            env.on_parent_stack_in_coroutine(|window, _| window.rotate_device(DeviceOrientation::PortraitUpsideDown));
-        }
-        UIDeviceOrientationLandscapeLeft => {
-            env.on_parent_stack_in_coroutine(|window, _| window.rotate_device(DeviceOrientation::LandscapeLeft));
-        }
-        UIDeviceOrientationLandscapeRight => {
-            env.on_parent_stack_in_coroutine(|window, _| window.rotate_device(DeviceOrientation::LandscapeRight));
-        }
+    let prev_orientation = env.window().current_rotation();
+    let new_orientation = match orientation {
+        UIDeviceOrientationPortrait => DeviceOrientation::Portrait,
+        UIDeviceOrientationPortraitUpsideDown => DeviceOrientation::PortraitUpsideDown,
+        UIDeviceOrientationLandscapeLeft => DeviceOrientation::LandscapeLeft,
+        UIDeviceOrientationLandscapeRight => DeviceOrientation::LandscapeRight,
         _ => {
             log!("Warning: Orientation {} not handled yet (ignoring to prevent panic)", orientation);
+            return;
         }
+    };
+    env.on_parent_stack_in_coroutine(|window, _| window.rotate_device(new_orientation));
+    if prev_orientation != env.window().current_rotation() {
+        generate_device_orientation_notification(env);
     }
 }
 

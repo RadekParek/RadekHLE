@@ -27,6 +27,7 @@ pub struct State {
     rand: u32,
     random: u32,
     arc4random: u32,
+    fcvt_buf: Option<MutPtr<u8>>,
     /// 48-bit linear-congruential PRNG state shared by the `drand48`/`lrand48`/
     /// `mrand48`/`seed48` family. Per the POSIX / Apple `drand48(3)` manpage
     /// (<https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/drand48.3.html>)
@@ -1351,6 +1352,53 @@ fn _fcvt(
     buf
 }
 
+fn fcvt(
+    env: &mut Environment,
+    value: f64,
+    ndigit: i32,
+    decpt: MutPtr<i32>,
+    sign: MutPtr<i32>,
+) -> MutPtr<u8> {
+    log_dbg!("fcvt({}, {}, {:?}, {:?})", value, ndigit, decpt, sign);
+    assert!(ndigit > 0);
+    let fcvt_buf = *env
+        .libc_state
+        .stdlib
+        .fcvt_buf
+        .get_or_insert_with(|| env.mem.alloc(64).cast());
+    env.mem
+        .write(sign, if value.is_sign_negative() { 1 } else { 0 });
+    if value == 0.0 {
+        let ndigit_size = ndigit as GuestUSize;
+        assert!(ndigit_size < 64);
+        env.mem.write(decpt, 0);
+        env.mem.bytes_at_mut(fcvt_buf, ndigit_size).fill(b'0');
+        env.mem.write(fcvt_buf + ndigit_size, b'\0');
+        return fcvt_buf;
+    }
+
+    let mut formatted = format!("{:.1$}", value.abs(), ndigit as usize);
+    assert!(formatted.contains('.'));
+    assert!(formatted.len() < 64);
+
+    let dot_idx = formatted.find('.').unwrap();
+    formatted.remove(dot_idx);
+
+    let leading_zeros_trimmed = formatted.trim_start_matches('0');
+    let leading_zeros_idx = formatted.len() - leading_zeros_trimmed.len();
+
+    env.mem
+        .write(decpt, dot_idx as i32 - leading_zeros_idx as i32);
+
+    let len = leading_zeros_trimmed.len().try_into().unwrap();
+    env.mem
+        .bytes_at_mut(fcvt_buf, len)
+        .copy_from_slice(leading_zeros_trimmed.as_bytes());
+    env.mem.write(fcvt_buf + len, b'\0');
+
+    fcvt_buf
+}
+
 #[allow(non_snake_case)]
 fn _gcvt(env: &mut Environment, value: f64, ndigit: i32, buf: MutPtr<u8>) -> MutPtr<u8> {
     set_errno(env, 0);
@@ -1779,6 +1827,7 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(__assert(_, _, _)),
     export_c_func!(__assert_fail(_, _, _, _)),
     export_c_func!(_fcvt(_, _, _, _)),
+    export_c_func!(fcvt(_, _, _, _)),
     export_c_func!(_gcvt(_, _, _)),
     export_c_func!(system(_)),
     export_c_func!(dladdr(_, _)),

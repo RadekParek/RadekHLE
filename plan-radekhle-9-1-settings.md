@@ -1,6 +1,6 @@
-# RadekHLE 9.0 settings and polish
+# RadekHLE 9.1 settings and polish
 
-- [x] Rebrand user-facing RadekHLE strings to 9.0 and retain release packaging consistency.
+- [x] Rebrand user-facing RadekHLE strings to 9.1 and retain release packaging consistency.
 - [x] Make PVRTC automatic by default and keep native GLES queries one-shot in logs.
 - [x] Reorganize the picker settings into Performance, Graphics, Compatibility, and Video & display with visible category controls.
 - [x] Replace the custom-driver switch with add-folder and selectable-driver controls.

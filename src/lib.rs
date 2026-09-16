@@ -93,8 +93,8 @@ pub extern "C" fn SDL_main(
     }));
     // Empty args: brings up app picker.
     match main([String::new()].into_iter()) {
-        Ok(_) => echo!("RadekHLE9.0 finished"),
-        Err(e) => echo!("RadekHLE9.0 errored: {e:?}"),
+        Ok(_) => echo!("RadekHLE9.1 finished"),
+        Err(e) => echo!("RadekHLE9.1 errored: {e:?}"),
     }
     0
 }
@@ -188,7 +188,7 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
     crate::perf::configure_from_environment();
     crate::perf::reset();
     echo!(
-        "RadekHLE9.0 {}{}{} git_sha={}",
+        "RadekHLE9.1 {}{}{} git_sha={}",
         branding(),
         if branding().is_empty() { "" } else { " " },
         VERSION,
@@ -208,7 +208,7 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
 
     {
         let base_path = paths::user_data_base_path();
-        log!("Base path for RadekHLE9.0 files: {}", base_path.display());
+        log!("Base path for RadekHLE9.1 files: {}", base_path.display());
         paths::prepopulate_user_data_dir();
     }
 
@@ -451,7 +451,7 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
 
     if required_device_capabilities.contains(&"opengles-3") {
         echo!(
-            "Warning: app requires OpenGL ES 3.0+ support. RadekHLE9.0 now routes EAGL OpenGL ES 3 contexts to its GLES 3 backend."
+            "Warning: app requires OpenGL ES 3.0+ support. RadekHLE9.1 now routes EAGL OpenGL ES 3 contexts to its GLES 3 backend."
         );
     }
 

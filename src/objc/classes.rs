@@ -2367,7 +2367,7 @@ pub fn object_getIndexedIvars(_env: &mut crate::Environment, obj: id) -> ConstVo
 ///
 /// > Exchanges the implementations of two methods. This is an atomic
 /// > version of the following:
-/// > ```
+/// > ```text
 /// > IMP imp1 = method_getImplementation(m1);
 /// > IMP imp2 = method_getImplementation(m2);
 /// > method_setImplementation(m1, imp2);

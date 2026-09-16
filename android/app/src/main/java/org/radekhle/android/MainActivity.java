@@ -43,7 +43,7 @@ import java.util.Comparator;
 import java.util.List;
 
 public class MainActivity extends SDLActivity {
-    private static final String TAG = "RadekHLE9.0";
+    private static final String TAG = "RadekHLE9.1";
     private static final int GAME_FOLDER_REQUEST = 4711;
     private static final int CUSTOM_DRIVER_REQUEST = 4712;
     private static final int ADD_IPA_REQUEST = 4713;
@@ -175,7 +175,7 @@ public class MainActivity extends SDLActivity {
     private void startCameraCapture() {
         if (cameraThread != null || Build.VERSION.SDK_INT < 21) return;
         lastCameraWriteNanos = 0L;
-        cameraThread = new HandlerThread("RadekHLE9.0-camera");
+        cameraThread = new HandlerThread("RadekHLE9.1-camera");
         cameraThread.start();
         cameraHandler = new Handler(cameraThread.getLooper());
         try {
@@ -372,7 +372,7 @@ public class MainActivity extends SDLActivity {
                 } catch (Exception ex) {
                     Log.w(TAG, "Native microphone capture stopped", ex);
                 }
-            }, "RadekHLE9.0-microphone");
+            }, "RadekHLE9.1-microphone");
             audioThread.start();
         } catch (Exception ex) {
             Log.w(TAG, "Couldn't start native Android microphone", ex);
@@ -512,11 +512,11 @@ public class MainActivity extends SDLActivity {
         new Thread(() -> {
             int copied = copySelectedFolder(treeUri);
 
-            Log.i(TAG, "Imported " + copied + " files from the selected game folder; restarting RadekHLE9.0 to rescan all games.");
+            Log.i(TAG, "Imported " + copied + " files from the selected game folder; restarting RadekHLE9.1 to rescan all games.");
             if (mSingleton != null) {
                 mSingleton.runOnUiThread(() -> mSingleton.recreate());
             }
-        }, "RadekHLE9.0-game-import").start();
+        }, "RadekHLE9.1-game-import").start();
     }
 
     private static int copySelectedFolder(Uri treeUri) {
@@ -633,7 +633,7 @@ public class MainActivity extends SDLActivity {
             if (copyDocumentUri(uri, destination)) {
                 Log.i(TAG, "Imported game: " + name + "; keeping the native app picker alive so Rust can rescan it.");
             }
-        }, "RadekHLE9.0-game-import").start();
+        }, "RadekHLE9.1-game-import").start();
     }
 
     private static void importSelectedCustomDriver(Uri uri) {
@@ -655,7 +655,7 @@ public class MainActivity extends SDLActivity {
                     mSingleton.runOnUiThread(() -> mSingleton.recreate());
                 }
             }
-        }, "RadekHLE9.0-custom-driver-import").start();
+        }, "RadekHLE9.1-custom-driver-import").start();
     }
 
     private static String selectedDocumentName(Uri uri) {

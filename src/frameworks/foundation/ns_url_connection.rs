@@ -153,7 +153,7 @@ pub(crate) fn perform_request(
         builder = builder.set(name, value);
     }
     if !has_user_agent {
-        builder = builder.set("User-Agent", "RadekHLE9.0");
+        builder = builder.set("User-Agent", "RadekHLE9.1");
     }
     let result = if body.is_empty() && method.eq_ignore_ascii_case("GET") {
         builder.call()

@@ -272,7 +272,7 @@ jobs:
       run: echo 'sdk.dir='$ANDROID_SDK_ROOT > android/local.properties
 
     - name: Build for Android
-      run: cd android && ../gradle/gradle-8.11.1/bin/gradle assembleRelease && mv app/build/outputs/apk/release/app-release.apk ../RadekHLE-7.0.apk
+      run: cd android && ../gradle/gradle-8.11.1/bin/gradle assembleRelease && mv app/build/outputs/apk/release/app-release.apk ../RadekHLE-9.1.apk
       env:
         ANDROID_NDK_ROOT: '/usr/local/lib/android/sdk/ndk/25.2.9519653'
         CMAKE: ${{ github.workspace }}/vendor/cmake/bin/cmake
@@ -280,7 +280,7 @@ jobs:
     - uses: actions/upload-artifact@main
       with:
         name: RadekHLE_Android_AArch64
-        path: RadekHLE-7.0.apk
+        path: RadekHLE-9.1.apk
 
   build-win:
     runs-on: windows-2022
