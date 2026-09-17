@@ -1943,14 +1943,28 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
     // the renderbuffer to it — this matches the pre-fix behaviour and
     // lets weird non-iOS-pattern apps still present *something*.
     let mut src_framebuffer: GLuint = 0;
-    gles.GenFramebuffersOES(1, &mut src_framebuffer);
-    gles.BindFramebufferOES(gles11::FRAMEBUFFER_OES, src_framebuffer);
-    gles.FramebufferRenderbufferOES(
-        gles11::FRAMEBUFFER_OES,
-        gles11::COLOR_ATTACHMENT0_OES,
-        gles11::RENDERBUFFER_OES,
-        renderbuffer,
-    );
+    let mut uses_temporary_framebuffer = old_framebuffer == 0;
+    if !uses_temporary_framebuffer {
+        let status = gles.CheckFramebufferStatusOES(gles11::FRAMEBUFFER_OES);
+        if status != gles11::FRAMEBUFFER_COMPLETE_OES {
+            log_once_fmt!(
+                "Application framebuffer {} is incomplete ({:#x}); using a temporary presentation framebuffer.",
+                old_framebuffer,
+                status,
+            );
+            uses_temporary_framebuffer = true;
+        }
+    }
+    if uses_temporary_framebuffer {
+        gles.GenFramebuffersOES(1, &mut src_framebuffer);
+        gles.BindFramebufferOES(gles11::FRAMEBUFFER_OES, src_framebuffer);
+        gles.FramebufferRenderbufferOES(
+            gles11::FRAMEBUFFER_OES,
+            gles11::COLOR_ATTACHMENT0_OES,
+            gles11::RENDERBUFFER_OES,
+            renderbuffer,
+        );
+    }
     {
         static SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -1958,7 +1972,11 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
             gles,
             trace_gl_errors,
             &SEEN,
-            "after temporary FBO create+bind+attach",
+            if uses_temporary_framebuffer {
+                "after temporary FBO create+bind+attach"
+            } else {
+                "using application's render FBO directly"
+            },
         );
     }
 
@@ -2007,15 +2025,8 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
     // Diagnostic probe: read a few pixels of the renderbuffer the guest
     // just rendered into, so we can tell apart "renderbuffer is empty /
     // all-black" from a presentation-side bug. The probe reads from the
-    // temporary source FBO used by CopyTexImage2D.
-    //
-    // We sample several frames (the very first frame is often just a
-    // glClear and shows zeros even on healthy drivers — we need to also
-    // see what later "real game" frames look like) and we sample the
-    // image centre as well as the corners (the corners on UI screens
-    // are often legitimately black, while the centre is where the
-    // actual artwork lives, so that's a much better "did anything
-    // render?" signal). Gated on --trace-gl-errors.
+    // application FBO when one was bound, and from the temporary source FBO
+    // only for the fallback path.
     if trace_gl_errors {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static PROBE_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -2205,8 +2216,15 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
 
     // Stop using the source FBO so the present_frame quad below renders
     // to the default framebuffer (the SDL window) instead of the
-    // renderbuffer / our throwaway FBO.
-    gles.DeleteFramebuffersOES(1, &src_framebuffer);
+    // renderbuffer / our throwaway FBO. When the app's FBO was already
+    // bound, explicitly switch to the default framebuffer after the copy;
+    // unlike deleting a temporary FBO, that path does not implicitly change
+    // the binding.
+    if uses_temporary_framebuffer {
+        gles.DeleteFramebuffersOES(1, &src_framebuffer);
+    } else {
+        gles.BindFramebufferOES(gles11::FRAMEBUFFER_OES, 0);
+    }
     {
         static SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -2214,7 +2232,11 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
             gles,
             trace_gl_errors,
             &SEEN,
-            "after DeleteFramebuffersOES (release source FBO)",
+            if uses_temporary_framebuffer {
+                "after DeleteFramebuffersOES (release source FBO)"
+            } else {
+                "after BindFramebufferOES (switch to default FBO)"
+            },
         );
     }
 
