@@ -744,13 +744,13 @@ pub const CLASSES: ClassExports = objc_classes! {
                 if gles.is_translator() {
                     "translator-readback"
                 } else if gles.is_native_es1() {
-                    "native-es1-readback"
+                    "native-es1-direct"
                 } else {
                     "shader-direct"
                 }
             })
         };
-        if matches!(presentation_mode, Some("translator-readback" | "native-es1-readback")) {
+        if matches!(presentation_mode, Some("translator-readback")) {
             log_once_fmt!(
                 "Layer {:?} uses {}; presenting renderbuffer {:?} through resolved RAM readback to preserve tile contents and alpha.",
                 drawable,

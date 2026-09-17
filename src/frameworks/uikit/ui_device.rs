@@ -59,6 +59,12 @@ pub struct State {
     identifier_for_vendor: Option<id>,
 }
 
+impl State {
+    pub fn is_generating_device_orientation_notifications(&self) -> bool {
+        self.generates_device_orientation_notifications
+    }
+}
+
 pub const CONSTANTS: ConstantExports = &[
     (
         "_UIDeviceOrientationDidChangeNotification",

@@ -918,15 +918,17 @@ pub(super) fn UIApplicationMain(
     //   https://developer.apple.com/documentation/uikit/uidevice/1620018-beginGeneratingdeviceorientationn
     {
         let pool: id = msg_class![env; NSAutoreleasePool new];
-        let current_device: id = msg_class![env; UIDevice currentDevice];
         let is_generating: bool =
-            msg![env; current_device isGeneratingDeviceOrientationNotifications];
+            env.framework_state
+                .uikit
+                .ui_device
+                .is_generating_device_orientation_notifications();
         if is_generating {
             log_dbg!(
                 "Posting initial UIDeviceOrientationDidChangeNotification \
                  so apps observing device orientation can finish initializing."
             );
-            let _: () = msg![env; current_device _postOrientationChangeNotification];
+            generate_device_orientation_notification(env);
         }
         let _: () = msg![env; pool drain];
     }

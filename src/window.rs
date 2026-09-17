@@ -3512,6 +3512,12 @@ pub fn show_error_messagebox(window: Option<&Window>, error_message: &str) {
 /// - status: [BatteryState] - the current status of the battery
 ///   (unplugged, charging, full, etc.)
 pub fn get_battery_status() -> (i32, BatteryState) {
+    if env::consts::OS == "android" {
+        log_once!(
+            "Warning: get_battery_status on Android, returning fully charged to avoid SDL crash"
+        );
+        return (100, BatteryState::Full);
+    }
     let mut pct = 0;
     // Unfortunately, Rust-SDL2 does not expose this function yet.
     // iPhoneOS does not measure the battery in seconds remaining,
