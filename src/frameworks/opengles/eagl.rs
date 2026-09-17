@@ -744,13 +744,13 @@ pub const CLASSES: ClassExports = objc_classes! {
                 if gles.is_translator() {
                     "translator-readback"
                 } else if gles.is_native_es1() {
-                    "native-es1-direct"
+                    "native-es1-readback"
                 } else {
                     "shader-direct"
                 }
             })
         };
-        if matches!(presentation_mode, Some("translator-readback")) {
+        if matches!(presentation_mode, Some("translator-readback" | "native-es1-readback")) {
             log_once_fmt!(
                 "Layer {:?} uses {}; presenting renderbuffer {:?} through resolved RAM readback to preserve tile contents and alpha.",
                 drawable,
@@ -1023,40 +1023,19 @@ unsafe fn read_renderbuffer(gles: &mut dyn GLES, mut pixel_buffer: Vec<u8>, over
     let (width, height) = get_renderbuffer_size(gles);
     let width_u32: u32 = width.try_into().unwrap();
     let height_u32: u32 = height.try_into().unwrap();
-
-    // To avoid confusing the guest app, we need to be able to undo any
-    // state changes we make.
     let old_framebuffer: GLuint = get_int(gles, gles11::FRAMEBUFFER_BINDING_OES) as _;
-
+    let use_bound_framebuffer = old_framebuffer != 0;
     let mut src_framebuffer: GLuint = 0;
-    gles.GenFramebuffersOES(1, &mut src_framebuffer);
-    gles.BindFramebufferOES(gles11::FRAMEBUFFER_OES, src_framebuffer);
-    gles.FramebufferRenderbufferOES(
-        gles11::FRAMEBUFFER_OES,
-        gles11::COLOR_ATTACHMENT0_OES,
-        gles11::RENDERBUFFER_OES,
-        renderbuffer,
-    );
-    let use_bound_framebuffer = false;
-    let framebuffer_status = gles.CheckFramebufferStatusOES(gles11::FRAMEBUFFER_OES);
-    if framebuffer_status != gles11::FRAMEBUFFER_COMPLETE_OES {
-        log_once_fmt!(
-            "EAGL readback source framebuffer {} is incomplete ({:#x}); frame may be black.",
-            if use_bound_framebuffer {
-                old_framebuffer
-            } else {
-                src_framebuffer
-            },
-            framebuffer_status,
+    if !use_bound_framebuffer {
+        gles.GenFramebuffersOES(1, &mut src_framebuffer);
+        gles.BindFramebufferOES(gles11::FRAMEBUFFER_OES, src_framebuffer);
+        gles.FramebufferRenderbufferOES(
+            gles11::FRAMEBUFFER_OES,
+            gles11::COLOR_ATTACHMENT0_OES,
+            gles11::RENDERBUFFER_OES,
+            renderbuffer,
         );
     }
-
-    // On tile-based GPUs (Mali, Adreno, PowerVR) the per-tile color buffer
-    // isn't guaranteed to be resolved to the renderbuffer's main memory
-    // until the driver decides to flush. glReadPixels is supposed to imply
-    // a flush, but some drivers don't kick off the resolve aggressively
-    // enough and we end up reading uninitialized (black) pixels. Force the
-    // tile resolve here so the slow-path composite gets the actual frame.
     gles.Finish();
 
     // Read the pixels
