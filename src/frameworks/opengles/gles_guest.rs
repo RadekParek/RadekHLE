@@ -155,26 +155,102 @@ fn log_gl_call(
 fn log_gpu_state(gles: &mut dyn GLES, reason: &str) {
     let mut active_texture = 0;
     let mut bound_texture_2d = 0;
-    let mut current_program = 0;
+    let mut framebuffer = 0;
+    let mut renderbuffer = 0;
+    let mut array_buffer = 0;
+    let mut element_array_buffer = 0;
     let mut viewport = [0; 4];
+    let mut scissor = [0; 4];
+    let mut current_program = None;
+    let depth_test = unsafe { gles.IsEnabled(gles11::DEPTH_TEST) != 0 };
+    let blend = unsafe { gles.IsEnabled(gles11::BLEND) != 0 };
+    let scissor_test = unsafe { gles.IsEnabled(gles11::SCISSOR_TEST) != 0 };
     unsafe {
         gles.GetIntegerv(gles11::ACTIVE_TEXTURE, &mut active_texture);
         gles.GetIntegerv(gles11::TEXTURE_BINDING_2D, &mut bound_texture_2d);
-        gles.GetIntegerv(0x8B8D, &mut current_program);
+        gles.GetIntegerv(gles11::FRAMEBUFFER_BINDING_OES, &mut framebuffer);
+        gles.GetIntegerv(gles11::RENDERBUFFER_BINDING_OES, &mut renderbuffer);
+        gles.GetIntegerv(gles11::ARRAY_BUFFER_BINDING, &mut array_buffer);
+        gles.GetIntegerv(gles11::ELEMENT_ARRAY_BUFFER_BINDING, &mut element_array_buffer);
         gles.GetIntegerv(gles11::VIEWPORT, viewport.as_mut_ptr());
+        gles.GetIntegerv(gles11::SCISSOR_BOX, scissor.as_mut_ptr());
+        if gles.is_es2() {
+            let mut value = 0;
+            gles.GetIntegerv(0x8B8D, &mut value);
+            current_program = Some(value);
+        }
     }
     log!(
-        "[GLES GPU STATE] reason={} active_texture=0x{:x} ({}) bound_texture_2d={} current_program={} viewport=[{}, {}, {}, {}]",
+        "[GLES GPU STATE] reason={} backend={} active_texture=0x{:x} ({}) bound_texture_2d={} framebuffer={} renderbuffer={} array_buffer={} element_array_buffer={} current_program={} viewport=[{}, {}, {}, {}] scissor=[{}, {}, {}, {}] enables={{depth:{}, blend:{}, scissor:{}}}",
         reason,
+        gles_backend_name(gles),
         active_texture,
         gl_enum_name(active_texture as GLenum),
         bound_texture_2d,
-        current_program,
+        framebuffer,
+        renderbuffer,
+        array_buffer,
+        element_array_buffer,
+        current_program.map_or_else(|| "n/a".to_string(), |value| value.to_string()),
         viewport[0],
         viewport[1],
         viewport[2],
-        viewport[3]
+        viewport[3],
+        scissor[0],
+        scissor[1],
+        scissor[2],
+        scissor[3],
+        depth_test,
+        blend,
+        scissor_test,
     );
+    let mut diagnostic_error = unsafe { gles.GetError() };
+    while diagnostic_error != gles11::NO_ERROR {
+        log!(
+            "[GLES GPU STATE] diagnostic query produced {} ({:#x}); drained without attributing it to the guest call",
+            gl_error_name(diagnostic_error),
+            diagnostic_error
+        );
+        diagnostic_error = unsafe { gles.GetError() };
+    }
+}
+
+fn gles_backend_name(gles: &dyn GLES) -> &'static str {
+    if gles.is_translator() {
+        if gles.is_es2() {
+            "gles1-on-gles2"
+        } else {
+            "gles1-on-gles3"
+        }
+    } else if gles.is_native_es1() {
+        "gles1-native"
+    } else if gles.is_es2() {
+        "gles2"
+    } else {
+        "other"
+    }
+}
+
+fn log_gl_trace(
+    call_id: u64,
+    function_name: Option<&String>,
+    caller: &'static std::panic::Location<'static>,
+    gles: &mut dyn GLES,
+    error: GLenum,
+    no_skip: bool,
+) {
+    log!(
+        "[GLES TRACE] call_id={} function={} wrapper={}:{} backend={} result=0x{:04x} ({}) dispatch={}",
+        call_id,
+        function_name.map_or("unknown guest wrapper", String::as_str),
+        caller.file(),
+        caller.line(),
+        gles_backend_name(gles),
+        error,
+        gl_error_name(error),
+        if no_skip { "no-skip" } else { "normal" },
+    );
+    log_gpu_state(gles, "trace");
 }
 
 fn trace_gl_error(
@@ -215,7 +291,6 @@ fn trace_gl_error(
             },
             driver
         );
-        log_gpu_state(gles, "after-error");
         error = unsafe { gles.GetError() };
         if error == gles11::NO_ERROR {
             break;
@@ -259,7 +334,25 @@ where
     };
     let call_id = crate::gles::next_gl_call_id();
     let res = f(gles.as_mut(), &mut env.mem);
-    if crate::gles::verbose_logging_enabled() {
+    let err = unsafe { gles.GetError() };
+    trace_gl_error(
+        trace,
+        call_id,
+        err,
+        env.active_host_function.as_ref(),
+        caller,
+        gles.as_mut(),
+    );
+    if trace {
+        log_gl_trace(
+            call_id,
+            env.active_host_function.as_ref(),
+            caller,
+            gles.as_mut(),
+            err,
+            false,
+        );
+    } else if crate::gles::verbose_logging_enabled() {
         log!(
             "[GLES VERBOSE] call #{} from {}:{}",
             call_id,
@@ -273,15 +366,6 @@ where
             format!("guest call at {}:{}", caller.file(), caller.line())
         });
     }
-    let err = unsafe { gles.GetError() };
-    trace_gl_error(
-        trace,
-        call_id,
-        err,
-        env.active_host_function.as_ref(),
-        caller,
-        gles.as_mut(),
-    );
     #[allow(clippy::let_and_return)]
     res
 }
@@ -312,15 +396,6 @@ where
     let call_id = crate::gles::next_gl_call_id();
     let res = f(gles.as_mut(), &mut env.mem);
     let err = unsafe { gles.GetError() };
-    if crate::gles::verbose_logging_enabled() {
-        log!(
-            "[GLES VERBOSE] no-skip call #{} from {}:{}",
-            call_id,
-            caller.file(),
-            caller.line()
-        );
-        log_gpu_state(gles.as_mut(), "after-call");
-    }
     trace_gl_error(
         trace,
         call_id,
@@ -329,6 +404,24 @@ where
         caller,
         gles.as_mut(),
     );
+    if trace {
+        log_gl_trace(
+            call_id,
+            env.active_host_function.as_ref(),
+            caller,
+            gles.as_mut(),
+            err,
+            true,
+        );
+    } else if crate::gles::verbose_logging_enabled() {
+        log!(
+            "[GLES VERBOSE] no-skip call #{} from {}:{}",
+            call_id,
+            caller.file(),
+            caller.line()
+        );
+        log_gpu_state(gles.as_mut(), "after-call");
+    }
     #[allow(clippy::let_and_return)]
     res
 }
