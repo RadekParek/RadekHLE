@@ -1182,6 +1182,7 @@ fn app_picker_inner(
     let mut quick_options_arm64_fallback = crate::options::Arm64Fallback::Interpreter;
     let mut quick_options_llvmpipe_fallback = false;
     let mut quick_options_metal_translator = cfg!(target_arch = "aarch64");
+    let mut quick_options_software_rendering = false;
     let mut quick_options_custom_driver: Option<PathBuf> = None;
     let mut quick_options_anisotropic_filtering = 1u8;
     let mut quick_options_texture_upscaler = 1u8;
@@ -1986,6 +1987,8 @@ fn app_picker_inner(
             quick_options_fullscreen_stretched = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.llvmpipe_fallback) {
             quick_options_llvmpipe_fallback = enabled;
+        } else if let Some(enabled) = std::mem::take(&mut host_obj.software_rendering) {
+            quick_options_software_rendering = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.metal_translator) {
             quick_options_metal_translator = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.core_audio) {
@@ -2282,6 +2285,14 @@ fn app_picker_inner(
         .to_string(),
     );
     option_args.push(format!("--anti-aliasing={quick_options_anti_aliasing}"));
+    option_args.push(
+        if quick_options_software_rendering {
+            "--software-rendering"
+        } else {
+            "--disable-software-rendering"
+        }
+        .to_string(),
+    );
     if quick_options_graphics_api != crate::options::GraphicsApi::Default {
         let value = match quick_options_graphics_api {
             crate::options::GraphicsApi::Translator => "translator",
