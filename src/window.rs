@@ -1223,8 +1223,6 @@ pub struct Window {
     frame_generation_state: FrameGenerationState,
     wgpu_presentation: Option<WgpuPresentation>,
     internal_gl_ins: Option<Box<dyn GLESContext>>,
-    /// Keep a real host GL context alive while the built-in CPU renderer presents pixels.
-    host_compatibility_gl_ins: Option<Box<dyn GLESContext>>,
     splash_image: Option<Image>,
     /// Whether the selected image already targets the startup orientation.
     splash_image_is_orientation_specific: bool,
@@ -1422,13 +1420,17 @@ impl Window {
             let screen_size = video_ctx.display_bounds(0).unwrap().size();
             let (width, height) = rotate_fullscreen_size(device_orientation, screen_size);
             let mut builder = video_ctx.window(title, width, height);
-            builder.opengl();
+            if !software_presentation {
+                builder.opengl();
+            }
             let window = builder.fullscreen().build().unwrap();
             window
         } else if fullscreen {
             let (width, height) = video_ctx.display_bounds(0).unwrap().size();
             let mut builder = video_ctx.window(title, width, height);
-            builder.opengl();
+            if !software_presentation {
+                builder.opengl();
+            }
             let window = builder.fullscreen_desktop().build().unwrap();
             window
         } else {
@@ -1438,7 +1440,9 @@ impl Window {
                 scale_hack,
             );
             let mut builder = video_ctx.window(title, width, height);
-            builder.opengl();
+            if !software_presentation {
+                builder.opengl();
+            }
             let window = builder.position_centered().resizable().build().unwrap();
             window
         };
@@ -1526,7 +1530,6 @@ impl Window {
             frame_generation_state: FrameGenerationState::default(),
             wgpu_presentation: None,
             internal_gl_ins: None,
-            host_compatibility_gl_ins: None,
             splash_image,
             splash_image_is_orientation_specific,
             device_family,
@@ -1593,19 +1596,10 @@ impl Window {
             }
         }
 
-        if software_presentation && cpu_only_requested && !native_cpu_renderer {
-            window.host_compatibility_gl_ins =
-                Some(create_host_gles1_ctx_no_parent_stack(&mut window));
-        }
-
-        let mut gl_ins = if software_presentation && cpu_only_requested {
-            if native_cpu_renderer {
-                create_host_gles1_ctx_no_parent_stack(&mut window)
-            } else {
-                crate::gles::GLESImplementation::Software
-                    .construct(&mut window)
-                    .expect("Could not create software GLES context")
-            }
+        let mut gl_ins = if software_presentation {
+            crate::gles::GLESImplementation::Software
+                .construct(&mut window)
+                .expect("Could not create software GLES context")
         } else {
             match options.graphics_api {
                 crate::options::GraphicsApi::Translator => {
@@ -1652,17 +1646,19 @@ impl Window {
             }
             log!("Driver info: {}", driver_description);
         }
-        if options.vsync {
+        if !software_presentation && options.vsync {
             if let Err(error) = window.video_ctx.gl_set_swap_interval(SwapInterval::VSync) {
                 log!("Vsync requested but SDL could not enable the host swap interval: {error}");
             } else {
                 log!("Vsync enabled: host presentation is synchronized to the display");
             }
-        } else if let Err(error) = window
-            .video_ctx
-            .gl_set_swap_interval(SwapInterval::Immediate)
-        {
-            log_dbg!("Immediate swap interval unavailable: {error}");
+        } else if !software_presentation {
+            let result = window
+                .video_ctx
+                .gl_set_swap_interval(SwapInterval::Immediate);
+            if let Err(error) = result {
+                log_dbg!("Immediate swap interval unavailable: {error}");
+            }
         }
         window.internal_gl_ins = Some(gl_ins);
 
@@ -2948,6 +2944,10 @@ impl Window {
                 return;
             }
         };
+        if let Err(error) = target.fill_rect(None, Color::BLACK) {
+            log!("Could not clear software presentation target: {}", error);
+            return;
+        }
         if let Err(error) = source.blit_scaled(
             None,
             &mut *target,

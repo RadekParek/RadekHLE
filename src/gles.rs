@@ -852,8 +852,10 @@ pub fn create_gles1_ctx_no_parent_stack(
 ) -> Box<dyn GLESContext> {
     assert!(window.on_main_stack());
     log!("Creating an OpenGL ES 1.1 context:");
-    if options.software_rendering && !llvmpipe_fallback_available() {
-        log!("Using the built-in CPU-only software OpenGL ES 1.1 rasterizer because no native LLVMPipe driver is available");
+    if options.software_rendering
+        && (window.is_software_presentation() || !llvmpipe_fallback_available())
+    {
+        log!("Using the built-in CPU-only software OpenGL ES 1.1 rasterizer");
         return Box::new(
             SoftwareGLESContext::new(window).expect("Could not create software GLES context"),
         );
