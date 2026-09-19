@@ -888,6 +888,7 @@ pub fn run(
             None,
             None,
             &window_options,
+            None,
         )))
     };
     echo!(

@@ -56,6 +56,7 @@ mod objc;
 mod options;
 mod paths;
 mod perf;
+mod perf_hints;
 mod stack;
 mod trainer;
 mod trainer_ui;
