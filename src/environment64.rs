@@ -1141,6 +1141,23 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                 continue;
             }
             -2 => {
+                if runtime_state.bundle_identifier.contains("minecraft")
+                    && context.regs[0] == 0
+                    && context.pc != context.regs[30]
+                {
+                    log_once_fmt!(
+                        "ARM64 Minecraft compatibility: skipped null RakNet receiver at pc={:#x}, returning to caller={:#x} [repeated null receivers suppressed]",
+                        context.pc,
+                        context.regs[30],
+                    );
+                    context.regs[0] = 0;
+                    context.pc = context.regs[30];
+                    cpu.load_context(&context);
+                    cpu.clear_halt(A64_HALT_USER_DEFINED1);
+                    cpu.clear_halt(A64_HALT_USER_DEFINED2);
+                    cpu.clear_halt(A64_HALT_USER_DEFINED3);
+                    continue;
+                }
                 failure_diagnostics(
                     &memory,
                     &context,
