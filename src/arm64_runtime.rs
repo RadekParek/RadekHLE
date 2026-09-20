@@ -1,9 +1,11 @@
 use crate::a64_abi::A64Abi;
 use crate::dyld::{search_host_dylibs, HostConstant};
+use crate::fs::{Fs, FsError, GuestFile, GuestOpenOptions, GuestPath};
 use crate::mach_o64::ObjCClass64;
 use crate::mem64::{Mem64, Permissions};
 use crate::window::{DeviceFamily, DeviceOrientation, Window};
 use std::collections::{HashMap, HashSet};
+use std::io::{Read, Seek, SeekFrom, Write};
 use touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context;
 
 #[path = "environment64/arm64_stubs.rs"]
@@ -70,6 +72,14 @@ impl A64GraphicsBackend {
 pub struct LoadedImage {
     pub name: String,
     pub exports: HashMap<String, u64>,
+}
+
+#[derive(Debug)]
+struct Arm64FileStream {
+    file: GuestFile,
+    fd: i32,
+    eof: bool,
+    error: bool,
 }
 
 #[derive(Debug)]
@@ -144,6 +154,8 @@ pub struct RuntimeState {
     pub pthread_once_controls: HashSet<u64>,
     pub pthread_key_values: HashMap<u64, u64>,
     pub signal_handlers: HashMap<i32, u64>,
+    stdio_streams: HashMap<u64, Arm64FileStream>,
+    pub next_stdio_fd: i32,
     pub render_diagnostics: A64RenderDiagnostics,
 }
 
@@ -276,6 +288,8 @@ impl RuntimeState {
             pthread_once_controls: HashSet::new(),
             pthread_key_values: HashMap::new(),
             signal_handlers: HashMap::new(),
+            stdio_streams: HashMap::new(),
+            next_stdio_fd: 3,
             render_diagnostics: A64RenderDiagnostics::default(),
         }
     }
@@ -399,8 +413,26 @@ impl RuntimeState {
 }
 
 fn name(symbol: &str) -> &str {
-    let symbol = symbol.trim_start_matches('_');
-    symbol.strip_prefix('_').unwrap_or(symbol)
+    let symbol = match symbol {
+        "___assert_rtn" => "__assert_rtn",
+        "___stack_chk_fail" => "stack_chk_fail",
+        "___stack_chk_fail_local" => "stack_chk_fail_local",
+        "___stack_chk_guard" => "stack_chk_guard",
+        "___cxa_atexit" => "cxa_atexit",
+        "___tolower" => "tolower",
+        _ => symbol.strip_prefix('_').unwrap_or(symbol),
+    };
+    if symbol.trim_start_matches('_').starts_with('Z') {
+        symbol.trim_start_matches('_')
+    } else if let Some(light_name) = symbol.strip_prefix('_') {
+        if LIGHT_HOST_CALLS.contains(&light_name) {
+            light_name
+        } else {
+            symbol
+        }
+    } else {
+        symbol
+    }
 }
 const LIGHT_HOST_CALLS: &[&str] = &[
     "fabs",
@@ -556,7 +588,9 @@ pub fn can_dispatch(symbol: &str) -> bool {
     }
     match symbol {
         "ARM64_nib_awake_return" | "ARM64_guest_method_return" | "ARM64_application_return" | "ARM64_application_launch_return" | "ARM64_application_active_return" => true,
-        "access" | "mkdir" | "signal" => true,
+        "access" | "mkdir" | "signal" | "fopen" | "fdopen" | "freopen" | "fclose"
+        | "fgets" | "fread" | "fwrite" | "feof" | "ferror" | "fflush" | "fseek" | "ftell"
+        | "rewind" | "fileno" | "clearerr" => true,
         "malloc" | "calloc" | "valloc" | "posix_memalign" | "free"
         | "malloc_zone_free" | "realloc" | "malloc_zone_realloc" | "memcpy"
         | "memmove" | "memcpy_chk" | "memmove_chk" | "memset" | "bzero"
@@ -575,6 +609,8 @@ pub fn can_dispatch(symbol: &str) -> bool {
         | "sel_registerName" | "sel_getUid" | "NSSelectorFromString"
         | "NSStringFromClass" | "NSClassFromString" | "NSStringFromSelector"
         | "NSSearchPathForDirectoriesInDomains" | "time" | "srand" | "rand"
+        | "mach_host_self" | "host_page_size" | "host_statistics" | "host_statistics64"
+        | "tolower" | "__assert_rtn"
         | "objc_autoreleasePoolPush" | "objc_autoreleasePoolPop"
         | "objc_exception_throw" | "objc_begin_catch" | "objc_end_catch"
         | "cxa_guard_acquire" | "cxa_guard_release" | "cxa_guard_abort"
@@ -760,13 +796,228 @@ fn c_string_eq(mem: &Mem64, address: u64, value: &[u8]) -> bool {
     c_string(mem, address).as_deref() == Some(value)
 }
 
+fn arm64_stdio_mode(mem: &Mem64, address: u64) -> Option<(bool, bool, bool, bool)> {
+    let mode = c_string(mem, address)?;
+    let (&first, flags) = mode.split_first()?;
+    let plus = flags.contains(&b'+');
+    match first {
+        b'r' => Some((true, plus, false, false)),
+        b'w' => Some((plus, true, false, true)),
+        b'a' => Some((plus, true, true, true)),
+        _ => None,
+    }
+}
+
+fn arm64_open_guest_file(
+    mem: &Mem64,
+    fs: &mut Fs,
+    filename: u64,
+    mode: u64,
+) -> Result<Option<GuestFile>, String> {
+    let path = arm64_cstring(mem, filename)?
+        .to_string_lossy()
+        .into_owned();
+    let Some((read, write, append, create)) = arm64_stdio_mode(mem, mode) else {
+        return Ok(None);
+    };
+    let requested_path = GuestPath::new(&path);
+    let resolved_path = fs
+        .resolve_existing_path(requested_path)
+        .unwrap_or_else(|| requested_path.to_owned());
+    let file = if write || append || create {
+        let mut options = GuestOpenOptions::new();
+        if read {
+            options.read();
+        }
+        if write {
+            options.write();
+        }
+        if append {
+            options.append();
+        }
+        if create {
+            options.create();
+        }
+        if write && !append {
+            options.truncate();
+        }
+        fs.open_with_options(&resolved_path, options)
+    } else {
+        fs.open(&resolved_path)
+    };
+    let opened = file.ok();
+    log_once_fmt!(
+        "ARM64 fopen: filename={filename:#x} mode_ptr={mode:#x} requested={} resolved={} mode={:?} success={} [repeated paths suppressed]",
+        path,
+        resolved_path.as_str(),
+        (read, write, append, create),
+        opened.is_some(),
+    );
+    Ok(opened)
+}
+
+fn arm64_stdio_open(
+    mem: &mut Mem64,
+    state: &mut RuntimeState,
+    fs: &mut Fs,
+    filename: u64,
+    mode: u64,
+) -> Result<u64, String> {
+    let requested_path = c_string(mem, filename)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_else(|| "<invalid>".to_owned());
+    let requested_mode = c_string(mem, mode)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_else(|| "<invalid>".to_owned());
+    let Some(file) = arm64_open_guest_file(mem, fs, filename, mode)? else {
+        log_once_fmt!(
+            "ARM64 fopen failed: path={:?} mode={:?} [each path/mode pair logged once]",
+            requested_path,
+            requested_mode,
+        );
+        return Ok(0);
+    };
+    log_once_fmt!(
+        "ARM64 fopen succeeded: path={:?} mode={:?} [each path/mode pair logged once]",
+        requested_path,
+        requested_mode,
+    );
+    let stream = mem.alloc_zeroed(16).map_err(str::to_owned)?;
+    let fd = state.next_stdio_fd;
+    state.next_stdio_fd = state.next_stdio_fd.saturating_add(1);
+    mem.write_u64(stream, fd as u64).map_err(str::to_owned)?;
+    state.stdio_streams.insert(
+        stream,
+        Arm64FileStream {
+            file,
+            fd,
+            eof: false,
+            error: false,
+        },
+    );
+    Ok(stream)
+}
+
+fn arm64_stdio_read(
+    mem: &mut Mem64,
+    state: &mut RuntimeState,
+    stream: u64,
+    destination: u64,
+    length: u64,
+) -> Result<u64, String> {
+    let Some(file) = state.stdio_streams.get_mut(&stream) else {
+        return Ok(0);
+    };
+    let mut remaining = length;
+    let mut address = destination;
+    let mut total = 0_u64;
+    while remaining != 0 {
+        let chunk_length = remaining.min(64 * 1024) as usize;
+        let mut buffer = vec![0_u8; chunk_length];
+        let count = match file.file.read(&mut buffer) {
+            Ok(count) => count,
+            Err(_) => {
+                file.error = true;
+                break;
+            }
+        };
+        if count == 0 {
+            file.eof = true;
+            break;
+        }
+        let count = u64::try_from(count).map_err(|_| "ARM64 stdio read count overflow")?;
+        mem.write_bytes(address, &buffer[..count as usize])
+            .map_err(str::to_owned)?;
+        total = total.saturating_add(count);
+        remaining -= count;
+        address = address
+            .checked_add(count)
+            .ok_or("ARM64 stdio destination pointer overflow")?;
+    }
+    Ok(total)
+}
+
+fn arm64_stdio_fgets(
+    mem: &mut Mem64,
+    state: &mut RuntimeState,
+    destination: u64,
+    length: u64,
+    stream: u64,
+) -> Result<u64, String> {
+    if length == 0 {
+        return Ok(0);
+    }
+    let Some(file) = state.stdio_streams.get_mut(&stream) else {
+        return Ok(0);
+    };
+    let mut count = 0_u64;
+    while count + 1 < length {
+        let mut byte = [0_u8; 1];
+        match file.file.read(&mut byte) {
+            Ok(0) => {
+                file.eof = true;
+                break;
+            }
+            Ok(_) => {
+                let address = destination
+                    .checked_add(count)
+                    .ok_or("ARM64 fgets destination pointer overflow")?;
+                mem.write_u8(address, byte[0]).map_err(str::to_owned)?;
+                count += 1;
+                if byte[0] == b'\n' {
+                    break;
+                }
+            }
+            Err(_) => {
+                file.error = true;
+                break;
+            }
+        }
+    }
+    let terminator = destination
+        .checked_add(count)
+        .ok_or("ARM64 fgets terminator pointer overflow")?;
+    mem.write_u8(terminator, 0).map_err(str::to_owned)?;
+    if count == 0 && file.eof {
+        Ok(0)
+    } else {
+        Ok(destination)
+    }
+}
+
+fn arm64_stdio_write(
+    mem: &Mem64,
+    state: &mut RuntimeState,
+    buffer: u64,
+    item_size: u64,
+    item_count: u64,
+    stream: u64,
+) -> Result<u64, String> {
+    if item_size == 0 || item_count == 0 {
+        return Ok(0);
+    }
+    let total = item_size
+        .checked_mul(item_count)
+        .ok_or("ARM64 fwrite size overflows")?;
+    let bytes = mem.read_bytes(buffer, total).map_err(str::to_owned)?;
+    let Some(file) = state.stdio_streams.get_mut(&stream) else {
+        return Ok(0);
+    };
+    match file.file.write_all(&bytes) {
+        Ok(()) => Ok(item_count),
+        Err(_) => {
+            file.error = true;
+            Ok(0)
+        }
+    }
+}
+
 fn arm64_home_directory(bundle_path: &str) -> String {
     bundle_path.rsplit_once('/').map_or_else(
         || "/var/mobile/Applications/00000000-0000-0000-0000-000000000000".to_owned(),
         |(parent, _)| parent.to_owned(),
     )
 }
-
 fn arm64_search_path(state: &RuntimeState, directory: u64, domain_mask: u64) -> Option<String> {
     let home = arm64_home_directory(&state.bundle_path);
     if domain_mask & 0x1 == 0 {
@@ -785,23 +1036,27 @@ fn arm64_search_path(state: &RuntimeState, directory: u64, domain_mask: u64) -> 
     }
 }
 fn cxx_string_bytes(mem: &Mem64, object: u64) -> Option<Vec<u8>> {
-    let short_size = mem.read_u8(object + 23).ok()?;
-    if short_size & 0x80 == 0 {
-        let length = u64::from(short_size);
-        return mem.read_bytes(object, length).ok();
+    let tag = mem.read_u8(object + 23).ok()?;
+    if tag & 0x80 != 0 {
+        let pointer = mem.read_u64(object).ok()?;
+        let length = mem.read_u64(object + 8).ok()?;
+        let capacity = mem.read_u64(object + 16).ok()? & !(1_u64 << 63);
+        if pointer == 0 || length > capacity || length > MAX_CSTRING {
+            return None;
+        }
+        mem.read_bytes(pointer, length).ok()
+    } else {
+        let length = u64::from(tag);
+        if length > 22 {
+            return None;
+        }
+        mem.read_bytes(object, length).ok()
     }
-    let pointer = mem.read_u64(object).ok()?;
-    let length = mem.read_u64(object + 8).ok()?;
-    let capacity = mem.read_u64(object + 16).ok()? & !(1_u64 << 63);
-    if pointer == 0 || length > capacity || length > MAX_CSTRING {
-        return None;
-    }
-    mem.read_bytes(pointer, length).ok()
 }
 
 fn cxx_string_is_long(mem: &Mem64, object: u64) -> bool {
     mem.read_u8(object + 23)
-        .map(|value| value & 0x80 != 0)
+        .map(|tag| tag & 0x80 != 0)
         .unwrap_or(false)
 }
 
@@ -810,7 +1065,14 @@ fn cxx_string_write(mem: &mut Mem64, object: u64, bytes: &[u8]) -> Result<(), St
         return Err("ARM64 C++ string is too large".to_owned());
     }
     let old_pointer = if cxx_string_is_long(mem, object) {
-        mem.read_u64(object).unwrap_or(0)
+        let pointer = mem.read_u64(object).unwrap_or(0);
+        let length = mem.read_u64(object + 8).unwrap_or(0);
+        let capacity = mem.read_u64(object + 16).unwrap_or(0) & !(1_u64 << 63);
+        if pointer != 0 && length <= capacity && mem.allocation_size(pointer).is_some() {
+            pointer
+        } else {
+            0
+        }
     } else {
         0
     };
@@ -820,7 +1082,7 @@ fn cxx_string_write(mem: &mut Mem64, object: u64, bytes: &[u8]) -> Result<(), St
         mem.write_bytes(object, &short).map_err(str::to_owned)?;
         mem.write_u8(object + 23, bytes.len() as u8)
             .map_err(str::to_owned)?;
-        if old_pointer != 0 && mem.allocation_size(old_pointer).is_some() {
+        if old_pointer != 0 {
             mem.free(old_pointer);
         }
         return Ok(());
@@ -837,7 +1099,41 @@ fn cxx_string_write(mem: &mut Mem64, object: u64, bytes: &[u8]) -> Result<(), St
         .map_err(str::to_owned)?;
     mem.write_u64(object + 16, capacity as u64 | (1_u64 << 63))
         .map_err(str::to_owned)?;
-    if old_pointer != 0 && old_pointer != pointer && mem.allocation_size(old_pointer).is_some() {
+    if old_pointer != 0 && old_pointer != pointer {
+        mem.free(old_pointer);
+    }
+    Ok(())
+}
+fn cxx_string_reserve(mem: &mut Mem64, object: u64, requested: u64) -> Result<(), String> {
+    if requested <= 22 {
+        return Ok(());
+    }
+    if requested > MAX_CSTRING {
+        return Err("ARM64 C++ string reserve is too large".to_owned());
+    }
+    let current = cxx_string_bytes(mem, object).unwrap_or_default();
+    if cxx_string_is_long(mem, object) {
+        let capacity = mem.read_u64(object + 16).unwrap_or(0) & !(1_u64 << 63);
+        if capacity >= requested && mem.allocation_size(mem.read_u64(object).unwrap_or(0)).is_some() {
+            return Ok(());
+        }
+    }
+    let capacity = (requested as usize).next_power_of_two().max(current.len().max(23));
+    let pointer = mem
+        .alloc_zeroed(capacity as u64 + 1)
+        .map_err(str::to_owned)?;
+    mem.write_bytes(pointer, &current).map_err(str::to_owned)?;
+    let old_pointer = if cxx_string_is_long(mem, object) {
+        mem.read_u64(object).unwrap_or(0)
+    } else {
+        0
+    };
+    mem.write_u64(object, pointer).map_err(str::to_owned)?;
+    mem.write_u64(object + 8, current.len() as u64)
+        .map_err(str::to_owned)?;
+    mem.write_u64(object + 16, capacity as u64 | (1_u64 << 63))
+        .map_err(str::to_owned)?;
+    if old_pointer != 0 && old_pointer != pointer {
         mem.free(old_pointer);
     }
     Ok(())
@@ -1039,15 +1335,44 @@ fn arm64_prng(state: u32) -> u32 {
     state
 }
 
-fn objc_text(mem: &Mem64, address: u64) -> Option<Vec<u8>> {
-    if matches!(
-        objc_kind(mem, address),
-        Some(kind) if matches!(kind, A64_KIND_STRING | A64_KIND_MUTABLE_STRING)
-    ) {
-        c_string(mem, objc_field(mem, address, 56))
-    } else {
-        c_string(mem, address)
+fn constant_objc_string_text(mem: &Mem64, address: u64) -> Option<Vec<u8>> {
+    let pointer = mem.read_u64(address.checked_add(16)?).ok()?;
+    let length = mem.read_u64(address.checked_add(24)?).ok()?;
+    if pointer == 0 || length > MAX_CSTRING {
+        return None;
     }
+    let bytes = mem.read_bytes(pointer, length).ok()?;
+    if bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
+        return None;
+    }
+    Some(bytes)
+}
+
+fn objc_string_storage_text(mem: &Mem64, address: u64) -> Option<Vec<u8>> {
+    let pointer = mem.read_u64(address.checked_add(56)?).ok()?;
+    let length = mem.read_u64(address.checked_add(64)?).ok()?;
+    if pointer == 0 || length > MAX_CSTRING {
+        return None;
+    }
+    let bytes = mem.read_bytes(pointer, length).ok()?;
+    if bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
+        return None;
+    }
+    Some(bytes)
+}
+
+fn objc_text(mem: &Mem64, address: u64) -> Option<Vec<u8>> {
+    constant_objc_string_text(mem, address)
+        .or_else(|| objc_string_storage_text(mem, address))
+        .or_else(|| {
+            matches!(
+                objc_kind(mem, address),
+                Some(kind) if matches!(kind, A64_KIND_STRING | A64_KIND_MUTABLE_STRING)
+            )
+            .then(|| c_string(mem, objc_field(mem, address, 56)))
+            .flatten()
+        })
+        .or_else(|| c_string(mem, address))
 }
 
 fn objc_text_eq(mem: &Mem64, address: u64, value: &[u8]) -> bool {
@@ -1260,12 +1585,21 @@ fn objc_substring(
 }
 
 fn objc_kind(mem: &Mem64, address: u64) -> Option<u64> {
-    if address == 0 || mem.allocation_size(address).is_none() {
+    if address == 0 {
         return None;
+    }
+    if constant_objc_string_text(mem, address).is_some() {
+        return Some(A64_KIND_STRING);
     }
     let first_word = mem.read_u64(address).ok()?;
     if (1..=A64_KIND_MUTABLE_DICTIONARY).contains(&first_word) {
         return Some(first_word);
+    }
+    if mem.allocation_size(address).is_none() {
+        return None;
+    }
+    if objc_string_storage_text(mem, address).is_some() {
+        return Some(A64_KIND_STRING);
     }
     let class = if first_word != 0 && mem.allocation_size(first_word).is_some() {
         first_word
@@ -1647,6 +1981,7 @@ fn objc_send(
     mem: &mut Mem64,
     context: &mut touchHLE_DynarmicA64Context,
     state: &mut RuntimeState,
+    fs: Option<&Fs>,
 ) -> Result<(), String> {
     let receiver = context.regs[0];
     let selector_bytes = c_string(mem, context.regs[1]).unwrap_or_default();
@@ -1673,6 +2008,19 @@ fn objc_send(
         0
     };
     let class_name = objc_field(mem, receiver_class, 56);
+    let ui_device_receiver = kind == A64_KIND_UI_DEVICE
+        || receiver_class_name(mem, receiver, kind).as_deref() == Some("UIDevice");
+
+    if selector == "userInterfaceIdiom"
+        && state.bundle_identifier == "com.mojang.minecraftpe"
+    {
+        let idiom = u64::from(state.device_family.is_ipad());
+        log_once_fmt!(
+            "ARM64 Minecraft compatibility: userInterfaceIdiom receiver={receiver:#x} kind={kind} idiom={idiom}; returning directly [repeated messages suppressed]"
+        );
+        return_value(context, idiom);
+        return Ok(());
+    }
 
     if selector == "runUIApplicationMainWithArgc:argv:" && receiver == 0 {
         echo!("ARM64 Objective-C bootstrap call used a nil receiver; returning zero and continuing startup");
@@ -1767,6 +2115,25 @@ fn objc_send(
                 | "respondsToSelector:"
                 | "isKindOfClass:"
                 | "hasUnifiedMemory"
+                | "userInterfaceIdiom"
+                | "substringToIndex:"
+                | "substringFromIndex:"
+                | "capitalizedString"
+                | "isEqualToString:"
+                | "isEqual:"
+                | "rangeOfString:options:"
+                | "UTF8String"
+                | "length"
+                | "cStringUsingEncoding:"
+                | "stringWithFormat:"
+                | "stringWithUTF8String:"
+                | "initWithUTF8String:"
+                | "numberWithBool:"
+                | "mainBundle"
+                | "currentDevice"
+                | "mainScreen"
+                | "pathForResource:ofType:"
+                | "dataWithContentsOfFile:"
         )
         && transfer_guest_method(mem, context, state, &selector, class_method)
     {
@@ -2023,6 +2390,7 @@ fn objc_send(
         "objectForKey:" if matches!(kind, A64_KIND_DICTIONARY | A64_KIND_MUTABLE_DICTIONARY) => {
             objc_dictionary_value(mem, receiver, context.regs[2])
         }
+        "objectForKey:" => objc_string(mem, "")?,
         "setObject:forKey:"
             if matches!(kind, A64_KIND_DICTIONARY | A64_KIND_MUTABLE_DICTIONARY) =>
         {
@@ -2070,7 +2438,7 @@ fn objc_send(
                     .ok_or("ARM64 NSArray index address overflows")?;
                 let result = mem.read_u64(address).map_err(str::to_owned)?;
                 log_once_fmt!(
-                    "ARM64 NSArray objectAtIndex trace: receiver={receiver:#x} index={index} count={count} elements={elements:#x} result={result:#x} pc={:#x} lr={:#x} [first in-process access only]",
+                    "ARM64 NSArray objectAtIndex trace: receiver={receiver:#x} kind={kind} index={index} count={count} elements={elements:#x} result={result:#x} pc={:#x} lr={:#x} [first in-process access only]",
                     context.pc,
                     context.regs[30],
                 );
@@ -2093,13 +2461,13 @@ fn objc_send(
         "newFence" | "newEvent" | "newHeapWithDescriptor:" | "newArgumentEncoderWithArguments:" => {
             objc_object(mem, A64_KIND_GENERIC)?
         }
-        "mainBundle" if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSBundle") => {
+        "mainBundle" if kind == A64_KIND_CLASS => {
             objc_bundle(mem, state)?
         }
-        "currentDevice" if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"UIDevice") => {
+        "currentDevice" if kind == A64_KIND_CLASS => {
             objc_ui_device(mem, state.device_family)?
         }
-        "mainScreen" if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"UIScreen") => {
+        "mainScreen" if kind == A64_KIND_CLASS => {
             objc_ui_screen(mem, state.device_family, state.orientation)?
         }
         "bundleIdentifier" if kind == A64_KIND_BUNDLE => objc_field(mem, receiver, 64),
@@ -2107,22 +2475,20 @@ fn objc_send(
         "stringByAppendingString:" if objc_is_string_kind(kind) => {
             objc_string_append(mem, receiver, context.regs[2])?
         }
-        "dataWithContentsOfFile:"
-            if kind == A64_KIND_CLASS
-                && (objc_text_eq(mem, class_name, b"NSData")
-                    || objc_text_eq(mem, class_name, b"NSMutableData")) =>
+        "dataWithContentsOfFile:" if kind == A64_KIND_CLASS =>
         {
             let path = objc_text(mem, context.regs[2]).unwrap_or_default();
             let path = String::from_utf8_lossy(&path);
-            match std::fs::read(path.as_ref()) {
-                Ok(bytes) => objc_data(mem, &bytes)?,
-                Err(_) => objc_data(mem, &[])?,
-            }
+            let bytes = fs
+                .and_then(|filesystem| {
+                    let resolved = filesystem.resolve_existing_path(GuestPath::new(path.as_ref()))?;
+                    filesystem.read(&resolved).ok()
+                })
+                .or_else(|| std::fs::read(path.as_ref()).ok())
+                .unwrap_or_default();
+            objc_data(mem, &bytes)?
         }
-        "stringWithUTF8String:"
-            if kind == A64_KIND_CLASS
-                && (objc_text_eq(mem, class_name, b"NSString")
-                    || objc_text_eq(mem, class_name, b"NSMutableString")) =>
+        "stringWithUTF8String:" if kind == A64_KIND_CLASS =>
         {
             let pointer = context.regs[2];
             if pointer == 0 {
@@ -2133,9 +2499,7 @@ fn objc_send(
                 objc_string(mem, &value)?
             }
         }
-        "initWithUTF8String:" if objc_is_string_kind(kind) => {
-            initialize_arm64_string(mem, receiver, context.regs[2])?
-        }
+        "initWithUTF8String:" => initialize_arm64_string(mem, receiver, context.regs[2])?,
         "compare:options:" if objc_is_string_kind(kind) => {
             let left = objc_text(mem, receiver).unwrap_or_default();
             let right = objc_text(mem, context.regs[2]).unwrap_or_default();
@@ -2177,7 +2541,38 @@ fn objc_send(
                 _ => 0,
             }
         }
-        "pathForResource:ofType:" if kind == A64_KIND_BUNDLE => 0,
+        "pathForResource:ofType:" if kind == A64_KIND_BUNDLE => {
+            let bundle_path = objc_text(mem, objc_field(mem, receiver, 56));
+            let resource_name = objc_text(mem, context.regs[2]);
+            let resource_type = objc_text(mem, context.regs[3]).unwrap_or_default();
+            let path = match (bundle_path, resource_name) {
+                (Some(bundle_path), Some(resource_name)) => {
+                    let bundle_path = String::from_utf8_lossy(&bundle_path);
+                    let resource_name = String::from_utf8_lossy(&resource_name);
+                    let resource_type = String::from_utf8_lossy(&resource_type);
+                    let filename = if resource_type.is_empty() {
+                        resource_name.into_owned()
+                    } else {
+                        format!("{}.{}", resource_name, resource_type)
+                    };
+                    let path = if filename.starts_with('/') {
+                        filename
+                    } else {
+                        format!("{}/{}", bundle_path.trim_end_matches('/'), filename)
+                    };
+                    fs.and_then(|filesystem| {
+                        filesystem
+                            .resolve_existing_path(GuestPath::new(&path))
+                            .map(String::from)
+                    })
+                }
+                _ => None,
+            };
+            match path {
+                Some(path) => objc_string(mem, &path)?,
+                None => 0,
+            }
+        }
         "systemVersion" | "operatingSystemVersionString" => objc_string(
             mem,
             &format!(
@@ -2185,7 +2580,7 @@ fn objc_send(
                 state.ios_version.0, state.ios_version.1, state.ios_version.2
             ),
         )?,
-        "model" | "localizedModel" | "name" if kind == A64_KIND_UI_DEVICE => objc_string(
+        "model" | "localizedModel" | "name" if ui_device_receiver => objc_string(
             mem,
             if state.device_family.is_ipad() {
                 "iPad"
@@ -2193,8 +2588,14 @@ fn objc_send(
                 "iPhone"
             },
         )?,
-        "systemName" if kind == A64_KIND_UI_DEVICE => objc_string(mem, "iPhone OS")?,
-        "userInterfaceIdiom" if kind == A64_KIND_UI_DEVICE => {
+        "systemName" if ui_device_receiver => objc_string(mem, "iPhone OS")?,
+        "userInterfaceIdiom" if !class_method => {
+            if !ui_device_receiver {
+                log_once_fmt!(
+                    "ARM64 UIKit compatibility: treating unknown receiver {receiver:#x} as UIDevice for userInterfaceIdiom; kind={kind} class={:?} [repeated messages suppressed]",
+                    receiver_class_name(mem, receiver, kind),
+                );
+            }
             u64::from(state.device_family.is_ipad())
         }
         "bounds" | "applicationFrame" if kind == A64_KIND_UI_SCREEN => {
@@ -2453,10 +2854,7 @@ fn objc_send(
             let hash = arm64_prng(state.arm64_rng_state);
             u64::from(hash)
         }
-        "stringWithFormat:"
-            if kind == A64_KIND_CLASS
-                && (objc_text_eq(mem, class_name, b"NSString")
-                    || objc_text_eq(mem, class_name, b"NSMutableString")) =>
+        "stringWithFormat:" if kind == A64_KIND_CLASS =>
         {
             objc_string_with_format(mem, context.regs[2])?
         }
@@ -2481,8 +2879,7 @@ fn objc_send(
                 },
             )?
         }
-        "numberWithBool:"
-            if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSNumber") =>
+        "numberWithBool:" if kind == A64_KIND_CLASS =>
         {
             objc_number(mem, context.regs[2] as i64)?
         }
@@ -2923,12 +3320,8 @@ fn materialize_arm64_data_import(mem: &mut Mem64, symbol: &str) -> Result<Option
     ) || symbol.starts_with("ZTVNSt3__1")
         || symbol.starts_with("ZTVSt");
     if is_rtti_vtable {
-        let address = cached_import_allocation(
-            mem,
-            symbol,
-            16 * 8,
-            Permissions::read_write_execute(),
-        )?;
+        let address =
+            cached_import_allocation(mem, symbol, 16 * 8, Permissions::read_write_execute())?;
         let stub = cached_import_allocation(
             mem,
             &format!("{symbol}:ret"),
@@ -2943,11 +3336,8 @@ fn materialize_arm64_data_import(mem: &mut Mem64, symbol: &str) -> Result<Option
         return Ok(Some(address));
     }
     if symbol.starts_with("ZTI") {
-        let vtable = materialize_arm64_data_import(
-            mem,
-            "ZTVN10__cxxabiv117__class_type_infoE",
-        )?
-        .unwrap_or(0);
+        let vtable = materialize_arm64_data_import(mem, "ZTVN10__cxxabiv117__class_type_infoE")?
+            .unwrap_or(0);
         let address = cached_import_allocation(mem, symbol, 16, Permissions::read_write())?;
         let name_pointer = cached_import_allocation(
             mem,
@@ -2967,10 +3357,7 @@ fn materialize_arm64_data_import(mem: &mut Mem64, symbol: &str) -> Result<Option
     if symbol == "GLKMatrix4Identity" {
         let address = cached_import_allocation(mem, symbol, 64, Permissions::read_write())?;
         let values = [
-            1.0f32, 0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0, 0.0,
-            0.0, 0.0, 1.0, 0.0,
-            0.0, 0.0, 0.0, 1.0,
+            1.0f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
         ];
         for (index, value) in values.iter().enumerate() {
             mem.write_u32(address + index as u64 * 4, value.to_bits())
@@ -3095,13 +3482,14 @@ pub fn dispatch(
     context: &mut touchHLE_DynarmicA64Context,
     symbol: &str,
     state: &mut RuntimeState,
+    mut fs: Option<&mut Fs>,
     window: Option<&mut Window>,
 ) -> Result<bool, String> {
     state.host_dispatches = state.host_dispatches.saturating_add(1);
     let symbol = name(symbol);
     state.last_symbol = Some(symbol.to_owned());
-    if is_light_host_call(symbol) {
-        return Ok(dispatch_arm64_math(context, symbol));
+    if is_light_host_call(symbol) && dispatch_arm64_math(context, symbol) {
+        return Ok(true);
     }
     if symbol == "ARM64_guest_method_return" {
         let return_pc = state
@@ -3281,11 +3669,45 @@ pub fn dispatch(
             }
         }
         "access" => {
-            return_value(context, 0);
+            let result = match fs.as_deref() {
+                Some(fs) => {
+                    let path = arm64_cstring(mem, context.regs[0])?;
+                    let path = path.to_string_lossy();
+                    let resolved = fs.resolve_existing_path(GuestPath::new(path.as_ref()));
+                    let (exists, readable, writable, executable) = resolved
+                        .as_deref()
+                        .map(|path| fs.access(path))
+                        .unwrap_or((false, false, false, false));
+                    let requested = context.regs[1] as i32;
+                    if requested == 0 {
+                        exists
+                    } else {
+                        requested & 4 != 0 && readable
+                            || requested & 2 != 0 && writable
+                            || requested & 1 != 0 && executable
+                    }
+                }
+                None => true,
+            };
+            return_value(context, u64::from(!result));
             Ok(true)
         }
         "mkdir" => {
-            return_value(context, 0);
+            let result = match fs.as_deref_mut() {
+                Some(fs) => {
+                    let path = arm64_cstring(mem, context.regs[0])?;
+                    let path = path.to_string_lossy();
+                    match fs.create_dir_all(GuestPath::new(path.as_ref())) {
+                        Ok(())
+                        | Err(FsError::AlreadyExist)
+                        | Err(FsError::ReadonlyParentDir)
+                        | Err(FsError::AccessDenied) => 0_i64,
+                        Err(_) => -1_i64,
+                    }
+                }
+                None => 0,
+            };
+            return_value(context, result as i64 as u64);
             Ok(true)
         }
         "signal" => {
@@ -3293,6 +3715,197 @@ pub fn dispatch(
             let handler = context.regs[1];
             let previous = state.signal_handlers.insert(signum, handler).unwrap_or(0);
             return_value(context, previous);
+            Ok(true)
+        }
+        "fopen" => {
+            let result = match fs.as_deref_mut() {
+                Some(fs) => arm64_stdio_open(mem, state, fs, context.regs[0], context.regs[1])?,
+                None => 0,
+            };
+            return_value(context, result);
+            Ok(true)
+        }
+        "fdopen" => {
+            return_value(context, 0);
+            Ok(true)
+        }
+        "freopen" => {
+            let stream = context.regs[2];
+            let new_file = match fs.as_deref_mut() {
+                Some(fs) => arm64_open_guest_file(mem, fs, context.regs[0], context.regs[1])?,
+                None => None,
+            };
+            let result = match new_file {
+                Some(file) => match state.stdio_streams.get_mut(&stream) {
+                    Some(stream_state) => {
+                        stream_state.file = file;
+                        stream_state.eof = false;
+                        stream_state.error = false;
+                        stream
+                    }
+                    None => 0,
+                },
+                None => 0,
+            };
+            return_value(context, result);
+            Ok(true)
+        }
+        "fgets" => {
+            let result = arm64_stdio_fgets(
+                mem,
+                state,
+                context.regs[0],
+                context.regs[1],
+                context.regs[2],
+            )?;
+            return_value(context, result);
+            Ok(true)
+        }
+        "fread" => {
+            let item_size = context.regs[1];
+            let item_count = context.regs[2];
+            let result = if item_size == 0 || item_count == 0 {
+                0
+            } else {
+                let requested = item_size
+                    .checked_mul(item_count)
+                    .ok_or("ARM64 fread size overflows")?;
+                arm64_stdio_read(mem, state, context.regs[3], context.regs[0], requested)?
+                    / item_size
+            };
+            return_value(context, result);
+            Ok(true)
+        }
+        "fwrite" => {
+            let result = arm64_stdio_write(
+                mem,
+                state,
+                context.regs[0],
+                context.regs[1],
+                context.regs[2],
+                context.regs[3],
+            )?;
+            return_value(context, result);
+            Ok(true)
+        }
+        "fclose" => {
+            let result = if state.stdio_streams.remove(&context.regs[0]).is_some() {
+                0
+            } else {
+                -1_i64
+            };
+            return_value(context, result as u64);
+            Ok(true)
+        }
+        "fflush" => {
+            let result = if context.regs[0] == 0 {
+                0_i64
+            } else if let Some(stream) = state.stdio_streams.get_mut(&context.regs[0]) {
+                if stream.file.flush().is_ok() {
+                    0_i64
+                } else {
+                    stream.error = true;
+                    -1_i64
+                }
+            } else {
+                -1_i64
+            };
+            return_value(context, result as u64);
+            Ok(true)
+        }
+        "feof" => {
+            return_value(
+                context,
+                u64::from(
+                    state
+                        .stdio_streams
+                        .get(&context.regs[0])
+                        .map(|stream| stream.eof)
+                        .unwrap_or(false),
+                ),
+            );
+            Ok(true)
+        }
+        "ferror" => {
+            return_value(
+                context,
+                u64::from(
+                    state
+                        .stdio_streams
+                        .get(&context.regs[0])
+                        .map(|stream| stream.error)
+                        .unwrap_or(true),
+                ),
+            );
+            Ok(true)
+        }
+        "fseek" => {
+            let result = if let Some(stream) = state.stdio_streams.get_mut(&context.regs[0]) {
+                let offset = context.regs[1] as i64;
+                let seek = match context.regs[2] as i32 {
+                    0 if offset >= 0 => stream.file.seek(SeekFrom::Start(offset as u64)),
+                    1 => stream.file.seek(SeekFrom::Current(offset)),
+                    2 => stream.file.seek(SeekFrom::End(offset)),
+                    _ => Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "invalid fseek whence or offset",
+                    )),
+                };
+                match seek {
+                    Ok(_) => {
+                        stream.eof = false;
+                        stream.error = false;
+                        0_i64
+                    }
+                    Err(_) => {
+                        stream.error = true;
+                        -1_i64
+                    }
+                }
+            } else {
+                -1_i64
+            };
+            return_value(context, result as u64);
+            Ok(true)
+        }
+        "ftell" => {
+            let result = match state.stdio_streams.get_mut(&context.regs[0]) {
+                Some(stream) => stream.file.stream_position().map(|position| position as i64),
+                None => Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "unknown ARM64 FILE stream",
+                )),
+            };
+            return_value(context, result.unwrap_or(-1) as u64);
+            Ok(true)
+        }
+        "rewind" => {
+            if let Some(stream) = state.stdio_streams.get_mut(&context.regs[0]) {
+                if stream.file.seek(SeekFrom::Start(0)).is_ok() {
+                    stream.eof = false;
+                    stream.error = false;
+                } else {
+                    stream.error = true;
+                }
+            }
+            return_value(context, 0);
+            Ok(true)
+        }
+        "fileno" => {
+            let result = state
+                .stdio_streams
+                .get(&context.regs[0])
+                .map(|stream| stream.fd)
+                .unwrap_or(-1);
+            return_value(context, result as u64);
+            Ok(true)
+        }
+        "clearerr" => {
+            if let Some(stream) = state.stdio_streams.get_mut(&context.regs[0]) {
+                stream.eof = false;
+                stream.error = false;
+            }
+            return_value(context, 0);
             Ok(true)
         }
         "NSSearchPathForDirectoriesInDomains" => {
@@ -3572,11 +4185,11 @@ pub fn dispatch(
             Ok(true)
         }
         "objc_msgSend" | "objc_msgSendSuper2" | "objc_msgSend_stret" | "objc_msgSendSuper2_stret" => {
-            objc_send(mem, context, state)?;
+            objc_send(mem, context, state, fs.as_deref())?;
             Ok(true)
         }
         "objc_msgSend_fpret" | "objc_msgSend_fp2ret" => {
-            objc_send(mem, context, state)?;
+            objc_send(mem, context, state, fs.as_deref())?;
             Ok(true)
         }
         "NSStringFromClass" => {
@@ -3663,6 +4276,47 @@ pub fn dispatch(
             return_value(context, 0);
             Ok(true)
         }
+        "mach_host_self" => {
+            return_value(context, 1);
+            Ok(true)
+        }
+        "host_page_size" => {
+            if context.regs[1] != 0 {
+                mem.write_u64(context.regs[1], 4096).map_err(str::to_owned)?;
+            }
+            return_value(context, 0);
+            Ok(true)
+        }
+        "host_statistics" | "host_statistics64" => {
+            let output = context.regs[2];
+            let count_pointer = context.regs[3];
+            let count = if count_pointer == 0 {
+                0
+            } else {
+                mem.read_u32(count_pointer).unwrap_or(0).min(128) as u64
+            };
+            if output != 0 {
+                for index in 0..count {
+                    mem.write_u32(output + index * 4, 0).map_err(str::to_owned)?;
+                }
+            }
+            return_value(context, 0);
+            Ok(true)
+        }
+        "tolower" => {
+            let value = context.regs[0] as i32;
+            let lowered = if value == -1 {
+                -1
+            } else {
+                (value as u8).to_ascii_lowercase() as i32
+            };
+            return_value(context, lowered as i64 as u64);
+            Ok(true)
+        }
+        "__assert_rtn" => {
+            return_value(context, 0);
+            Ok(true)
+        }
         "cxa_guard_acquire" => {
             let guard = context.regs[0];
             let initialized = mem.read_u64(guard).map_err(str::to_owned)? != 0;
@@ -3692,9 +4346,22 @@ pub fn dispatch(
             return_value(context, 0);
             Ok(true)
         }
-        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev" => {
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED2Ev"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev" => {
             cxx_string_destroy(mem, context.regs[0]);
             return_value(context, 0);
+            Ok(true)
+        }
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcm" => {
+            cxx_string_assign(mem, context.regs[0], context.regs[1], Some(context.regs[2]))?;
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC2ERKS5_"
+        | "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC2ERKS5_mmRKS4_" => {
+            let bytes = cxx_string_bytes(mem, context.regs[1]).unwrap_or_default();
+            cxx_string_write(mem, context.regs[0], &bytes)?;
+            return_value(context, context.regs[0]);
             Ok(true)
         }
         "inflateInit_" => {
@@ -3719,23 +4386,34 @@ pub fn dispatch(
             Ok(true)
         }
         "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEPKcmm"
-        | "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEcm" => {
-            let Some(text) = cxx_string_bytes(mem, context.regs[0]) else { return Ok(true) };
-            let needle = if symbol.ends_with("findEcm") { vec![context.regs[2] as u8] } else { c_string(mem, context.regs[2]).unwrap_or_default() };
-            return_value(context, cxx_find(&text, &needle, context.regs[3], false));
-            Ok(true)
-        }
-        "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5rfindEPKcmm"
+        | "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEcm"
+        | "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5rfindEPKcmm"
         | "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5rfindEcm" => {
-            let Some(text) = cxx_string_bytes(mem, context.regs[0]) else { return Ok(true) };
-            let needle = if symbol.ends_with("rfindEcm") { vec![context.regs[2] as u8] } else { c_string(mem, context.regs[2]).unwrap_or_default() };
-            return_value(context, cxx_find(&text, &needle, context.regs[3], true));
+            let Some(text) = cxx_string_bytes(mem, context.regs[0]) else {
+                return Ok(true);
+            };
+            let reverse = symbol.contains("5rfind");
+            let (needle, position) = if symbol.ends_with("findEcm") || symbol.ends_with("rfindEcm") {
+                (vec![context.regs[1] as u8], context.regs[2])
+            } else {
+                let source = c_string(mem, context.regs[1]).unwrap_or_default();
+                let length = usize::try_from(context.regs[3])
+                    .unwrap_or(usize::MAX)
+                    .min(source.len());
+                (source[..length].to_vec(), context.regs[2])
+            };
+            return_value(context, cxx_find(&text, &needle, position, reverse));
             Ok(true)
         }
         "ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareEPKc" => {
             let left = cxx_string_bytes(mem, context.regs[0]).unwrap_or_default();
-            let right = c_string(mem, context.regs[2]).unwrap_or_default();
-            return_value(context, u64::from(left.cmp(&right) as i8 as i64 as u64));
+            let right = c_string(mem, context.regs[1]).unwrap_or_default();
+            let result = match left.cmp(&right) {
+                std::cmp::Ordering::Less => -1_i64,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
+            };
+            return_value(context, result as u64);
             Ok(true)
         }
         "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6__initEPKcmm" => {
@@ -3797,6 +4475,13 @@ pub fn dispatch(
             Ok(true)
         }
         "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7reserveEm" => {
+            cxx_string_reserve(mem, context.regs[0], context.regs[1])?;
+            return_value(context, context.regs[0]);
+            Ok(true)
+        }
+        "ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE9__grow_byEmmmmmm" => {
+            let requested = context.regs[1].saturating_add(context.regs[2]);
+            cxx_string_reserve(mem, context.regs[0], requested)?;
             return_value(context, context.regs[0]);
             Ok(true)
         }
@@ -4313,8 +4998,20 @@ fn arm64_cstring(mem: &Mem64, address: u64) -> Result<std::ffi::CString, String>
     if address == 0 {
         return Ok(std::ffi::CString::default());
     }
-    let length = mem.cstr_len(address, MAX_CSTRING).map_err(str::to_owned)?;
-    let bytes = mem.read_bytes(address, length).map_err(str::to_owned)?;
+    let raw = c_string(mem, address);
+    let bytes = match raw {
+        Some(bytes) if std::str::from_utf8(&bytes).is_ok() => bytes,
+        Some(bytes) => cxx_string_bytes(mem, address)
+            .or_else(|| objc_text(mem, address))
+            .unwrap_or(bytes),
+        None => cxx_string_bytes(mem, address)
+            .or_else(|| objc_text(mem, address))
+            .unwrap_or_default(),
+    };
+    let bytes = bytes
+        .split(|byte| *byte == 0)
+        .next()
+        .unwrap_or_default();
     std::ffi::CString::new(bytes)
         .map_err(|_| "ARM64 guest string contains an embedded NUL".to_owned())
 }
@@ -5131,7 +5828,15 @@ mod tests {
         let mut runtime_state = state();
         let mut context = touchHLE_DynarmicA64Context::default();
         context.vectors[0][0] = (0.5_f64).to_bits();
-        assert!(dispatch(&mut memory, &mut context, "_sin", &mut runtime_state, None).unwrap());
+        assert!(dispatch(
+            &mut memory,
+            &mut context,
+            "_sin",
+            &mut runtime_state,
+            None,
+            None
+        )
+        .unwrap());
         assert!((f64::from_bits(context.vectors[0][0]) - 0.5_f64.sin()).abs() < f64::EPSILON);
         context.vectors[0][0] = (0.5_f32).to_bits() as u64;
         assert!(dispatch(
@@ -5139,6 +5844,7 @@ mod tests {
             &mut context,
             "_sqrtf",
             &mut runtime_state,
+            None,
             None
         )
         .unwrap());
@@ -5149,6 +5855,7 @@ mod tests {
     fn light_math_symbols_are_classified_without_callback_counting() {
         assert!(is_light_host_call("_sin"));
         assert!(is_light_host_call("__sqrt"));
+        assert_eq!(name("___assert_rtn"), "__assert_rtn");
         assert!(!is_light_host_call("_malloc"));
     }
 
@@ -5162,6 +5869,7 @@ mod tests {
             &mut context,
             "_access",
             &mut runtime_state,
+            None,
             None
         )
         .unwrap());
@@ -5171,6 +5879,7 @@ mod tests {
             &mut context,
             "_mkdir",
             &mut runtime_state,
+            None,
             None
         )
         .unwrap());
@@ -5182,20 +5891,111 @@ mod tests {
             &mut context,
             "_signal",
             &mut runtime_state,
+            None,
             None
         )
         .unwrap());
         assert_eq!(context.regs[0], 0);
         context.regs[0] = 2;
+        context.regs[1] = 0x1234;
         assert!(dispatch(
             &mut memory,
             &mut context,
             "_signal",
             &mut runtime_state,
+            None,
             None
         )
         .unwrap());
         assert_eq!(context.regs[0], 0x1234);
+    }
+
+    #[test]
+    fn mach_host_and_ctype_shims_return_guest_compatible_values() {
+        let mut memory = Mem64::new();
+        let mut runtime_state = state();
+        let mut context = touchHLE_DynarmicA64Context::default();
+        assert!(dispatch(
+            &mut memory,
+            &mut context,
+            "_mach_host_self",
+            &mut runtime_state,
+            None,
+            None,
+        )
+        .unwrap());
+        assert_eq!(context.regs[0], 1);
+
+        let page_size = memory.alloc_zeroed(8).unwrap();
+        context.regs[1] = page_size;
+        assert!(dispatch(
+            &mut memory,
+            &mut context,
+            "_host_page_size",
+            &mut runtime_state,
+            None,
+            None,
+        )
+        .unwrap());
+        assert_eq!(context.regs[0], 0);
+        assert_eq!(memory.read_u64(page_size).unwrap(), 4096);
+
+        let statistics = memory.alloc_zeroed(16).unwrap();
+        let count = memory.alloc_zeroed(4).unwrap();
+        memory.write_u32(count, 4).unwrap();
+        context.regs[2] = statistics;
+        context.regs[3] = count;
+        assert!(dispatch(
+            &mut memory,
+            &mut context,
+            "_host_statistics64",
+            &mut runtime_state,
+            None,
+            None,
+        )
+        .unwrap());
+        assert_eq!(context.regs[0], 0);
+        assert_eq!(memory.read_u64(statistics).unwrap(), 0);
+        assert_eq!(memory.read_u32(count).unwrap(), 4);
+
+        context.regs[0] = b'A' as u64;
+        assert!(dispatch(
+            &mut memory,
+            &mut context,
+            "_tolower",
+            &mut runtime_state,
+            None,
+            None,
+        )
+        .unwrap());
+        assert_eq!(context.regs[0], b'a' as u64);
+    }
+
+    #[test]
+    fn stdio_stubs_are_safe_without_filesystem() {
+        let mut memory = Mem64::new();
+        let mut runtime_state = state();
+        let mut context = touchHLE_DynarmicA64Context::default();
+        for symbol in [
+            "_fopen", "_fgets", "_fread", "_fwrite", "_feof", "_ferror", "_fclose",
+        ] {
+            context.regs[0] = 0x1234;
+            assert!(dispatch(
+                &mut memory,
+                &mut context,
+                symbol,
+                &mut runtime_state,
+                None,
+                None,
+            )
+            .unwrap());
+            let expected = match symbol {
+                "_ferror" => 1,
+                "_fclose" => u64::MAX,
+                _ => 0,
+            };
+            assert_eq!(context.regs[0], expected);
+        }
     }
 
     #[test]
@@ -5213,6 +6013,7 @@ mod tests {
             "_objc_getClass",
             &mut runtime_state,
             None,
+            None,
         )
         .unwrap());
         let class = context.regs[0];
@@ -5224,6 +6025,7 @@ mod tests {
             &mut context,
             "_NSStringFromClass",
             &mut runtime_state,
+            None,
             None,
         )
         .unwrap());
@@ -5240,6 +6042,7 @@ mod tests {
             "_NSClassFromString",
             &mut runtime_state,
             None,
+            None,
         )
         .unwrap());
         assert_eq!(context.regs[0], class);
@@ -5250,6 +6053,7 @@ mod tests {
             &mut context,
             "_NSStringFromClass",
             &mut runtime_state,
+            None,
             None,
         )
         .unwrap());
@@ -5262,6 +6066,7 @@ mod tests {
             &mut context,
             "_NSClassFromString",
             &mut runtime_state,
+            None,
             None,
         )
         .unwrap());
@@ -5280,7 +6085,7 @@ mod tests {
         context.regs[1] = selector_pointer(&mut memory, "dataWithBytes:length:").unwrap();
         context.regs[2] = source;
         context.regs[3] = 4;
-        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        objc_send(&mut memory, &mut context, &mut runtime_state, None).unwrap();
         let data = context.regs[0];
         assert_eq!(objc_field(&memory, data, 64), 4);
         assert_eq!(
@@ -5298,16 +6103,16 @@ mod tests {
         context.regs[1] = selector_pointer(&mut memory, "arrayWithObjects:count:").unwrap();
         context.regs[2] = elements;
         context.regs[3] = 2;
-        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        objc_send(&mut memory, &mut context, &mut runtime_state, None).unwrap();
         let array = context.regs[0];
         context.regs[0] = array;
         context.regs[1] = selector_pointer(&mut memory, "count").unwrap();
-        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        objc_send(&mut memory, &mut context, &mut runtime_state, None).unwrap();
         assert_eq!(context.regs[0], 2);
         context.regs[0] = array;
         context.regs[1] = selector_pointer(&mut memory, "objectAtIndex:").unwrap();
         context.regs[2] = 1;
-        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        objc_send(&mut memory, &mut context, &mut runtime_state, None).unwrap();
         assert_eq!(context.regs[0], second);
 
         let dictionary_class =
@@ -5317,12 +6122,12 @@ mod tests {
         context.regs[1] = selector_pointer(&mut memory, "dictionaryWithObject:forKey:").unwrap();
         context.regs[2] = first;
         context.regs[3] = key;
-        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        objc_send(&mut memory, &mut context, &mut runtime_state, None).unwrap();
         let dictionary = context.regs[0];
         context.regs[0] = dictionary;
         context.regs[1] = selector_pointer(&mut memory, "objectForKey:").unwrap();
         context.regs[2] = key;
-        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        objc_send(&mut memory, &mut context, &mut runtime_state, None).unwrap();
         assert_eq!(context.regs[0], first);
 
         let number_class =
@@ -5330,11 +6135,11 @@ mod tests {
         context.regs[0] = number_class;
         context.regs[1] = selector_pointer(&mut memory, "numberWithInt:").unwrap();
         context.regs[2] = 42;
-        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        objc_send(&mut memory, &mut context, &mut runtime_state, None).unwrap();
         let number = context.regs[0];
         context.regs[0] = number;
         context.regs[1] = selector_pointer(&mut memory, "intValue").unwrap();
-        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        objc_send(&mut memory, &mut context, &mut runtime_state, None).unwrap();
         assert_eq!(context.regs[0], 42);
     }
 
@@ -5353,7 +6158,7 @@ mod tests {
         context.regs[0] = ns_string_class;
         context.regs[1] = selector_pointer(&mut memory, "stringWithUTF8String:").unwrap();
         context.regs[2] = input;
-        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        objc_send(&mut memory, &mut context, &mut runtime_state, None).unwrap();
         let string = context.regs[0];
         assert_eq!(objc_text(&memory, string).as_deref(), Some(&b"asset"[..]));
 
@@ -5362,7 +6167,7 @@ mod tests {
         context.regs[0] = receiver;
         context.regs[1] = selector_pointer(&mut memory, "initWithUTF8String:").unwrap();
         context.regs[2] = input;
-        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        objc_send(&mut memory, &mut context, &mut runtime_state, None).unwrap();
         assert_eq!(context.regs[0], receiver);
         assert_eq!(objc_text(&memory, receiver).as_deref(), Some(&b"asset"[..]));
 
@@ -5371,13 +6176,13 @@ mod tests {
         context.regs[1] = selector_pointer(&mut memory, "compare:options:").unwrap();
         context.regs[2] = other;
         context.regs[3] = 0;
-        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        objc_send(&mut memory, &mut context, &mut runtime_state, None).unwrap();
         assert_eq!(context.regs[0], (-1_i64) as u64);
 
         context.regs[0] = ns_data_class;
         context.regs[1] = selector_pointer(&mut memory, "dataWithContentsOfFile:").unwrap();
         context.regs[2] = string;
-        objc_send(&mut memory, &mut context, &mut runtime_state).unwrap();
+        objc_send(&mut memory, &mut context, &mut runtime_state, None).unwrap();
         let data = context.regs[0];
         assert_eq!(objc_kind(&memory, data), Some(A64_KIND_DATA));
         assert_eq!(objc_field(&memory, data, 64), 0);

@@ -21,6 +21,7 @@ const STACK_SIZE: u64 = 0x0010_0000;
 const SVC_THREAD_EXIT: u32 = 1;
 const SVC_RETURN_TO_HOST: u32 = 2;
 const SVC_HOST_BASE: u32 = 0x100;
+const SVC_STATIC_INITIALIZER_RETURN: u32 = SVC_HOST_BASE + 0x7ff9;
 const HOST_STUB_SIZE: u64 = 8;
 const MAX_HOST_DISPATCHES_PER_CALLBACK: u64 = 100_000;
 const A64_HALT_USER_DEFINED1: u32 = 0x0100_0000;
@@ -166,8 +167,7 @@ fn decode_instruction(instruction: u32, pc: u64) -> String {
     } else if instruction & 0x7e00_0000 == 0x3600_0000 {
         let immediate = ((((instruction >> 5) & 0x3fff) as i32) << 18 >> 16) as i64;
         format!("tbz/tbnz {:#x}", pc.wrapping_add_signed(immediate))
-    } else if (instruction & 0x1fe0_0000 == 0x1a80_0000
-        || instruction & 0x1fe0_0000 == 0x1ac0_0000)
+    } else if (instruction & 0x1fe0_0000 == 0x1a80_0000 || instruction & 0x1fe0_0000 == 0x1ac0_0000)
         && instruction & 0x0000_0810 == 0
     {
         let mnemonic = if instruction & 0x4000_0000 != 0 {
@@ -581,6 +581,22 @@ fn prepare_stack(
     Ok((sp, argv_ptr, envp_ptr, apple_ptr))
 }
 
+fn static_initializer_addresses(executable: &MachO64, memory: &Mem64) -> Vec<u64> {
+    executable
+        .sections
+        .iter()
+        .filter(|section| section.name == "__mod_init_func")
+        .flat_map(|section| {
+            (0..section.size / 8).filter_map(move |index| {
+                memory
+                    .read_u64(section.address + index * 8)
+                    .ok()
+                    .filter(|&address| address != 0)
+            })
+        })
+        .collect()
+}
+
 fn write_svc_stub(mem: &mut Mem64, svc: u32) -> Result<u64, String> {
     let stub = mem
         .alloc_zeroed_with_permissions(
@@ -690,7 +706,12 @@ fn detect_graphics_backend(
     }
 }
 
-pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> Result<(), String> {
+pub fn run(
+    bundle: Bundle,
+    mut fs: Fs,
+    options: Options,
+    app_args: Vec<String>,
+) -> Result<(), String> {
     echo!(
         "ARM64 launch configuration: device={:?}, orientation={:?}, fullscreen={}, screen={:?}, scale={:.2}, iOS={:?}",
         options.device_family,
@@ -713,6 +734,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
         entry,
         image_end
     );
+    let initializers = static_initializer_addresses(&executable, &executable.memory);
     let mut memory = executable.memory;
     let argv = std::iter::once(executable_path.as_str().to_owned())
         .chain(app_args)
@@ -865,6 +887,8 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     let (sp, argv_ptr, envp_ptr, apple_ptr) = prepare_stack(&mut memory, &argv, &[], &apple)?;
 
     let return_stub = write_svc_stub(&mut memory, SVC_RETURN_TO_HOST)?;
+    let static_initializer_return_stub =
+        write_svc_stub(&mut memory, SVC_STATIC_INITIALIZER_RETURN)?;
     let application_return_stub = write_svc_stub(&mut memory, SVC_HOST_BASE + 0x7ffd)?;
     let application_launch_return_stub = write_svc_stub(&mut memory, SVC_HOST_BASE + 0x7ffe)?;
     let application_active_return_stub = write_svc_stub(&mut memory, SVC_HOST_BASE + 0x7fff)?;
@@ -878,6 +902,13 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
     runtime_state.guest_method_return_stub = Some(guest_method_return_stub);
     runtime_state.display_link_return_stub = Some(display_link_return_stub);
     let mut host_stubs = HashMap::new();
+    host_stubs.insert(
+        SVC_STATIC_INITIALIZER_RETURN as i32,
+        (
+            "ARM64_static_initializer_return".to_owned(),
+            "ARM64_static_initializer_return",
+        ),
+    );
     host_stubs.insert(
         (SVC_HOST_BASE + 0x7ffc) as i32,
         (
@@ -1017,14 +1048,23 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
             .collect::<Vec<_>>()
             .join(", ")
     );
+    echo!(
+        "ARM64 static initializers: {} functions from __mod_init_func",
+        initializers.len()
+    );
+    let mut initializer_index = 0usize;
     let mut context = touchHLE_DynarmicA64Context::default();
     context.sp = sp;
-    context.pc = entry;
-    context.regs[0] = argv.len() as u64;
-    context.regs[1] = argv_ptr;
-    context.regs[2] = envp_ptr;
-    context.regs[3] = apple_ptr;
-    context.regs[30] = return_stub;
+    context.pc = initializers.first().copied().unwrap_or(entry);
+    if initializers.is_empty() {
+        context.regs[0] = argv.len() as u64;
+        context.regs[1] = argv_ptr;
+        context.regs[2] = envp_ptr;
+        context.regs[3] = apple_ptr;
+        context.regs[30] = return_stub;
+    } else {
+        context.regs[30] = static_initializer_return_stub;
+    }
     let mut cpu = A64Cpu::with_backend_and_fallback(options.arm64_backend, options.arm64_fallback);
     cpu.set_trace(options.verbose_logging);
     echo!("ARM64 execution transition: context loaded; entering Dynarmic with pc={:#x} sp={:#x} lr={:#x}", context.pc, context.sp, context.regs[30]);
@@ -1158,6 +1198,62 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                     cpu.clear_halt(A64_HALT_USER_DEFINED3);
                     continue;
                 }
+                if runtime_state.bundle_identifier == "com.mojang.minecraftpe"
+                    && context.pc == 0x10021d804
+                    && context.regs[0] == 0x28
+                {
+                    let item = memory.alloc_zeroed(64).map_err(str::to_owned)?;
+                    let uv = memory.alloc_zeroed(32).map_err(str::to_owned)?;
+                    for (offset, value) in [
+                        (0_u64, 0.0_f32),
+                        (4, 0.0),
+                        (8, 1.0),
+                        (12, 1.0),
+                        (16, 512.0),
+                        (20, 256.0),
+                    ] {
+                        memory.write_u32(uv + offset, value.to_bits()).map_err(str::to_owned)?;
+                    }
+                    memory.write_u64(item + 24, uv).map_err(str::to_owned)?;
+                    log_once_fmt!(
+                        "ARM64 Minecraft compatibility: synthesized missing TextureAtlas item at {item:#x} with default UV data; resuming guest [repeated recoveries suppressed]"
+                    );
+                    context.regs[0] = item;
+                    context.regs[8] = uv;
+                    context.pc = context.pc.wrapping_add(4);
+                    cpu.load_context(&context);
+                    cpu.clear_halt(A64_HALT_USER_DEFINED1);
+                    cpu.clear_halt(A64_HALT_USER_DEFINED2);
+                    cpu.clear_halt(A64_HALT_USER_DEFINED3);
+                    continue;
+                }
+                if runtime_state.bundle_identifier == "com.mojang.minecraftpe"
+                    && context.pc == 0x10021d8bc
+                    && context.regs[21] == 0x28
+                {
+                    let item = memory.alloc_zeroed(64).map_err(str::to_owned)?;
+                    let uv = memory.alloc_zeroed(32).map_err(str::to_owned)?;
+                    for (offset, value) in [
+                        (0_u64, 0.0_f32),
+                        (4, 0.0),
+                        (8, 1.0),
+                        (12, 1.0),
+                        (16, 512.0),
+                        (20, 256.0),
+                    ] {
+                        memory.write_u32(uv + offset, value.to_bits()).map_err(str::to_owned)?;
+                    }
+                    memory.write_u64(item + 24, uv).map_err(str::to_owned)?;
+                    log_once_fmt!(
+                        "ARM64 Minecraft compatibility: synthesized second missing TextureAtlas item at {item:#x}; resuming guest [repeated recoveries suppressed]"
+                    );
+                    context.regs[21] = item;
+                    cpu.load_context(&context);
+                    cpu.clear_halt(A64_HALT_USER_DEFINED1);
+                    cpu.clear_halt(A64_HALT_USER_DEFINED2);
+                    cpu.clear_halt(A64_HALT_USER_DEFINED3);
+                    continue;
+                }
                 failure_diagnostics(
                     &memory,
                     &context,
@@ -1275,6 +1371,39 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                     .get(&value)
                     .map(|(name, _)| name.as_str())
                     .unwrap_or("<unknown>");
+                if symbol == "ARM64_static_initializer_return" {
+                    initializer_index += 1;
+                    if let Some(&next_initializer) = initializers.get(initializer_index) {
+                        echo!(
+                            "ARM64 static initializer {}/{} returned; continuing at {:#x}",
+                            initializer_index,
+                            initializers.len(),
+                            next_initializer,
+                        );
+                        context.pc = next_initializer;
+                        context.regs[0] = 0;
+                        context.regs[1] = 0;
+                        context.regs[2] = 0;
+                        context.regs[3] = 0;
+                        context.regs[30] = static_initializer_return_stub;
+                    } else {
+                        echo!(
+                            "ARM64 static initializers complete; entering app at {:#x}",
+                            entry
+                        );
+                        context.pc = entry;
+                        context.regs[0] = argv.len() as u64;
+                        context.regs[1] = argv_ptr;
+                        context.regs[2] = envp_ptr;
+                        context.regs[3] = apple_ptr;
+                        context.regs[30] = return_stub;
+                    }
+                    cpu.load_context(&context);
+                    cpu.clear_halt(A64_HALT_USER_DEFINED1);
+                    cpu.clear_halt(A64_HALT_USER_DEFINED2);
+                    cpu.clear_halt(A64_HALT_USER_DEFINED3);
+                    continue;
+                }
                 if !crate::arm64_runtime::is_light_host_call(symbol) {
                     host_dispatches_since_callback += 1;
                 }
@@ -1346,6 +1475,7 @@ pub fn run(bundle: Bundle, fs: Fs, options: Options, app_args: Vec<String>) -> R
                     &mut context,
                     symbol,
                     &mut runtime_state,
+                    Some(&mut fs),
                     window.as_deref_mut(),
                 ) {
                     Ok(handled) => {

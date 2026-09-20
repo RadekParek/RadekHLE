@@ -73,6 +73,7 @@ enum StubKind {
     StringCompare,
     VmMap,
     VmReadOverwrite,
+    TextureItemLookup,
 }
 
 fn normalized(symbol: &str) -> &str {
@@ -83,6 +84,7 @@ fn normalized(symbol: &str) -> &str {
 fn compatibility_kind(symbol: &str) -> Option<StubKind> {
     match symbol {
         "CCHmacInit" | "CCHmacUpdate" | "CCHmacFinal" => Some(StubKind::CryptoNoop),
+        "ZNK12TextureAtlas14getTextureItemERKNSt3__112basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEE" => Some(StubKind::TextureItemLookup),
         "CMTimeGetSeconds" => Some(StubKind::CMTimeGetSeconds),
         "CMTimeMakeWithSeconds" => Some(StubKind::CMTimeMakeWithSeconds),
         "CVOpenGLESTextureCacheCreate"
@@ -91,7 +93,8 @@ fn compatibility_kind(symbol: &str) -> Option<StubKind> {
         "CVOpenGLESTextureGetName" => Some(StubKind::CVTextureName),
         "CVOpenGLESTextureGetTarget" => Some(StubKind::CVTextureTarget),
         "dispatch_data_apply" => Some(StubKind::DispatchDataApply),
-        "dispatch_data_create" | "UTTypeCopyPreferredTagWithClass"
+        "dispatch_data_create"
+        | "UTTypeCopyPreferredTagWithClass"
         | "UTTypeCreatePreferredIdentifierForTag" => Some(StubKind::GenericPointer),
         "dispatch_data_get_size" | "dispatch_read" | "dispatch_write" => {
             Some(StubKind::GenericZero)
@@ -103,14 +106,34 @@ fn compatibility_kind(symbol: &str) -> Option<StubKind> {
         "strcoll" => Some(StubKind::StringCompare),
         "vm_map" => Some(StubKind::VmMap),
         "vm_read_overwrite" => Some(StubKind::VmReadOverwrite),
-        "regcomp" | "regexec" | "readdir_r" | "nftw" | "utime" | "pathconf"
-        | "arc4random_buf" | "class_conformsToProtocol" | "protocol_getMethodDescription"
-        | "objc_exception_rethrow" | "objc_terminate" | "exception_raise"
-        | "exception_raise_state" | "exception_raise_state_identity" | "mach_make_memory_entry_64"
-        | "mach_port_mod_refs" | "mach_port_move_member" | "mach_port_request_notification"
-        | "thread_get_exception_ports" | "thread_swap_exception_ports" | "kill" | "raise"
-        | "DNSServiceNATPortMappingCreate" | "DNSServiceProcessResult" | "DNSServiceRefDeallocate"
-        | "___objc_personality_v0" | "objc_personality_v0" | "cxa_bad_cast"
+        "regcomp"
+        | "regexec"
+        | "readdir_r"
+        | "nftw"
+        | "utime"
+        | "pathconf"
+        | "arc4random_buf"
+        | "class_conformsToProtocol"
+        | "protocol_getMethodDescription"
+        | "objc_exception_rethrow"
+        | "objc_terminate"
+        | "exception_raise"
+        | "exception_raise_state"
+        | "exception_raise_state_identity"
+        | "mach_make_memory_entry_64"
+        | "mach_port_mod_refs"
+        | "mach_port_move_member"
+        | "mach_port_request_notification"
+        | "thread_get_exception_ports"
+        | "thread_swap_exception_ports"
+        | "kill"
+        | "raise"
+        | "DNSServiceNATPortMappingCreate"
+        | "DNSServiceProcessResult"
+        | "DNSServiceRefDeallocate"
+        | "___objc_personality_v0"
+        | "objc_personality_v0"
+        | "cxa_bad_cast"
         | "ZSt17rethrow_exceptionSt13exception_ptr"
         | "ZSt18uncaught_exceptionv" => Some(StubKind::GenericZero),
         "cxa_get_exception_ptr" => Some(StubKind::ExceptionPointer),
@@ -118,10 +141,18 @@ fn compatibility_kind(symbol: &str) -> Option<StubKind> {
         "_hash_create" | "hash_create" | "_hash_search" | "hash_search" | "getpwnam" => {
             Some(StubKind::GenericPointer)
         }
-        symbol if symbol.starts_with("ZNKSt9exception4what")
-            || symbol.starts_with("ZNKSt13runtime_error4what") => Some(StubKind::ExceptionWhat),
-        symbol if symbol.starts_with("ZNSt11logic_errorC")
-            || symbol.starts_with("ZNSt13runtime_errorC") => Some(StubKind::ExceptionConstructor),
+        symbol
+            if symbol.starts_with("ZNKSt9exception4what")
+                || symbol.starts_with("ZNKSt13runtime_error4what") =>
+        {
+            Some(StubKind::ExceptionWhat)
+        }
+        symbol
+            if symbol.starts_with("ZNSt11logic_errorC")
+                || symbol.starts_with("ZNSt13runtime_errorC") =>
+        {
+            Some(StubKind::ExceptionConstructor)
+        }
         symbol if symbol.starts_with("ZN7plcrash") => {
             if symbol.contains("C1") || symbol.contains("C2") {
                 Some(StubKind::GenericReceiver)
@@ -132,7 +163,11 @@ fn compatibility_kind(symbol: &str) -> Option<StubKind> {
         symbol if symbol.starts_with("ZThn") || symbol.starts_with("ZTv") => {
             Some(StubKind::GenericReceiver)
         }
-        symbol if symbol.starts_with("ZNSt") || symbol.starts_with("ZNKSt") || symbol.starts_with("ZSt") => {
+        symbol
+            if symbol.starts_with("ZNSt")
+                || symbol.starts_with("ZNKSt")
+                || symbol.starts_with("ZSt") =>
+        {
             if symbol.contains("D1") || symbol.contains("D2") {
                 Some(StubKind::GenericReceiver)
             } else if symbol.contains("what") {
@@ -563,7 +598,11 @@ pub(super) fn dispatch(
             let value = if context.regs[0] != 0 && mem.allocation_size(context.regs[0]).is_some() {
                 let numerator = mem.read_u64(context.regs[0]).unwrap_or(0) as i64;
                 let scale = mem.read_u32(context.regs[0] + 8).unwrap_or(0) as i32;
-                if scale == 0 { 0.0 } else { numerator as f64 / scale as f64 }
+                if scale == 0 {
+                    0.0
+                } else {
+                    numerator as f64 / scale as f64
+                }
             } else {
                 0.0
             };
@@ -590,7 +629,8 @@ pub(super) fn dispatch(
             if symbol == "CVOpenGLESTextureCacheCreate" && context.regs[4] != 0 {
                 let object = objc_object(mem, A64_KIND_GENERIC)?;
                 if mem.allocation_size(context.regs[4]).is_some() {
-                    mem.write_u64(context.regs[4], object).map_err(str::to_owned)?;
+                    mem.write_u64(context.regs[4], object)
+                        .map_err(str::to_owned)?;
                 }
             }
             super::return_value(context, 0);
@@ -627,7 +667,10 @@ pub(super) fn dispatch(
             super::return_value(context, value as u64);
         }
         StubKind::IsXDigit => {
-            super::return_value(context, u64::from((context.regs[0] as u8 as char).is_ascii_hexdigit()));
+            super::return_value(
+                context,
+                u64::from((context.regs[0] as u8 as char).is_ascii_hexdigit()),
+            );
         }
         StubKind::StringCompare => {
             let left = c_string(mem, context.regs[0]).unwrap_or_default();
@@ -643,7 +686,8 @@ pub(super) fn dispatch(
             let size = context.regs[2].min(64 * 1024 * 1024).max(1);
             let address = mem.alloc_zeroed(size).map_err(str::to_owned)?;
             if context.regs[1] != 0 && mem.allocation_size(context.regs[1]).is_some() {
-                mem.write_u64(context.regs[1], address).map_err(str::to_owned)?;
+                mem.write_u64(context.regs[1], address)
+                    .map_err(str::to_owned)?;
             }
             super::return_value(context, 0);
         }
@@ -1043,6 +1087,12 @@ pub(super) fn dispatch(
         StubKind::Null => {
             let object = objc_object(mem, A64_KIND_GENERIC)?;
             super::return_value(context, object);
+        }
+        StubKind::TextureItemLookup => {
+            let item = mem.alloc_zeroed(64).map_err(str::to_owned)?;
+            let uv = mem.alloc_zeroed(32).map_err(str::to_owned)?;
+            mem.write_u64(item + 24, uv).map_err(str::to_owned)?;
+            super::return_value(context, item);
         }
         StubKind::GenericPointer => generic_pointer(mem, context)?,
         StubKind::GenericReceiver => super::return_value(context, context.regs[0]),

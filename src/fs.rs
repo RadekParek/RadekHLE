@@ -1108,6 +1108,37 @@ impl Fs {
         self.lookup_node(path).is_some()
     }
 
+    /// Resolve an existing guest path using the filesystem's canonical spelling.
+    /// Exact lookup is preferred; a case-insensitive component walk is used only
+    /// when the exact path is absent, matching common iOS resource lookup behavior.
+    pub fn resolve_existing_path(&self, path: &GuestPath) -> Option<GuestPathBuf> {
+        if self.exists(path) {
+            return Some(path.to_owned());
+        }
+
+        let components = resolve_path(path, Some(&self.working_directory));
+        if components.is_empty() {
+            return Some(GuestPathBuf::from("/".to_owned()));
+        }
+
+        let mut current = String::new();
+        for component in components {
+            let parent = if current.is_empty() {
+                GuestPath::new("/")
+            } else {
+                GuestPath::new(&current)
+            };
+            let actual = self
+                .enumerate(parent)
+                .ok()?
+                .find(|entry| entry.eq_ignore_ascii_case(component))?
+                .to_owned();
+            current.push('/');
+            current.push_str(&actual);
+        }
+        Some(GuestPathBuf::from(current))
+    }
+
     /// Returns access information about the file/directory at the path
     /// (exists, read, write, execute)
     pub fn access(&self, path: &GuestPath) -> (bool, bool, bool, bool) {

@@ -65,8 +65,7 @@ impl A64Interpreter {
         };
         let sp_before = context.sp;
         let result = self.execute(memory, context, instruction);
-        if context.sp != sp_before && (context.sp.abs_diff(sp_before) > 0x1000 || pc == 0x1000eb360)
-        {
+        if context.sp != sp_before && (context.sp.abs_diff(sp_before) > 0x1000 || pc == 0x1000eb360) {
             log_dbg!(
                 "ARM64 interpreter stack transition: pc={pc:#x} instruction={instruction:#010x} before={sp_before:#x} after={:#x}",
                 context.sp,
@@ -109,24 +108,38 @@ impl A64Interpreter {
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
+        if instruction & 0x1f80_0000 == 0x1380_0000 {
+            self.execute_extract(context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
         if instruction & 0x1fe0_0000 == 0x1a40_0000 {
             self.execute_conditional_compare(context, instruction)?;
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
-        if instruction & 0x1fe0_0000 == 0x1a80_0000
-            || instruction & 0x1fe0_0000 == 0x1ac0_0000
-        {
+        if instruction & 0x1fe0_fc00 == 0x1ac0_0800 {
+            self.execute_divide(context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
+        if instruction & 0x1fe0_0000 == 0x1a80_0000 || instruction & 0x1fe0_0000 == 0x1ac0_0000 {
             self.execute_conditional_select(context, instruction)?;
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
+
         if instruction & 0x1f00_0000 == 0x1a00_0000 {
             self.execute_add_sub_carry(context, instruction)?;
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
-        if instruction & 0x1f20_fc00 == 0x1e20_1000 {
+        if instruction & 0x1f00_0c00 == 0x1e00_0400 {
+            self.execute_scalar_conditional_compare(context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
+        if instruction & 0x1f20_1000 == 0x1e20_1000 {
             self.execute_scalar_fmov_immediate(context, instruction)?;
             context.pc = pc.wrapping_add(4);
             return Ok(None);
@@ -297,7 +310,7 @@ impl A64Interpreter {
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
-        if instruction & 0x1f20_0000 == 0x0b00_0000 {
+        if instruction & 0x1f00_0000 == 0x0b00_0000 {
             self.execute_add_sub_register(context, instruction)?;
             context.pc = pc.wrapping_add(4);
             return Ok(None);
@@ -336,11 +349,7 @@ impl A64Interpreter {
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
-        if instruction & 0x1fe0_fc00 == 0x1ac0_0800 {
-            self.execute_divide(context, instruction)?;
-            context.pc = pc.wrapping_add(4);
-            return Ok(None);
-        }
+
         if instruction & 0x7fff_fc00 == 0x5ac0_1000 {
             let sf = instruction >> 31 != 0;
             let value = read_reg(context, ((instruction >> 5) & 31) as usize, sf);
@@ -360,6 +369,37 @@ impl A64Interpreter {
         }
         if instruction & 0x3e00_0000 == 0x0800_0000 {
             self.execute_exclusive(memory, context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
+
+        if instruction & 0x9f80_0f00 == 0x0e00_0d00 {
+            self.execute_simd_dup(context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
+        if instruction & 0x9f20_fc00 == 0x0e20_8400 {
+            self.execute_simd_add_sub(context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
+        if instruction & 0x9f20_fc00 == 0x0e00_4000 {
+            self.execute_simd_extract(context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
+        if instruction & 0x9f00_fc00 == 0x0f00_f400 {
+            self.execute_simd_float_immediate(context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
+        if instruction & 0x9f20_fc00 == 0x0e20_1c00 {
+            self.execute_simd_logical(context, instruction)?;
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
+        if instruction & 0x3e00_0000 == 0x3c00_0000 {
+            self.execute_simd_load_store(memory, context, instruction)?;
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
@@ -383,11 +423,6 @@ impl A64Interpreter {
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
-        if instruction & 0x3f00_0000 == 0x3d00_0000 {
-            self.execute_simd_load_store(memory, context, instruction)?;
-            context.pc = pc.wrapping_add(4);
-            return Ok(None);
-        }
         if instruction & 0x3f00_0000 == 0x2d00_0000 {
             self.execute_simd_pair(memory, context, instruction)?;
             context.pc = pc.wrapping_add(4);
@@ -406,6 +441,29 @@ impl A64Interpreter {
         Err(InterpreterError::Undefined)
     }
 
+    fn execute_extract(
+        &self,
+        context: &mut touchHLE_DynarmicA64Context,
+        instruction: u32,
+    ) -> Result<(), InterpreterError> {
+        let sf = instruction >> 31 != 0;
+        let width = if sf { 64 } else { 32 };
+        let n_bit = instruction & 0x0040_0000 != 0;
+        if n_bit != sf {
+            return Err(InterpreterError::Undefined);
+        }
+        let lsb = ((instruction >> 10) & 0x3f) as u32;
+        if lsb >= width {
+            return Err(InterpreterError::Undefined);
+        }
+        let first = read_reg(context, ((instruction >> 5) & 31) as usize, sf);
+        let second = read_reg(context, ((instruction >> 16) & 31) as usize, sf);
+        let combined = (u128::from(first) << width) | u128::from(second);
+        let value = (combined >> lsb) as u64;
+        set_reg(context, (instruction & 31) as usize, value, sf);
+        Ok(())
+    }
+
     fn execute_add_sub_carry(
         &self,
         context: &mut touchHLE_DynarmicA64Context,
@@ -417,13 +475,38 @@ impl A64Interpreter {
         let left = read_reg(context, ((instruction >> 5) & 31) as usize, sf);
         let right = read_reg(context, ((instruction >> 16) & 31) as usize, sf);
         let carry_in = context.pstate & NZCV_C != 0;
-        let width_mask = if sf { u64::MAX } else { u32::MAX as u64 };
-        let right_with_carry = if subtract {
-            right.wrapping_add(u64::from(!carry_in))
+        let width = if sf { 64 } else { 32 };
+        let mask = if sf { u64::MAX } else { u32::MAX as u64 };
+        let lhs = u128::from(left & mask);
+        let rhs = u128::from(right & mask);
+        let carry_value = u128::from(carry_in);
+        let (value, carry) = if subtract {
+            let borrow = u128::from(!carry_in);
+            let subtrahend = rhs + borrow;
+            let value = lhs.wrapping_sub(subtrahend) as u64 & mask;
+            (value, lhs >= subtrahend)
         } else {
-            right.wrapping_add(u64::from(carry_in))
+            let sum = lhs + rhs + carry_value;
+            (sum as u64 & mask, (sum >> width) != 0)
         };
-        let (value, carry, overflow) = add_sub(left, right_with_carry & width_mask, subtract, sf);
+        let signed_left = if sf {
+            (left as i64) as i128
+        } else {
+            (left as i32) as i128
+        };
+        let signed_right = if sf {
+            (right as i64) as i128
+        } else {
+            (right as i32) as i128
+        };
+        let signed_result = if subtract {
+            signed_left - signed_right - i128::from(!carry_in)
+        } else {
+            signed_left + signed_right + i128::from(carry_in)
+        };
+        let signed_min = -(1_i128 << (width - 1));
+        let signed_max = (1_i128 << (width - 1)) - 1;
+        let overflow = signed_result < signed_min || signed_result > signed_max;
         set_reg(context, (instruction & 31) as usize, value, sf);
         if update_flags {
             set_flags(context, value, carry, overflow, sf);
@@ -638,6 +721,21 @@ impl A64Interpreter {
         Ok(())
     }
 
+    fn execute_scalar_conditional_compare(
+        &self,
+        context: &mut touchHLE_DynarmicA64Context,
+        instruction: u32,
+    ) -> Result<(), InterpreterError> {
+        let condition = (instruction >> 12) & 0xf;
+        if condition_holds(context, condition) {
+            self.execute_scalar_compare(context, instruction)?;
+        } else {
+            let nzcv = instruction & 0xf;
+            context.pstate = (context.pstate & !(NZCV_N | NZCV_Z | NZCV_C | NZCV_V)) | (nzcv << 28);
+        }
+        Ok(())
+    }
+
     fn execute_scalar_compare(
         &self,
         context: &mut touchHLE_DynarmicA64Context,
@@ -737,6 +835,8 @@ impl A64Interpreter {
             0x0000_1800 => left / right,
             0x0000_2800 => left + right,
             0x0000_3800 => left - right,
+            0x0000_4800 => left.max(right),
+            0x0000_5800 => left.min(right),
             _ => return Err(InterpreterError::Undefined),
         };
         if double {
@@ -990,11 +1090,17 @@ impl A64Interpreter {
         let sf = instruction >> 31 != 0;
         let subtract = instruction & 0x4000_0000 != 0;
         let update_flags = instruction & 0x2000_0000 != 0;
-        let rm = read_reg(context, ((instruction >> 16) & 31) as usize, sf);
-        let shift_type = (instruction >> 22) & 3;
-        let amount = ((instruction >> 10) & 0x3f) as u32;
-        let right = shift_value(rm, shift_type, amount, sf);
+        let rm = ((instruction >> 16) & 31) as usize;
         let left = read_reg(context, ((instruction >> 5) & 31) as usize, sf);
+        let right = if instruction & 0x0020_0000 != 0 {
+            let option = ((instruction >> 13) & 7) as u32;
+            let amount = ((instruction >> 10) & 7) as u32;
+            extend_register(context, rm, option, sf).wrapping_shl(amount)
+        } else {
+            let shift_type = (instruction >> 22) & 3;
+            let amount = ((instruction >> 10) & 0x3f) as u32;
+            shift_value(read_reg(context, rm, sf), shift_type, amount, sf)
+        };
         let (value, carry, overflow) = add_sub(left, right, subtract, sf);
         write_add_sub_result(
             context,
@@ -1080,7 +1186,7 @@ impl A64Interpreter {
         let addend = read_reg(context, ((instruction >> 10) & 31) as usize, sf);
         let product = left.wrapping_mul(right);
         let value = if instruction & 0x0000_8000 != 0 {
-            product.wrapping_sub(addend)
+            addend.wrapping_sub(product)
         } else {
             product.wrapping_add(addend)
         };
@@ -1168,6 +1274,161 @@ impl A64Interpreter {
         Ok(())
     }
 
+    fn execute_simd_extract(
+        &self,
+        context: &mut touchHLE_DynarmicA64Context,
+        instruction: u32,
+    ) -> Result<(), InterpreterError> {
+        let quad = instruction & 0x4000_0000 != 0;
+        let position = ((instruction >> 11) & 0xf) as usize;
+        if !quad && position >= 8 {
+            return Err(InterpreterError::Undefined);
+        }
+        let first = ((instruction >> 5) & 31) as usize;
+        let second = ((instruction >> 16) & 31) as usize;
+        let destination = (instruction & 31) as usize;
+        let mut source = [0_u8; 32];
+        source[..8].copy_from_slice(&context.vectors[first][0].to_le_bytes());
+        source[8..16].copy_from_slice(&context.vectors[first][1].to_le_bytes());
+        source[16..24].copy_from_slice(&context.vectors[second][0].to_le_bytes());
+        source[24..].copy_from_slice(&context.vectors[second][1].to_le_bytes());
+        let mut result = [0_u8; 16];
+        let width = if quad { 16 } else { 8 };
+        result[..width].copy_from_slice(&source[position..position + width]);
+        context.vectors[destination] = [
+            u64::from_le_bytes(result[..8].try_into().unwrap()),
+            u64::from_le_bytes(result[8..].try_into().unwrap()),
+        ];
+        Ok(())
+    }
+
+    fn execute_simd_float_immediate(
+        &self,
+        context: &mut touchHLE_DynarmicA64Context,
+        instruction: u32,
+    ) -> Result<(), InterpreterError> {
+        let q = instruction & 0x4000_0000 != 0;
+        let op = instruction & 0x2000_0000 != 0;
+        if !q && op {
+            return Err(InterpreterError::Undefined);
+        }
+        let immediate = (((instruction >> 16) & 7) << 5 | ((instruction >> 5) & 0x1f)) as u8;
+        let value = adv_simd_expand_imm(op, 0xf, immediate);
+        let destination = (instruction & 31) as usize;
+        context.vectors[destination] = [value, value];
+        Ok(())
+    }
+
+    fn execute_simd_dup(
+        &self,
+        context: &mut touchHLE_DynarmicA64Context,
+        instruction: u32,
+    ) -> Result<(), InterpreterError> {
+        let quad = instruction & 0x4000_0000 != 0;
+        let element_size = ((instruction >> 16) & 0xf) as usize;
+        if !matches!(element_size, 1 | 2 | 4 | 8) {
+            return Err(InterpreterError::Undefined);
+        }
+        let vector_size = if quad { 16 } else { 8 };
+        if element_size > vector_size {
+            return Err(InterpreterError::Undefined);
+        }
+        let source = read_reg(
+            context,
+            ((instruction >> 5) & 31) as usize,
+            element_size == 8,
+        );
+        let mut result = [0_u8; 16];
+        let source_bytes = source.to_le_bytes();
+        for offset in (0..vector_size).step_by(element_size) {
+            result[offset..offset + element_size].copy_from_slice(&source_bytes[..element_size]);
+        }
+        let destination = (instruction & 31) as usize;
+        context.vectors[destination] = [
+            u64::from_le_bytes(result[..8].try_into().unwrap()),
+            u64::from_le_bytes(result[8..].try_into().unwrap()),
+        ];
+        Ok(())
+    }
+
+    fn execute_simd_add_sub(
+        &self,
+        context: &mut touchHLE_DynarmicA64Context,
+        instruction: u32,
+    ) -> Result<(), InterpreterError> {
+        let quad = instruction & 0x4000_0000 != 0;
+        let element_size = 1usize << ((instruction >> 22) & 3);
+        let vector_size = if quad { 16 } else { 8 };
+        if element_size > vector_size {
+            return Err(InterpreterError::Undefined);
+        }
+        let subtract = instruction & 0x2000_0000 != 0;
+        let destination = (instruction & 31) as usize;
+        let first = ((instruction >> 5) & 31) as usize;
+        let second = ((instruction >> 16) & 31) as usize;
+        let first_bytes = context.vectors[first];
+        let second_bytes = context.vectors[second];
+        let mut first_data = [0_u8; 16];
+        let mut second_data = [0_u8; 16];
+        first_data[..8].copy_from_slice(&first_bytes[0].to_le_bytes());
+        first_data[8..].copy_from_slice(&first_bytes[1].to_le_bytes());
+        second_data[..8].copy_from_slice(&second_bytes[0].to_le_bytes());
+        second_data[8..].copy_from_slice(&second_bytes[1].to_le_bytes());
+        let mut result = [0_u8; 16];
+        for offset in (0..vector_size).step_by(element_size) {
+            let left = read_lane(&first_data[offset..offset + element_size]);
+            let right = read_lane(&second_data[offset..offset + element_size]);
+            let value = if subtract {
+                left.wrapping_sub(right)
+            } else {
+                left.wrapping_add(right)
+            };
+            write_lane(&mut result[offset..offset + element_size], value);
+        }
+        context.vectors[destination] = [
+            u64::from_le_bytes(result[..8].try_into().unwrap()),
+            u64::from_le_bytes(result[8..].try_into().unwrap()),
+        ];
+        Ok(())
+    }
+
+    fn execute_simd_logical(
+        &self,
+        context: &mut touchHLE_DynarmicA64Context,
+        instruction: u32,
+    ) -> Result<(), InterpreterError> {
+        let destination = (instruction & 31) as usize;
+        let first = ((instruction >> 5) & 31) as usize;
+        let second = ((instruction >> 16) & 31) as usize;
+        let first_value = context.vectors[first];
+        let second_value = context.vectors[second];
+        let operation = instruction & 0x20e0_0000;
+        context.vectors[destination] = match operation {
+            0x0020_0000 => [
+                first_value[0] & second_value[0],
+                first_value[1] & second_value[1],
+            ],
+            0x00a0_0000 => [
+                first_value[0] | second_value[0],
+                first_value[1] | second_value[1],
+            ],
+            0x2020_0000 => [
+                first_value[0] ^ second_value[0],
+                first_value[1] ^ second_value[1],
+            ],
+            0x0060_0000 => [
+                first_value[0] & !second_value[0],
+                first_value[1] & !second_value[1],
+            ],
+            0x00e0_0000 => [
+                first_value[0] | !second_value[0],
+                first_value[1] | !second_value[1],
+            ],
+            _ => return Err(InterpreterError::Undefined),
+        };
+        Ok(())
+    }
+
     fn execute_adv_simd_shift_long(
         &self,
         context: &mut touchHLE_DynarmicA64Context,
@@ -1194,19 +1455,106 @@ impl A64Interpreter {
         context: &mut touchHLE_DynarmicA64Context,
         instruction: u32,
     ) -> Result<(), InterpreterError> {
+        let unsigned_offset = instruction & 0x3f00_0000 == 0x3d00_0000;
+        let register_offset = instruction & 0x3f20_0000 == 0x3c20_0000;
         let load = instruction & 0x0040_0000 != 0;
-        let base = read_sp_or_reg(context, ((instruction >> 5) & 31) as usize, true);
-        let offset = sign_extend(((instruction >> 12) & 0x1ff) as u64, 9);
-        let address = base.wrapping_add_signed(offset);
+        let width = if instruction & 0x8000_0000 == 0 {
+            16
+        } else {
+            1_u64 << ((instruction >> 30) & 3)
+        };
+        let base_reg = ((instruction >> 5) & 31) as usize;
+        let base = read_sp_or_reg(context, base_reg, true);
+        let offset = if unsigned_offset {
+            ((instruction >> 10) & 0xfff) as u64 * width
+        } else if register_offset {
+            let index = read_reg(context, ((instruction >> 16) & 31) as usize, true);
+            let extend = (instruction >> 13) & 7;
+            let mut offset = match extend {
+                2 | 6 => (index as i32 as i64) as u64,
+                3 | 7 => index,
+                0 => index as u8 as u64,
+                1 => index as u16 as u64,
+                4 => index as u32 as u64,
+                5 => index,
+                _ => index,
+            };
+            if instruction & 0x0000_1000 != 0 {
+                offset = offset.wrapping_shl(width.trailing_zeros());
+            }
+            offset
+        } else {
+            sign_extend(((instruction >> 12) & 0x1ff) as u64, 9) as u64
+        };
+        let mode = (instruction >> 10) & 3;
+        let address = if !unsigned_offset && !register_offset && mode == 1 {
+            base
+        } else {
+            base.wrapping_add_signed(offset as i64)
+        };
         let register = (instruction & 31) as usize;
         if load {
-            context.vectors[register] = memory
-                .read_u128(address)
-                .map_err(|error| InterpreterError::Memory(error, address))?;
+            let value = match width {
+                1 => [
+                    memory
+                        .read_u8(address)
+                        .map_err(|error| InterpreterError::Memory(error, address))?
+                        as u64,
+                    0,
+                ],
+                2 => [
+                    memory
+                        .read_u16(address)
+                        .map_err(|error| InterpreterError::Memory(error, address))?
+                        as u64,
+                    0,
+                ],
+                4 => [
+                    memory
+                        .read_u32(address)
+                        .map_err(|error| InterpreterError::Memory(error, address))?
+                        as u64,
+                    0,
+                ],
+                8 => [
+                    memory
+                        .read_u64(address)
+                        .map_err(|error| InterpreterError::Memory(error, address))?,
+                    0,
+                ],
+                16 => memory
+                    .read_u128(address)
+                    .map_err(|error| InterpreterError::Memory(error, address))?,
+                _ => return Err(InterpreterError::Undefined),
+            };
+            context.vectors[register] = value;
         } else {
-            memory
-                .write_u128(address, context.vectors[register])
-                .map_err(|error| InterpreterError::Memory(error, address))?;
+            match width {
+                1 => memory
+                    .write_u8(address, context.vectors[register][0] as u8)
+                    .map_err(|error| InterpreterError::Memory(error, address))?,
+                2 => memory
+                    .write_u16(address, context.vectors[register][0] as u16)
+                    .map_err(|error| InterpreterError::Memory(error, address))?,
+                4 => memory
+                    .write_u32(address, context.vectors[register][0] as u32)
+                    .map_err(|error| InterpreterError::Memory(error, address))?,
+                8 => memory
+                    .write_u64(address, context.vectors[register][0])
+                    .map_err(|error| InterpreterError::Memory(error, address))?,
+                16 => memory
+                    .write_u128(address, context.vectors[register])
+                    .map_err(|error| InterpreterError::Memory(error, address))?,
+                _ => return Err(InterpreterError::Undefined),
+            }
+        }
+        if !unsigned_offset && !register_offset && (mode == 1 || mode == 3) {
+            write_sp_or_reg(
+                context,
+                base_reg,
+                base.wrapping_add_signed(offset as i64),
+                true,
+            );
         }
         Ok(())
     }
@@ -1292,8 +1640,11 @@ impl A64Interpreter {
         instruction: u32,
     ) -> Result<(), InterpreterError> {
         let size = 1u64 << ((instruction >> 30) & 3);
-        let opcode = instruction & 0xffc0_0000;
-        let signed_load = matches!(opcode, 0x3980_0000 | 0x7980_0000 | 0xb980_0000);
+        let signed_opcode = instruction & 0xff80_0000;
+        let signed_load = matches!(
+            signed_opcode,
+            0x3980_0000 | 0x7980_0000 | 0xb980_0000
+        );
         let load = instruction & 0x0040_0000 != 0 || signed_load;
         let address = read_sp_or_reg(context, ((instruction >> 5) & 31) as usize, true)
             .wrapping_add(((instruction >> 10) & 0xfff) as u64 * size);
@@ -1331,8 +1682,9 @@ impl A64Interpreter {
         instruction: u32,
     ) -> Result<(), InterpreterError> {
         let size = 1u64 << ((instruction >> 30) & 3);
-        let load = instruction & 0x0040_0000 != 0;
-        let signed = instruction & 0x0000_0800 != 0;
+        let signed_load = size == 4 && instruction & 0x00c0_0000 == 0x0080_0000;
+        let load = instruction & 0x0040_0000 != 0 || signed_load;
+        let signed = instruction & 0x0000_0800 != 0 || signed_load;
         let base_reg = ((instruction >> 5) & 31) as usize;
         let base = read_sp_or_reg(context, base_reg, true);
         let index = read_reg(context, ((instruction >> 16) & 31) as usize, true);
@@ -1379,7 +1731,11 @@ impl A64Interpreter {
         instruction: u32,
     ) -> Result<(), InterpreterError> {
         let size = 1u64 << ((instruction >> 30) & 3);
-        let load = instruction & 0x0040_0000 != 0;
+        let signed_load = matches!(
+            instruction & 0xff80_0000,
+            0x3980_0000 | 0x7980_0000 | 0xb980_0000
+        );
+        let load = instruction & 0x0040_0000 != 0 || signed_load;
         let base_reg = ((instruction >> 5) & 31) as usize;
         let base = read_sp_or_reg(context, base_reg, true);
         let offset = sign_extend(((instruction >> 12) & 0x1ff) as u64, 9);
@@ -1389,7 +1745,30 @@ impl A64Interpreter {
         } else {
             base.wrapping_add_signed(offset)
         };
-        self.load_store(memory, context, instruction, address, size, load)?;
+        if signed_load {
+            let value = match size {
+                1 => memory
+                    .read_u8(address)
+                    .map(|value| (value as i8 as i64) as u64),
+                2 => memory
+                    .read_u16(address)
+                    .map(|value| (value as i16 as i64) as u64),
+                4 => memory
+                    .read_u32(address)
+                    .map(|value| (value as i32 as i64) as u64),
+                8 => memory.read_u64(address),
+                _ => unreachable!(),
+            }
+            .map_err(|error| InterpreterError::Memory(error, address))?;
+            set_reg(
+                context,
+                (instruction & 31) as usize,
+                value,
+                instruction & 0x8000_0000 != 0,
+            );
+        } else {
+            self.load_store(memory, context, instruction, address, size, load)?;
+        }
         if mode == 1 || mode == 3 {
             write_sp_or_reg(context, base_reg, base.wrapping_add_signed(offset), true);
         }
@@ -1558,6 +1937,27 @@ mod conditional_select_tests {
             (!0x22u32).wrapping_add(1) as u64
         );
     }
+
+    #[test]
+    fn svc_immediate_is_returned_to_the_runtime() {
+        let mut memory = Mem64::new();
+        memory
+            .map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute())
+            .unwrap();
+        memory
+            .load_bytes(CODE, &0xd400_3421_u32.to_le_bytes())
+            .unwrap();
+        let mut context = touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context {
+            pc: CODE,
+            ..Default::default()
+        };
+        let mut interpreter = A64Interpreter::new();
+        assert_eq!(
+            interpreter.run_or_step(&mut memory, &mut context, None),
+            0x1a1
+        );
+        assert_eq!(context.pc, CODE + 4);
+    }
 }
 
 #[derive(Debug)]
@@ -1642,6 +2042,73 @@ fn replicate_element(value: u64, element_size: u32, width: u32) -> u64 {
     result
 }
 
+fn adv_simd_expand_imm(op: bool, cmode: u32, imm8: u8) -> u64 {
+    let replicate_u8 = |value: u64| replicate_element(value & 0xff, 8, 64);
+    let replicate_u16 = |value: u64| replicate_element(value & 0xffff, 16, 64);
+    let replicate_u32 = |value: u64| replicate_element(value & 0xffff_ffff, 32, 64);
+    match cmode >> 1 {
+        0 => replicate_u32(imm8 as u64),
+        1 => replicate_u32((imm8 as u64) << 8),
+        2 => replicate_u32((imm8 as u64) << 16),
+        3 => replicate_u32((imm8 as u64) << 24),
+        4 => replicate_u16(imm8 as u64),
+        5 => replicate_u16((imm8 as u64) << 8),
+        6 if cmode & 1 == 0 => replicate_u32(((imm8 as u64) << 8) | 0xff),
+        6 => replicate_u32(((imm8 as u64) << 16) | 0xffff),
+        7 if cmode & 1 == 0 && !op => replicate_u8(imm8 as u64),
+        7 if cmode & 1 == 0 => (0..8).fold(0, |value, bit| {
+            value
+                | if imm8 & (1 << bit) != 0 {
+                    0xff << (bit * 8)
+                } else {
+                    0
+                }
+        }),
+        7 if !op => {
+            let value = (if imm8 & 0x80 != 0 { 0x8000_0000 } else { 0 })
+                | (if imm8 & 0x40 != 0 {
+                    0x3e00_0000
+                } else {
+                    0x4000_0000
+                })
+                | ((imm8 as u64 & 0x3f) << 19);
+            replicate_u32(value)
+        }
+        7 => {
+            (if imm8 & 0x80 != 0 {
+                0x8000_0000_0000_0000
+            } else {
+                0
+            }) | (if imm8 & 0x40 != 0 {
+                0x3fc0_0000_0000_0000
+            } else {
+                0x4000_0000_0000_0000
+            }) | ((imm8 as u64 & 0x3f) << 48)
+        }
+        _ => 0,
+    }
+}
+
+fn read_lane(bytes: &[u8]) -> u64 {
+    match bytes.len() {
+        1 => u64::from(bytes[0]),
+        2 => u64::from(u16::from_le_bytes(bytes.try_into().unwrap())),
+        4 => u64::from(u32::from_le_bytes(bytes.try_into().unwrap())),
+        8 => u64::from_le_bytes(bytes.try_into().unwrap()),
+        _ => unreachable!(),
+    }
+}
+
+fn write_lane(bytes: &mut [u8], value: u64) {
+    match bytes.len() {
+        1 => bytes[0] = value as u8,
+        2 => bytes.copy_from_slice(&(value as u16).to_le_bytes()),
+        4 => bytes.copy_from_slice(&(value as u32).to_le_bytes()),
+        8 => bytes.copy_from_slice(&value.to_le_bytes()),
+        _ => unreachable!(),
+    }
+}
+
 fn rotate_right_width(value: u64, amount: u32, width: u32) -> u64 {
     if width == 32 {
         u64::from((value as u32).rotate_right(amount))
@@ -1683,6 +2150,31 @@ fn write_sp_or_reg(context: &mut touchHLE_DynarmicA64Context, index: usize, valu
         context.sp = if sf { value } else { value as u32 as u64 };
     } else {
         set_reg(context, index, value, sf);
+    }
+}
+
+fn extend_register(
+    context: &touchHLE_DynarmicA64Context,
+    register: usize,
+    option: u32,
+    sf: bool,
+) -> u64 {
+    let value = context.regs[register];
+    let extended = match option {
+        0 => value as u8 as u64,
+        1 => value as u16 as u64,
+        2 => value as u32 as u64,
+        3 => value,
+        4 => (value as u8 as i8 as i64) as u64,
+        5 => (value as u16 as i16 as i64) as u64,
+        6 => (value as u32 as i32 as i64) as u64,
+        7 => value,
+        _ => unreachable!(),
+    };
+    if sf {
+        extended
+    } else {
+        extended as u32 as u64
     }
 }
 
@@ -1860,6 +2352,7 @@ mod scalar_floating_tests {
         assert_eq!(run(0x1e2e_1000, 0.0, 0.0), 1.0f32.to_bits() as u64);
         assert_eq!(run(0x1e6e_1000, 0.0, 0.0), 1.0f64.to_bits());
         assert_eq!(run(0x1e3e_1000, 0.0, 0.0), (-1.0f32).to_bits() as u64);
+        assert_eq!(run(0x1e22_9002, 0.0, 0.0), 5.0f32.to_bits() as u64);
     }
 
     #[test]
@@ -1963,6 +2456,30 @@ mod scalar_compare_tests {
             NZCV_Z | NZCV_C
         );
         assert_eq!(greater.pstate & (NZCV_N | NZCV_Z | NZCV_C | NZCV_V), NZCV_C);
+    }
+
+    #[test]
+    fn fccmp_uses_the_fallback_nzcv_when_condition_is_false() {
+        let mut memory = Mem64::new();
+        memory
+            .map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute())
+            .unwrap();
+        memory
+            .load_bytes(CODE, &0x1e66_1488u32.to_le_bytes())
+            .unwrap();
+        assert_eq!(memory.read_code_u32(CODE).unwrap(), 0x1e66_1488);
+        let mut context = touchHLE_DynarmicA64Context {
+            pc: CODE,
+            pstate: NZCV_Z,
+            ..Default::default()
+        };
+        context.vectors[4][0] = 1.0f64.to_bits();
+        context.vectors[6][0] = 2.0f64.to_bits();
+        assert_eq!(
+            A64Interpreter::new().run_or_step(&mut memory, &mut context, None),
+            -1
+        );
+        assert_eq!(context.pstate & (NZCV_N | NZCV_Z | NZCV_C | NZCV_V), NZCV_N);
     }
 
     #[test]
@@ -2140,6 +2657,25 @@ mod bitfield_tests {
         let unchanged_flags = super::NZCV_N | super::NZCV_C | super::NZCV_V;
         assert_eq!(run(0x53007c08, 0xffff_ffff_0000_0001), (0, unchanged_flags));
     }
+
+    #[test]
+    fn bfxil_writes_the_low_byte_and_zero_extends_w_registers() {
+        let mut memory = Mem64::new();
+        memory
+            .map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute())
+            .unwrap();
+        memory
+            .load_bytes(CODE, &0x3300_1c28_u32.to_le_bytes())
+            .unwrap();
+        let mut context = touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context {
+            pc: CODE,
+            ..Default::default()
+        };
+        context.regs[1] = 4;
+        context.regs[8] = 0xa800;
+        assert_eq!(A64Interpreter::new().run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(context.regs[8], 0xa804);
+    }
 }
 
 #[cfg(test)]
@@ -2183,6 +2719,129 @@ mod tests {
         assert_eq!(context.vectors[9][0], 0x3333_4444);
         assert_eq!(context.vectors[8][0], 0xbbbb_cccc);
         assert_eq!(context.sp, SP);
+    }
+
+    #[test]
+    fn simd_logical_move_and_bitwise_operations_preserve_128_bit_values() {
+        let mut memory = Mem64::new();
+        memory
+            .map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute())
+            .unwrap();
+        let instructions = [
+            0x4ea0_1c08_u32,
+            0x4ea1_1c08_u32,
+            0x4e21_1c08_u32,
+            0x6e21_1c08_u32,
+        ];
+        for (index, instruction) in instructions.iter().enumerate() {
+            memory
+                .load_bytes(CODE + index as u64 * 4, &instruction.to_le_bytes())
+                .unwrap();
+        }
+        let mut context = touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context {
+            pc: CODE,
+            ..Default::default()
+        };
+        context.vectors[0] = [0x00ff_00ff_00ff_00ff, 0x0f0f_0f0f_0f0f_0f0f];
+        context.vectors[1] = [0xf0f0_f0f0_f0f0_f0f0, 0x3333_3333_3333_3333];
+        let mut interpreter = A64Interpreter::new();
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(context.vectors[8], context.vectors[0]);
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(
+            context.vectors[8],
+            [0xf0ff_f0ff_f0ff_f0ff, 0x3f3f_3f3f_3f3f_3f3f,]
+        );
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(
+            context.vectors[8],
+            [0x00f0_00f0_00f0_00f0, 0x0303_0303_0303_0303,]
+        );
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(
+            context.vectors[8],
+            [0xf00f_f00f_f00f_f00f, 0x3c3c_3c3c_3c3c_3c3c,]
+        );
+    }
+
+    #[test]
+    fn simd_ext_extracts_bytes_across_two_vectors() {
+        let mut memory = Mem64::new();
+        memory
+            .map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute())
+            .unwrap();
+        memory
+            .load_bytes(CODE, &0x6e01_4021_u32.to_le_bytes())
+            .unwrap();
+        let mut context = touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context {
+            pc: CODE,
+            ..Default::default()
+        };
+        context.vectors[1] = [0x1111_2222_3333_4444, 0x5555_6666_7777_8888];
+        let mut interpreter = A64Interpreter::new();
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(
+            context.vectors[1],
+            [0x5555_6666_7777_8888, 0x1111_2222_3333_4444]
+        );
+    }
+
+    #[test]
+    fn simd_float_immediate_expands_single_and_double_vectors() {
+        let mut memory = Mem64::new();
+        memory
+            .map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute())
+            .unwrap();
+        memory
+            .load_bytes(CODE, &0x4f03_f601_u32.to_le_bytes())
+            .unwrap();
+        memory
+            .load_bytes(CODE + 4, &0x6f03_f604_u32.to_le_bytes())
+            .unwrap();
+        let mut context = touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context {
+            pc: CODE,
+            ..Default::default()
+        };
+        let mut interpreter = A64Interpreter::new();
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(
+            context.vectors[1],
+            [0x3f80_0000_3f80_0000, 0x3f80_0000_3f80_0000]
+        );
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(
+            context.vectors[4],
+            [0x3ff0_0000_0000_0000, 0x3ff0_0000_0000_0000]
+        );
+    }
+
+    #[test]
+    fn simd_float_immediate_expands_32_and_64_bit_constants() {
+        let mut memory = Mem64::new();
+        memory
+            .map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute())
+            .unwrap();
+        let instructions = [0x4f03_f601_u32, 0x6f03_f604_u32];
+        for (index, instruction) in instructions.iter().enumerate() {
+            memory
+                .load_bytes(CODE + index as u64 * 4, &instruction.to_le_bytes())
+                .unwrap();
+        }
+        let mut context = touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context {
+            pc: CODE,
+            ..Default::default()
+        };
+        let mut interpreter = A64Interpreter::new();
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(
+            context.vectors[1],
+            [0x3f80_0000_3f80_0000, 0x3f80_0000_3f80_0000]
+        );
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(
+            context.vectors[4],
+            [0x3ff0_0000_0000_0000, 0x3ff0_0000_0000_0000]
+        );
     }
 
     #[test]
@@ -2471,6 +3130,111 @@ mod tests {
         assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
         assert_eq!(memory.read_u64(DATA).unwrap(), 0);
         assert_eq!(context.pc, CODE + 4);
+    }
+
+    #[test]
+    fn msub_preserves_the_addend_when_product_is_zero() {
+        let mut memory = Mem64::new();
+        memory
+            .map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute())
+            .unwrap();
+        memory
+            .load_bytes(CODE, &0x9b0da549u32.to_le_bytes())
+            .unwrap();
+        let mut context = touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context {
+            pc: CODE,
+            ..Default::default()
+        };
+        context.regs[9] = 1;
+        context.regs[10] = 0;
+        context.regs[13] = 73;
+        assert_eq!(
+            A64Interpreter::new().run_or_step(&mut memory, &mut context, None),
+            -1
+        );
+        assert_eq!(context.regs[9], 1);
+        assert_eq!(context.pc, CODE + 4);
+    }
+
+    #[test]
+    fn extr_decodes_the_ror_alias_used_by_minecraft_startup() {
+        let mut memory = Mem64::new();
+        memory
+            .map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute())
+            .unwrap();
+        memory
+            .load_bytes(CODE, &0x93cfadefu32.to_le_bytes())
+            .unwrap();
+        let mut context = touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context {
+            pc: CODE,
+            ..Default::default()
+        };
+        context.regs[15] = 0x0123_4567_89ab_cdef;
+        assert_eq!(
+            A64Interpreter::new().run_or_step(&mut memory, &mut context, None),
+            -1
+        );
+        assert_eq!(context.regs[15], 0xacf1_3579_bde0_2468);
+        assert_eq!(context.pc, CODE + 4);
+    }
+
+    #[test]
+    fn simd_dup_and_add_support_minecraft_random_fill() {
+        let mut memory = Mem64::new();
+        memory
+            .map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute())
+            .unwrap();
+        let instructions = [0x4e04_0d00_u32, 0x4ea2_8401_u32];
+        for (index, instruction) in instructions.iter().enumerate() {
+            memory
+                .load_bytes(CODE + index as u64 * 4, &instruction.to_le_bytes())
+                .unwrap();
+        }
+        let mut context = touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context {
+            pc: CODE,
+            ..Default::default()
+        };
+        context.regs[8] = 8;
+        context.vectors[2] = [0x0000_0002_0000_0001, 0x0000_0004_0000_0003];
+        let mut interpreter = A64Interpreter::new();
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(
+            context.vectors[0],
+            [0x0000_0008_0000_0008, 0x0000_0008_0000_0008]
+        );
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(
+            context.vectors[1],
+            [0x0000_000a_0000_0009, 0x0000_000c_0000_000b]
+        );
+    }
+
+    #[test]
+    fn udiv_and_msub_reduce_hash_values_for_unordered_map() {
+        let mut memory = Mem64::new();
+        memory
+            .map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_execute())
+            .unwrap();
+        let instructions = [0x9ad6_0909_u32, 0x9b16_a128_u32, 0x8a08_0128_u32];
+        for (index, instruction) in instructions.iter().enumerate() {
+            memory
+                .load_bytes(CODE + index as u64 * 4, &instruction.to_le_bytes())
+                .unwrap();
+        }
+        let mut context = touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context {
+            pc: CODE,
+            ..Default::default()
+        };
+        let hash = 0xe677_a9b6_a2cd_ed04_u64;
+        context.regs[8] = hash;
+        context.regs[22] = 3;
+        let mut interpreter = A64Interpreter::new();
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(context.regs[9], hash / 3);
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(context.regs[8], hash % 3);
+        assert_eq!(interpreter.run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(context.regs[8], (hash % 3) & 2);
     }
 
     #[test]
