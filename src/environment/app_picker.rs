@@ -1152,7 +1152,7 @@ fn app_picker_inner(
     let mut quick_options_fps_limit: Option<f64> = None;
     let mut quick_options_frame_generation = false;
     let mut quick_options_high_performance = crate::options::DEFAULT_HIGH_PERFORMANCE;
-    let mut quick_options_force_max_clocks = false;
+    let mut quick_options_force_max_clocks = crate::options::DEFAULT_FORCE_MAX_CLOCKS;
     let mut quick_options_vsync = false;
     let mut quick_options_battery_saver = false;
     let mut quick_options_ultra_battery_saver = false;
@@ -1163,7 +1163,7 @@ fn app_picker_inner(
     let mut quick_options_angle_driver = false;
     let mut quick_options_log_file = true;
     let mut quick_options_trace_gl_errors = false;
-    let mut quick_options_fast_memory = true;
+    let mut quick_options_fast_memory = crate::options::DEFAULT_FAST_MEMORY;
     let mut quick_options_force_32_bit = false;
     let mut quick_options_force_64_bit = false;
     let mut quick_options_device_tag: Option<i32> = None;
@@ -3412,6 +3412,7 @@ fn setup_quick_options(
         Section(&'static str),
         Subsection(&'static str),
         Label(&'static str),
+        LabelWithWarning(&'static str),
         Buttons(&'static [(&'static str, &'static str)]),
         /// Dropdown listing every selectable device model.
         DeviceDropdown,
@@ -3430,14 +3431,14 @@ fn setup_quick_options(
         RowKind::Subsection("Performance"),
         RowKind::Label("High performance mode"),
         RowKind::Switch("highPerformance:", crate::options::DEFAULT_HIGH_PERFORMANCE),
-        RowKind::Label("Force maximum GPU clocks"),
-        RowKind::Switch("forceMaxClocks:", false),
+        RowKind::LabelWithWarning("Force maximum GPU clocks"),
+        RowKind::Switch("forceMaxClocks:", crate::options::DEFAULT_FORCE_MAX_CLOCKS),
         RowKind::Label("Battery saver"),
         RowKind::Switch("batterySaver:", false),
         RowKind::Label("Ultra battery saver"),
         RowKind::Switch("ultraBatterySaver:", false),
         RowKind::Label("Fast memory"),
-        RowKind::Switch("fastMemory:", true),
+        RowKind::Switch("fastMemory:", crate::options::DEFAULT_FAST_MEMORY),
         RowKind::Label("Memory management"),
         RowKind::MemoryManagementDropdown,
         RowKind::Label("Frame pacing"),
@@ -3708,8 +3709,10 @@ fn setup_quick_options(
 
         let row_center = divider + ((1 + layout_row) as CGFloat) * 78.0 * ui_scale;
 
+        let label_has_warning = matches!(row, &RowKind::LabelWithWarning(_));
+
         match *row {
-            RowKind::Label(text) => {
+            RowKind::Label(text) | RowKind::LabelWithWarning(text) => {
                 let frame = CGRect {
                     origin: CGPoint {
                         x: 22.0 * ui_scale,
@@ -3736,6 +3739,30 @@ fn setup_quick_options(
                 () = msg![env; label setAdjustsFontSizeToFitWidth:true];
                 () = msg![env; label setMinimumFontSize:8.0];
                 () = msg![env; main_view addSubview:label];
+                if label_has_warning {
+                    let warning_frame = CGRect {
+                        origin: CGPoint {
+                            x: main_frame.size.width * 0.53,
+                            y: row_center - (42.0 * ui_scale) / 2.0,
+                        },
+                        size: CGSize {
+                            width: 28.0 * ui_scale,
+                            height: 42.0 * ui_scale,
+                        },
+                    };
+                    let warning: id = msg_class![env; UILabel alloc];
+                    let warning: id = msg![env; warning initWithFrame:warning_frame];
+                    let warning_text = ns_string::get_static_str(env, "⚠");
+                    () = msg![env; warning setText:warning_text];
+                    () = msg![env; warning setTextAlignment:UITextAlignmentCenter];
+                    let warning_font = picker_font(env, 17.0 * ui_scale);
+                    () = msg![env; warning setFont:warning_font];
+                    let warning_color: id = msg_class![env; UIColor colorWithRed:0.95 green:0.62 blue:0.0 alpha:1.0];
+                    () = msg![env; warning setTextColor:warning_color];
+                    let clear: id = msg_class![env; UIColor clearColor];
+                    () = msg![env; warning setBackgroundColor:clear];
+                    () = msg![env; main_view addSubview:warning];
+                }
             }
             RowKind::Buttons(buttons) => {
                 let controls = make_button_row(

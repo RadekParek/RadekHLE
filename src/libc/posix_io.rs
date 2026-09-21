@@ -349,7 +349,7 @@ pub fn open_direct(env: &mut Environment, path: ConstPtr<u8>, flags: i32) -> Fil
         }
     }
 
-    let actual_path_string = case_insensitive_path(env, &path_string)
+    let mut actual_path_string = case_insensitive_path(env, &path_string)
         .or_else(|| {
             if (flags & O_CREAT) != 0 {
                 return None;
@@ -366,6 +366,21 @@ pub fn open_direct(env: &mut Environment, path: ConstPtr<u8>, flags: i32) -> Fil
                 .find_map(|candidate| case_insensitive_path(env, candidate))
         })
         .unwrap_or_else(|| path_string.clone());
+
+    if env.bundle.bundle_identifier() == "com.rovio.angrybirdstransformers"
+        && path_string.ends_with("/Library/Application Support/cache/cache_assets.xal")
+        && flags & O_CREAT == 0
+    {
+        let bundle_root = env.bundle.bundle_path().as_str().trim_end_matches('/');
+        let bundled_manifest = format!("{bundle_root}/assets.xal");
+        if let Some(resolved) = case_insensitive_path(env, &bundled_manifest) {
+            log!(
+                "Transformers cache manifest is absent; using bundled assets.xal for {}",
+                path_string
+            );
+            actual_path_string = resolved;
+        }
+    }
 
     // ИСПРАВЛЕНИЕ 2: корректная реализация O_EXCL.
     // O_CREAT|O_EXCL означает «создать файл, но вернуть ошибку, если он уже

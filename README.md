@@ -6,7 +6,7 @@ The project is licensed under the Mozilla Public License 2.0. Source and depende
 
 ## Architecture
 
-The 32-bit path uses the original `Environment` and Dynarmic A32 execution path. ARM64 uses `Environment64`, `Mem64`, the Dynarmic A64 wrapper, and the Rust interpreter because ARM64 has a different register ABI, pointer width, address space, Mach-O format, and callback conventions. `arm64_runtime.rs` is the host-dispatch layer for that environment; it is not a second CPU implementation. Both paths reuse the existing framework, window, audio, and graphics layers wherever their APIs are shared.
+The 32-bit path uses the original `Environment` and Dynarmic A32 JIT. ARM64 uses `Environment64`, `Mem64`, the Dynarmic A64 wrapper, and the Rust interpreter because ARM64 has a different register ABI, pointer width, address space, Mach-O format, and callback conventions. `arm64_runtime.rs` is the host-dispatch layer for that environment; it is not a second CPU implementation. Both paths reuse the existing framework, window, audio, and graphics layers wherever their APIs are shared.
 
 Keeping the two execution environments separate prevents 64-bit pointers from entering the 32-bit memory and Objective-C code, while allowing compatibility fixes in shared frameworks to benefit both paths.
 

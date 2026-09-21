@@ -316,7 +316,7 @@ Debugging options:
         Disable logging to a file.
 
     --enable-direct-memory-access
-        Enable direct memory access for dynarmic.
+        Enable direct memory access for dynarmic. Enabled by default.
 
     --disable-direct-memory-access
         Force dynarmic to always access guest memory via the memory access
@@ -412,15 +412,15 @@ Other options:
 
     --high-performance / --disable-high-performance
         Disable emulator-side pacing, vsync, and battery caps so the host can
-        run the renderer and guest as fast as practical. This is a scheduling
-        and pacing request; it cannot force an Android device to use 100% CPU
-        or GPU clocks.
+        run the renderer and guest as fast as practical. Enabled by default.
+        This is a scheduling and pacing request; it cannot force an Android
+        device to use 100% CPU or GPU clocks.
 
     --force-max-clocks / --disable-force-max-clocks
-        Request the host's best-effort maximum-performance hint. On Android the
-        setting is passed to the host performance layer where available, but
-        clock governors remain controlled by the operating system and device.
-        Enabling it also enables high-performance mode.
+        Request the host's best-effort maximum-performance hint. Enabled by
+        default. On Android the setting is passed to the host performance layer
+        where available, but clock governors remain controlled by the operating
+        system and device. Enabling it also enables high-performance mode.
 
     --rtcs / --disable-rtcs
         Enable or disable the safe visual-only accelerating corruption effect.

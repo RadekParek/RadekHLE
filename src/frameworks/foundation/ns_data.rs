@@ -192,6 +192,14 @@ pub const CLASSES: ClassExports = objc_classes! {
     let path_str = to_rust_string(env, path);
     let mut candidates = vec![path_str.clone()];
     let bundle_root = env.bundle.bundle_path().as_str().trim_end_matches('/');
+    if env.bundle.bundle_identifier() == "com.dvloper.granny"
+        && (path_str == "Data/data.unity3d"
+            || path_str.ends_with("/Data/data.unity3d")
+            || path_str.ends_with("/Data/Data/globalgamemanagers")
+            || path_str.ends_with("/Data/globalgamemanagers"))
+    {
+        candidates.insert(0, format!("{bundle_root}/Data/globalgamemanagers").into());
+    }
     let relative_path = path_str.trim_start_matches("./");
     let data_relative_path = relative_path.strip_prefix("Data/").unwrap_or(relative_path);
     if !path_str.starts_with('/') {
@@ -206,6 +214,13 @@ pub const CLASSES: ClassExports = objc_classes! {
         release(env, this);
         return nil;
     };
+    if env.bundle.bundle_identifier() == "com.dvloper.granny"
+        && (path_str.ends_with("/Data/globalgamemanagers")
+            || path_str.ends_with("/Data/Data/globalgamemanagers")
+            || path_str.ends_with("/Data/data.unity3d"))
+    {
+        log!("Granny NSData file load: {} bytes from {}", bytes.len(), path_str);
+    }
     let size: NSUInteger = bytes.len().try_into().unwrap();
     if size == 0 {
         return this;

@@ -361,6 +361,17 @@ pub fn resolve_path<'a>(path: &'a GuestPath, relative_to: Option<&'a GuestPath>)
         }
     }
 
+    while let Some(duplicate_data) = components
+        .windows(2)
+        .position(|window| window[0] == "Data" && window[1] == "Data")
+    {
+        log_dbg!(
+            "Path normalisation: collapsing duplicate Data component at {}",
+            duplicate_data
+        );
+        components.remove(duplicate_data);
+    }
+
     log_dbg!("=> {:?}", components);
 
     components

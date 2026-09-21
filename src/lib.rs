@@ -546,8 +546,6 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
         }
     }
     let display_rate = options.fps_limit.unwrap_or(60.0);
-    options.apply_power_profile(display_rate);
-    window::configure_host_performance(options.high_performance, options.force_max_clocks);
     crate::log::set_file_logging(options.log_file);
     crate::log::set_verbose_logging(options.verbose_logging);
     crate::media_capture::log_native_capture_status();
@@ -585,20 +583,29 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
         "Selected executable architecture: {}",
         mach_o::architecture_name(architecture)
     );
-    if architecture == mach_o::MachOArchitecture::Arm64 && !options.force_32_bit {
+    let arm64_selected =
+        architecture == mach_o::MachOArchitecture::Arm64 && !options.force_32_bit;
+    if arm64_selected {
+        options.high_performance = false;
+        options.force_max_clocks = false;
+        options.fast_memory = false;
+        options.direct_memory_access = false;
         options.verbose_logging = true;
         options.trace_gl_errors = true;
         crate::log::set_verbose_logging(true);
         crate::gles::configure_translator_tracing(true, true);
+        log!("ARM64 executable detected; disabling high-performance mode, maximum-clock hints, and direct memory access until the ARM64 path is ready");
         log!("ARM64 executable detected; enabling verbose logging and OpenGL error tracing automatically");
     }
+    options.apply_power_profile(display_rate);
+    window::configure_host_performance(options.high_performance, options.force_max_clocks);
     crate::gles::present::set_onscreen_hud_architecture(mach_o::architecture_name(architecture));
     if options.llvmpipe_fallback && crate::gles::llvmpipe_fallback_available() {
         options.prefer_gles2_context = true;
         log!("LLVMPipe fallback libraries detected; ARM32 GLES1 apps will use the GLES2 translator on LLVMPipe");
     }
 
-    if architecture == mach_o::MachOArchitecture::Arm64 && !options.force_32_bit {
+    if arm64_selected {
         return environment64::run(bundle, fs, options, app_args.unwrap_or_default());
     }
     if architecture == mach_o::MachOArchitecture::Arm64 {

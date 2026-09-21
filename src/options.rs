@@ -35,6 +35,10 @@ pub const LATEST_IOS_VERSION: (i32, i32, i32) = (26, 6, 0);
 
 /// The app-picker power switch starts in the same state as the runtime default.
 pub const DEFAULT_HIGH_PERFORMANCE: bool = true;
+/// Request the host's best-effort maximum-performance hint by default.
+pub const DEFAULT_FORCE_MAX_CLOCKS: bool = true;
+/// Use Dynarmic's direct guest-memory path by default.
+pub const DEFAULT_FAST_MEMORY: bool = true;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Arm64Backend {
@@ -552,8 +556,8 @@ impl Default for Options {
             gles_override_version: GlesOverrideVersion::Default,
             angle_driver: false,
             log_file: true,
-            fast_memory: true,
-            direct_memory_access: true,
+            fast_memory: DEFAULT_FAST_MEMORY,
+            direct_memory_access: DEFAULT_FAST_MEMORY,
             force_32_bit: false,
             force_64_bit: false,
             arm64_backend: Arm64Backend::Interpreter,
@@ -571,7 +575,7 @@ impl Default for Options {
             ultra_battery_saver: false,
             frame_generation: false,
             high_performance: DEFAULT_HIGH_PERFORMANCE,
-            force_max_clocks: false,
+            force_max_clocks: DEFAULT_FORCE_MAX_CLOCKS,
             rtcs: false,
             force_composition: false,
             prefer_gles2_context: false,
@@ -1053,7 +1057,6 @@ impl Options {
             self.ultra_battery_saver = false;
             self.vsync = false;
             self.frame_pacing = false;
-            self.frame_generation = false;
             self.fps_limit = None;
             return;
         } else {
@@ -1319,9 +1322,22 @@ mod tests {
         let options = Options::default();
         assert_eq!(options.graphics_api, GraphicsApi::Default);
         assert!(options.high_performance);
+        assert!(options.force_max_clocks);
+        assert!(options.fast_memory);
+        assert!(options.direct_memory_access);
         assert!(!options.force_composition);
         assert!(!options.network_access);
         assert_eq!(options.metal_translator, cfg!(target_arch = "aarch64"));
+    }
+
+    #[test]
+    fn high_performance_keeps_frame_generation_opt_in() {
+        let mut options = Options::default();
+        options.frame_generation = true;
+        options.apply_power_profile(60.0);
+        assert!(options.frame_generation);
+        assert!(!options.frame_pacing);
+        assert_eq!(options.fps_limit, None);
     }
 
     #[test]

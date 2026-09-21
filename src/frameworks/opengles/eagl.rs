@@ -258,7 +258,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     );
 
     let mut gles_ins = match (env.options.graphics_api, effective_api) {
-        (GraphicsApi::Software, _) => create_gles1_ctx(env),
+        (GraphicsApi::Software, _) => create_software_gles_ctx(env),
         (GraphicsApi::Translator, _) => create_gles1_translator_ctx(env),
         (GraphicsApi::TranslatorGLES30, _) => create_gles1_gles3_translator_ctx(env),
         (_, kEAGLRenderingAPIOpenGLES3) => create_gles3_ctx(env),

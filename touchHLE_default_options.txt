@@ -243,8 +243,8 @@ com.ea.nfsucinc: --force-composition
 # BOF
 com.gameloft.BladesOfFury: --force-composition
 
-# Granny / Unity 2018: keep the safer non-direct memory path and force composition.
-com.dvloper.granny: --disable-direct-memory-access --force-composition
+# Granny / Unity 2018: keep composition so the legacy EAGL surface is presented correctly.
+com.dvloper.granny: --force-composition
 
 # MCPE LITE
 com.mojang.minecraftpe: --force-composition --trace-gl-errors --fix-texture-min-filter
@@ -369,7 +369,12 @@ com.disney.SwampyGame: --device-family=iphone-3gs
 com.lego.ninjago.thefinalbattle: --landscape-left --fix-texture-min-filter
 
 # Unity and classic 32-bit titles
-# Granny's Unity startup uses the ES2 path and is safer without the direct Dynarmic mapping.
+# Angry Birds Epic performs its first content and identity checks online.
+com.rovio.gold: --allow-network-access
+# Angry Birds Transformers uses its online asset/update manifest during startup.
+com.rovio.angrybirdstransformers: --allow-network-access --landscape-right
+
+
 
 # Original Angry Birds does not need the ARM64 Metal translator by default.
 com.rovio.angrybirds: --disable-metal-translator

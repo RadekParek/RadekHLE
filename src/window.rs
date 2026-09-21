@@ -1227,6 +1227,7 @@ pub struct Window {
     rtcs: bool,
     rtcs_frame: u64,
     frame_generation_state: FrameGenerationState,
+    gpu_frame_generation_failed: bool,
     wgpu_presentation: Option<WgpuPresentation>,
     internal_gl_ins: Option<Box<dyn GLESContext>>,
     splash_image: Option<Image>,
@@ -1318,10 +1319,10 @@ impl Window {
         } else {
             crate::gles::configure_custom_driver(options.custom_driver.as_deref())
         };
+        let llvmpipe_requested = options.llvmpipe_fallback
+            && !matches!(options.graphics_api, crate::options::GraphicsApi::Software);
         let llvmpipe_active = crate::gles::configure_llvmpipe_fallback(
-            (options.llvmpipe_fallback || cpu_only_requested)
-                && !custom_driver_active
-                && !angle_driver_active,
+            llvmpipe_requested && cpu_only_requested && !custom_driver_active && !angle_driver_active,
         );
         let native_cpu_renderer = cpu_only_requested && llvmpipe_active;
         let software_presentation =
@@ -1329,12 +1330,12 @@ impl Window {
         if native_cpu_renderer {
             log!("Software rendering selected: using the host's native LLVMPipe CPU rasterizer instead of the built-in fallback");
         }
-        let frame_generation = options.frame_generation && !software_presentation;
+        let frame_generation = options.frame_generation;
         let rtcs = options.rtcs;
-        if options.frame_generation && software_presentation {
-            log!("Frame generation disabled because software presentation cannot use the GPU interpolation path");
+        if frame_generation && software_presentation {
+            log!("Frame generation enabled with CPU frame interpolation for software presentation");
         } else if frame_generation {
-            log!("Frame generation enabled for the GPU renderer; CPU interpolation is disabled");
+            log!("Frame generation enabled for the GPU renderer");
         }
         let sdl_ctx = sdl2::init().unwrap();
         let video_ctx = sdl_ctx.video().unwrap();
@@ -1534,6 +1535,7 @@ impl Window {
             rtcs,
             rtcs_frame: 0,
             frame_generation_state: FrameGenerationState::default(),
+            gpu_frame_generation_failed: false,
             wgpu_presentation: None,
             internal_gl_ins: None,
             splash_image,
@@ -1579,7 +1581,7 @@ impl Window {
         if matches!(
             options.graphics_api,
             crate::options::GraphicsApi::Wgpu | crate::options::GraphicsApi::Vulkan
-        ) || frame_generation
+        ) || (frame_generation && !software_presentation)
         {
             let presentation = if options.graphics_api == crate::options::GraphicsApi::Vulkan {
                 WgpuPresentation::new_vulkan(&window.window)
@@ -2845,7 +2847,7 @@ impl Window {
         height: u32,
         bottom_up: bool,
     ) {
-        if self.frame_generation {
+        if self.frame_generation && !self.gpu_frame_generation_failed {
             if let Some(mut wgpu) = self.wgpu_presentation.take() {
                 match wgpu.present_interpolated(
                     &pixels,
@@ -2860,7 +2862,7 @@ impl Window {
                     }
                     Err(error) => {
                         log!("WGPU frame generation failed; presenting the source frame: {error}");
-                        self.frame_generation = false;
+                        self.gpu_frame_generation_failed = true;
                         self.frame_generation_state.previous = None;
                         self.frame_generation_state.last_frame_at = None;
                         match wgpu.present_pixels(&pixels, width, height, bottom_up) {
@@ -2875,8 +2877,8 @@ impl Window {
                     }
                 }
             } else {
-                log_once!("GPU frame generation unavailable; disabling interpolation and presenting source frames only");
-                self.frame_generation = false;
+                log_once!("GPU frame generation unavailable; presenting source frames only");
+                self.gpu_frame_generation_failed = true;
                 self.frame_generation_state.previous = None;
                 self.frame_generation_state.last_frame_at = None;
             }
