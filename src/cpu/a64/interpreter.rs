@@ -65,7 +65,8 @@ impl A64Interpreter {
         };
         let sp_before = context.sp;
         let result = self.execute(memory, context, instruction);
-        if context.sp != sp_before && (context.sp.abs_diff(sp_before) > 0x1000 || pc == 0x1000eb360) {
+        if context.sp != sp_before && (context.sp.abs_diff(sp_before) > 0x1000 || pc == 0x1000eb360)
+        {
             log_dbg!(
                 "ARM64 interpreter stack transition: pc={pc:#x} instruction={instruction:#010x} before={sp_before:#x} after={:#x}",
                 context.sp,
@@ -359,6 +360,11 @@ impl A64Interpreter {
                 value.leading_zeros() as u64,
                 sf,
             );
+            context.pc = pc.wrapping_add(4);
+            return Ok(None);
+        }
+        if instruction & 0x3f00_0000 == 0x1c00_0000 {
+            self.execute_simd_literal_load(memory, context, instruction)?;
             context.pc = pc.wrapping_add(4);
             return Ok(None);
         }
@@ -1218,6 +1224,44 @@ impl A64Interpreter {
         Ok(())
     }
 
+    fn execute_simd_literal_load(
+        &self,
+        memory: &Mem64,
+        context: &mut touchHLE_DynarmicA64Context,
+        instruction: u32,
+    ) -> Result<(), InterpreterError> {
+        let width = match (instruction >> 30) & 3 {
+            0 => 4,
+            1 => 8,
+            2 | 3 => 16,
+            _ => unreachable!(),
+        };
+        let address = context
+            .pc
+            .wrapping_add_signed(sign_extend(((instruction >> 5) & 0x7ffff) as u64, 19) << 2);
+        let value = match width {
+            4 => [
+                memory
+                    .read_u32(address)
+                    .map_err(|error| InterpreterError::Memory(error, address))?
+                    as u64,
+                0,
+            ],
+            8 => [
+                memory
+                    .read_u64(address)
+                    .map_err(|error| InterpreterError::Memory(error, address))?,
+                0,
+            ],
+            16 => memory
+                .read_u128(address)
+                .map_err(|error| InterpreterError::Memory(error, address))?,
+            _ => unreachable!(),
+        };
+        context.vectors[(instruction & 31) as usize] = value;
+        Ok(())
+    }
+
     fn execute_literal_load(
         &self,
         memory: &Mem64,
@@ -1641,10 +1685,7 @@ impl A64Interpreter {
     ) -> Result<(), InterpreterError> {
         let size = 1u64 << ((instruction >> 30) & 3);
         let signed_opcode = instruction & 0xff80_0000;
-        let signed_load = matches!(
-            signed_opcode,
-            0x3980_0000 | 0x7980_0000 | 0xb980_0000
-        );
+        let signed_load = matches!(signed_opcode, 0x3980_0000 | 0x7980_0000 | 0xb980_0000);
         let load = instruction & 0x0040_0000 != 0 || signed_load;
         let address = read_sp_or_reg(context, ((instruction >> 5) & 31) as usize, true)
             .wrapping_add(((instruction >> 10) & 0xfff) as u64 * size);
@@ -2379,6 +2420,39 @@ mod scalar_floating_tests {
 }
 
 #[cfg(test)]
+mod simd_literal_load_tests {
+    use super::A64Interpreter;
+    use crate::mem64::{Mem64, Permissions};
+    use touchHLE_dynarmic_wrapper::touchHLE_DynarmicA64Context;
+
+    const CODE: u64 = 0x6_0000_0000;
+
+    #[test]
+    fn scalar_literal_load_writes_vector_without_touching_general_registers() {
+        let mut memory = Mem64::new();
+        memory
+            .map_zeroed_with_permissions(CODE, 0x1000, Permissions::read_write_execute())
+            .unwrap();
+        let instruction: u32 = 0x1c00_0000 | (2 << 5);
+        memory.load_bytes(CODE, &instruction.to_le_bytes()).unwrap();
+        memory.write_u32(CODE + 8, 0x3f19_999a).unwrap();
+        let mut context = touchHLE_DynarmicA64Context {
+            pc: CODE,
+            ..Default::default()
+        };
+        context.regs[0] = 0x1234_5678_9abc_def0;
+        context.vectors[0] = [u64::MAX, u64::MAX];
+        assert_eq!(
+            A64Interpreter::new().run_or_step(&mut memory, &mut context, None),
+            -1
+        );
+        assert_eq!(context.regs[0], 0x1234_5678_9abc_def0);
+        assert_eq!(context.vectors[0], [0x3f19_999a, 0]);
+        assert_eq!(context.pc, CODE + 4);
+    }
+}
+
+#[cfg(test)]
 mod scalar_compare_tests {
     use super::{A64Interpreter, NZCV_C, NZCV_N, NZCV_V, NZCV_Z};
     use crate::mem64::{Mem64, Permissions};
@@ -2673,7 +2747,10 @@ mod bitfield_tests {
         };
         context.regs[1] = 4;
         context.regs[8] = 0xa800;
-        assert_eq!(A64Interpreter::new().run_or_step(&mut memory, &mut context, None), -1);
+        assert_eq!(
+            A64Interpreter::new().run_or_step(&mut memory, &mut context, None),
+            -1
+        );
         assert_eq!(context.regs[8], 0xa804);
     }
 }

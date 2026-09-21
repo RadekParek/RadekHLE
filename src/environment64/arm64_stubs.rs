@@ -73,7 +73,6 @@ enum StubKind {
     StringCompare,
     VmMap,
     VmReadOverwrite,
-    TextureItemLookup,
 }
 
 fn normalized(symbol: &str) -> &str {
@@ -84,7 +83,6 @@ fn normalized(symbol: &str) -> &str {
 fn compatibility_kind(symbol: &str) -> Option<StubKind> {
     match symbol {
         "CCHmacInit" | "CCHmacUpdate" | "CCHmacFinal" => Some(StubKind::CryptoNoop),
-        "ZNK12TextureAtlas14getTextureItemERKNSt3__112basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEE" => Some(StubKind::TextureItemLookup),
         "CMTimeGetSeconds" => Some(StubKind::CMTimeGetSeconds),
         "CMTimeMakeWithSeconds" => Some(StubKind::CMTimeMakeWithSeconds),
         "CVOpenGLESTextureCacheCreate"
@@ -1087,12 +1085,6 @@ pub(super) fn dispatch(
         StubKind::Null => {
             let object = objc_object(mem, A64_KIND_GENERIC)?;
             super::return_value(context, object);
-        }
-        StubKind::TextureItemLookup => {
-            let item = mem.alloc_zeroed(64).map_err(str::to_owned)?;
-            let uv = mem.alloc_zeroed(32).map_err(str::to_owned)?;
-            mem.write_u64(item + 24, uv).map_err(str::to_owned)?;
-            super::return_value(context, item);
         }
         StubKind::GenericPointer => generic_pointer(mem, context)?,
         StubKind::GenericReceiver => super::return_value(context, context.regs[0]),

@@ -589,7 +589,7 @@ pub fn can_dispatch(symbol: &str) -> bool {
     match symbol {
         "ARM64_nib_awake_return" | "ARM64_guest_method_return" | "ARM64_application_return" | "ARM64_application_launch_return" | "ARM64_application_active_return" => true,
         "access" | "mkdir" | "signal" | "fopen" | "fdopen" | "freopen" | "fclose"
-        | "fgets" | "fread" | "fwrite" | "feof" | "ferror" | "fflush" | "fseek" | "ftell"
+        | "fgets" | "fread" | "fwrite" | "fscanf" | "fprintf" | "feof" | "ferror" | "fflush" | "fseek" | "ftell"
         | "rewind" | "fileno" | "clearerr" => true,
         "malloc" | "calloc" | "valloc" | "posix_memalign" | "free"
         | "malloc_zone_free" | "realloc" | "malloc_zone_realloc" | "memcpy"
@@ -814,9 +814,7 @@ fn arm64_open_guest_file(
     filename: u64,
     mode: u64,
 ) -> Result<Option<GuestFile>, String> {
-    let path = arm64_cstring(mem, filename)?
-        .to_string_lossy()
-        .into_owned();
+    let path = arm64_cstring(mem, filename)?.to_string_lossy().into_owned();
     let Some((read, write, append, create)) = arm64_stdio_mode(mem, mode) else {
         return Ok(None);
     };
@@ -1012,6 +1010,152 @@ fn arm64_stdio_write(
     }
 }
 
+fn arm64_stdio_fscanf(
+    mem: &mut Mem64,
+    state: &mut RuntimeState,
+    stream: u64,
+    format_pointer: u64,
+    destination: u64,
+) -> Result<u64, String> {
+    let format = c_string(mem, format_pointer).unwrap_or_default();
+    let mut conversion = None;
+    let mut index = 0;
+    while index + 1 < format.len() {
+        if format[index] != b'%' {
+            index += 1;
+            continue;
+        }
+        index += 1;
+        if format[index] == b'%' {
+            index += 1;
+            continue;
+        }
+        while index < format.len() && b"0123456789lhL".contains(&format[index]) {
+            index += 1;
+        }
+        conversion = format.get(index).copied();
+        break;
+    }
+    let Some(conversion) = conversion else {
+        return Ok(0);
+    };
+    let Some(file) = state.stdio_streams.get_mut(&stream) else {
+        return Ok(0);
+    };
+    let mut token = Vec::new();
+    let mut byte = [0_u8; 1];
+    loop {
+        match file.file.read(&mut byte) {
+            Ok(0) => {
+                file.eof = true;
+                break;
+            }
+            Ok(_) if byte[0].is_ascii_whitespace() && token.is_empty() => continue,
+            Ok(_) if byte[0].is_ascii_whitespace() => break,
+            Ok(_) => token.push(byte[0]),
+            Err(_) => {
+                file.error = true;
+                return Ok(0);
+            }
+        }
+    }
+    if token.is_empty() || destination == 0 {
+        return Ok(0);
+    }
+    match conversion {
+        b's' => {
+            mem.write_bytes(destination, &token)
+                .map_err(str::to_owned)?;
+            mem.write_u8(destination + token.len() as u64, 0)
+                .map_err(str::to_owned)?;
+        }
+        b'c' => mem.write_u8(destination, token[0]).map_err(str::to_owned)?,
+        b'd' | b'i' | b'u' | b'x' | b'X' => {
+            let text = String::from_utf8_lossy(&token);
+            let (negative, digits) = text
+                .strip_prefix('-')
+                .map_or((false, text.as_ref()), |value| (true, value));
+            let radix = if matches!(conversion, b'x' | b'X') {
+                16
+            } else {
+                10
+            };
+            let value = u64::from_str_radix(digits.trim_start_matches("0x"), radix).unwrap_or(0);
+            let value = if negative {
+                (0_u64).wrapping_sub(value)
+            } else {
+                value
+            };
+            mem.write_u64(destination, value).map_err(str::to_owned)?;
+        }
+        b'f' | b'e' | b'g' => {
+            let value = String::from_utf8_lossy(&token)
+                .parse::<f64>()
+                .unwrap_or(0.0);
+            mem.write_u64(destination, value.to_bits())
+                .map_err(str::to_owned)?;
+        }
+        _ => return Ok(0),
+    }
+    Ok(1)
+}
+
+fn arm64_stdio_fprintf(
+    mem: &mut Mem64,
+    state: &mut RuntimeState,
+    stream: u64,
+    format_pointer: u64,
+    argument: u64,
+) -> Result<u64, String> {
+    let format = c_string(mem, format_pointer).unwrap_or_default();
+    let mut output = Vec::new();
+    let mut index = 0;
+    while index < format.len() {
+        if format[index] != b'%' || index + 1 >= format.len() {
+            output.push(format[index]);
+            index += 1;
+            continue;
+        }
+        index += 1;
+        if format[index] == b'%' {
+            output.push(b'%');
+            index += 1;
+            continue;
+        }
+        while index < format.len() && b"0123456789lhL.+-# ".contains(&format[index]) {
+            index += 1;
+        }
+        let Some(&conversion) = format.get(index) else {
+            break;
+        };
+        let text = match conversion {
+            b's' => {
+                String::from_utf8_lossy(&c_string(mem, argument).unwrap_or_default()).into_owned()
+            }
+            b'd' | b'i' => (argument as i64).to_string(),
+            b'u' => argument.to_string(),
+            b'x' => format!("{argument:x}"),
+            b'X' => format!("{argument:X}"),
+            b'c' => char::from_u32(argument as u32)
+                .unwrap_or('\u{fffd}')
+                .to_string(),
+            _ => return Ok(0),
+        };
+        output.extend_from_slice(text.as_bytes());
+        index += 1;
+    }
+    let Some(file) = state.stdio_streams.get_mut(&stream) else {
+        return Ok(0);
+    };
+    match file.file.write_all(&output) {
+        Ok(()) => Ok(output.len() as u64),
+        Err(_) => {
+            file.error = true;
+            Ok(0)
+        }
+    }
+}
+
 fn arm64_home_directory(bundle_path: &str) -> String {
     bundle_path.rsplit_once('/').map_or_else(
         || "/var/mobile/Applications/00000000-0000-0000-0000-000000000000".to_owned(),
@@ -1114,11 +1258,17 @@ fn cxx_string_reserve(mem: &mut Mem64, object: u64, requested: u64) -> Result<()
     let current = cxx_string_bytes(mem, object).unwrap_or_default();
     if cxx_string_is_long(mem, object) {
         let capacity = mem.read_u64(object + 16).unwrap_or(0) & !(1_u64 << 63);
-        if capacity >= requested && mem.allocation_size(mem.read_u64(object).unwrap_or(0)).is_some() {
+        if capacity >= requested
+            && mem
+                .allocation_size(mem.read_u64(object).unwrap_or(0))
+                .is_some()
+        {
             return Ok(());
         }
     }
-    let capacity = (requested as usize).next_power_of_two().max(current.len().max(23));
+    let capacity = (requested as usize)
+        .next_power_of_two()
+        .max(current.len().max(23));
     let pointer = mem
         .alloc_zeroed(capacity as u64 + 1)
         .map_err(str::to_owned)?;
@@ -2011,9 +2161,7 @@ fn objc_send(
     let ui_device_receiver = kind == A64_KIND_UI_DEVICE
         || receiver_class_name(mem, receiver, kind).as_deref() == Some("UIDevice");
 
-    if selector == "userInterfaceIdiom"
-        && state.bundle_identifier == "com.mojang.minecraftpe"
-    {
+    if selector == "userInterfaceIdiom" && state.bundle_identifier == "com.mojang.minecraftpe" {
         let idiom = u64::from(state.device_family.is_ipad());
         log_once_fmt!(
             "ARM64 Minecraft compatibility: userInterfaceIdiom receiver={receiver:#x} kind={kind} idiom={idiom}; returning directly [repeated messages suppressed]"
@@ -2461,12 +2609,8 @@ fn objc_send(
         "newFence" | "newEvent" | "newHeapWithDescriptor:" | "newArgumentEncoderWithArguments:" => {
             objc_object(mem, A64_KIND_GENERIC)?
         }
-        "mainBundle" if kind == A64_KIND_CLASS => {
-            objc_bundle(mem, state)?
-        }
-        "currentDevice" if kind == A64_KIND_CLASS => {
-            objc_ui_device(mem, state.device_family)?
-        }
+        "mainBundle" if kind == A64_KIND_CLASS => objc_bundle(mem, state)?,
+        "currentDevice" if kind == A64_KIND_CLASS => objc_ui_device(mem, state.device_family)?,
         "mainScreen" if kind == A64_KIND_CLASS => {
             objc_ui_screen(mem, state.device_family, state.orientation)?
         }
@@ -2475,21 +2619,20 @@ fn objc_send(
         "stringByAppendingString:" if objc_is_string_kind(kind) => {
             objc_string_append(mem, receiver, context.regs[2])?
         }
-        "dataWithContentsOfFile:" if kind == A64_KIND_CLASS =>
-        {
+        "dataWithContentsOfFile:" if kind == A64_KIND_CLASS => {
             let path = objc_text(mem, context.regs[2]).unwrap_or_default();
             let path = String::from_utf8_lossy(&path);
             let bytes = fs
                 .and_then(|filesystem| {
-                    let resolved = filesystem.resolve_existing_path(GuestPath::new(path.as_ref()))?;
+                    let resolved =
+                        filesystem.resolve_existing_path(GuestPath::new(path.as_ref()))?;
                     filesystem.read(&resolved).ok()
                 })
                 .or_else(|| std::fs::read(path.as_ref()).ok())
                 .unwrap_or_default();
             objc_data(mem, &bytes)?
         }
-        "stringWithUTF8String:" if kind == A64_KIND_CLASS =>
-        {
+        "stringWithUTF8String:" if kind == A64_KIND_CLASS => {
             let pointer = context.regs[2];
             if pointer == 0 {
                 0
@@ -2854,8 +2997,7 @@ fn objc_send(
             let hash = arm64_prng(state.arm64_rng_state);
             u64::from(hash)
         }
-        "stringWithFormat:" if kind == A64_KIND_CLASS =>
-        {
+        "stringWithFormat:" if kind == A64_KIND_CLASS => {
             objc_string_with_format(mem, context.regs[2])?
         }
         "substringToIndex:" if objc_is_string_kind(kind) => {
@@ -2879,10 +3021,7 @@ fn objc_send(
                 },
             )?
         }
-        "numberWithBool:" if kind == A64_KIND_CLASS =>
-        {
-            objc_number(mem, context.regs[2] as i64)?
-        }
+        "numberWithBool:" if kind == A64_KIND_CLASS => objc_number(mem, context.regs[2] as i64)?,
         "numberWithInt:" | "numberWithInteger:"
             if kind == A64_KIND_CLASS && objc_text_eq(mem, class_name, b"NSNumber") =>
         {
@@ -3784,6 +3923,28 @@ pub fn dispatch(
                 context.regs[1],
                 context.regs[2],
                 context.regs[3],
+            )?;
+            return_value(context, result);
+            Ok(true)
+        }
+        "fscanf" => {
+            let result = arm64_stdio_fscanf(
+                mem,
+                state,
+                context.regs[0],
+                context.regs[1],
+                context.regs[2],
+            )?;
+            return_value(context, result);
+            Ok(true)
+        }
+        "fprintf" => {
+            let result = arm64_stdio_fprintf(
+                mem,
+                state,
+                context.regs[0],
+                context.regs[1],
+                context.regs[2],
             )?;
             return_value(context, result);
             Ok(true)
@@ -5008,10 +5169,7 @@ fn arm64_cstring(mem: &Mem64, address: u64) -> Result<std::ffi::CString, String>
             .or_else(|| objc_text(mem, address))
             .unwrap_or_default(),
     };
-    let bytes = bytes
-        .split(|byte| *byte == 0)
-        .next()
-        .unwrap_or_default();
+    let bytes = bytes.split(|byte| *byte == 0).next().unwrap_or_default();
     std::ffi::CString::new(bytes)
         .map_err(|_| "ARM64 guest string contains an embedded NUL".to_owned())
 }

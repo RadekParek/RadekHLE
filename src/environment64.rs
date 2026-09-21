@@ -597,6 +597,29 @@ fn static_initializer_addresses(executable: &MachO64, memory: &Mem64) -> Vec<u64
         .collect()
 }
 
+fn synthesize_minecraft_texture_item(memory: &mut Mem64) -> Result<u64, String> {
+    let item = memory.alloc_zeroed(64).map_err(str::to_owned)?;
+    let uv = memory.alloc_zeroed(32).map_err(str::to_owned)?;
+    for (offset, value) in [
+        (0_u64, 0.0_f32),
+        (4, 0.0),
+        (8, 1.0),
+        (12, 1.0),
+        (16, 512.0),
+        (20, 256.0),
+    ] {
+        memory
+            .write_u32(uv + offset, value.to_bits())
+            .map_err(str::to_owned)?;
+    }
+    let uv_end = uv + 32;
+    memory.write_u64(item + 24, uv).map_err(str::to_owned)?;
+    memory.write_u64(item + 32, uv_end).map_err(str::to_owned)?;
+    memory.write_u64(item + 40, uv_end).map_err(str::to_owned)?;
+    memory.write_u32(item + 48, 1).map_err(str::to_owned)?;
+    Ok(item)
+}
+
 fn write_svc_stub(mem: &mut Mem64, svc: u32) -> Result<u64, String> {
     let stub = mem
         .alloc_zeroed_with_permissions(
@@ -1091,6 +1114,7 @@ pub fn run(
     let mut previous_branches = VecDeque::with_capacity(20);
     let mut bootstrap_grace_slices = 0u32;
     let mut bootstrap_displayed = false;
+    let mut minecraft_texture_item_fallback = None;
     echo!("ARM64 execution transition: normal mode uses Dynarmic Run with {}-tick slices; instruction tracing limit={}", EXECUTION_SLICE_TICKS, trace_limit);
     verify_abi(&context, "entry");
     verify_guest_mappings(&memory, context.pc, context.sp);
@@ -1198,61 +1222,42 @@ pub fn run(
                     cpu.clear_halt(A64_HALT_USER_DEFINED3);
                     continue;
                 }
-                if runtime_state.bundle_identifier == "com.mojang.minecraftpe"
-                    && context.pc == 0x10021d804
-                    && context.regs[0] == 0x28
-                {
-                    let item = memory.alloc_zeroed(64).map_err(str::to_owned)?;
-                    let uv = memory.alloc_zeroed(32).map_err(str::to_owned)?;
-                    for (offset, value) in [
-                        (0_u64, 0.0_f32),
-                        (4, 0.0),
-                        (8, 1.0),
-                        (12, 1.0),
-                        (16, 512.0),
-                        (20, 256.0),
-                    ] {
-                        memory.write_u32(uv + offset, value.to_bits()).map_err(str::to_owned)?;
+                if runtime_state.bundle_identifier == "com.mojang.minecraftpe" {
+                    let instruction = memory.read_u32(context.pc).unwrap_or_default();
+                    let base_register = ((instruction >> 5) & 31) as usize;
+                    let scalar_texture_load = instruction & 0x3b00_0000 == 0x3900_0000
+                        && instruction & 0x0040_0000 != 0
+                        && matches!(base_register, 0 | 21 | 23)
+                        && ((instruction >> 10) & 0xfff) <= 16
+                        && context.regs[base_register] == 0x28;
+                    let pair_texture_load = instruction & 0x3f00_0000 == 0x2900_0000
+                        && instruction & 0x0040_0000 != 0
+                        && ((instruction >> 15) & 0x7f) == 3
+                        && matches!(base_register, 21 | 23)
+                        && context.regs[base_register] == 0x28;
+                    let missing_register = if scalar_texture_load || pair_texture_load {
+                        Some(base_register)
+                    } else {
+                        None
+                    };
+                    if let Some(register) = missing_register {
+                        let item = if let Some(item) = minecraft_texture_item_fallback {
+                            item
+                        } else {
+                            let item = synthesize_minecraft_texture_item(&mut memory)?;
+                            minecraft_texture_item_fallback = Some(item);
+                            item
+                        };
+                        context.regs[register] = item;
+                        log_once_fmt!(
+                            "ARM64 Minecraft compatibility: synthesized missing TextureAtlas item in x{register} at {item:#x}; reusing it for subsequent missing lookups [repeated recoveries suppressed]"
+                        );
+                        cpu.load_context(&context);
+                        cpu.clear_halt(A64_HALT_USER_DEFINED1);
+                        cpu.clear_halt(A64_HALT_USER_DEFINED2);
+                        cpu.clear_halt(A64_HALT_USER_DEFINED3);
+                        continue;
                     }
-                    memory.write_u64(item + 24, uv).map_err(str::to_owned)?;
-                    log_once_fmt!(
-                        "ARM64 Minecraft compatibility: synthesized missing TextureAtlas item at {item:#x} with default UV data; resuming guest [repeated recoveries suppressed]"
-                    );
-                    context.regs[0] = item;
-                    context.regs[8] = uv;
-                    context.pc = context.pc.wrapping_add(4);
-                    cpu.load_context(&context);
-                    cpu.clear_halt(A64_HALT_USER_DEFINED1);
-                    cpu.clear_halt(A64_HALT_USER_DEFINED2);
-                    cpu.clear_halt(A64_HALT_USER_DEFINED3);
-                    continue;
-                }
-                if runtime_state.bundle_identifier == "com.mojang.minecraftpe"
-                    && context.pc == 0x10021d8bc
-                    && context.regs[21] == 0x28
-                {
-                    let item = memory.alloc_zeroed(64).map_err(str::to_owned)?;
-                    let uv = memory.alloc_zeroed(32).map_err(str::to_owned)?;
-                    for (offset, value) in [
-                        (0_u64, 0.0_f32),
-                        (4, 0.0),
-                        (8, 1.0),
-                        (12, 1.0),
-                        (16, 512.0),
-                        (20, 256.0),
-                    ] {
-                        memory.write_u32(uv + offset, value.to_bits()).map_err(str::to_owned)?;
-                    }
-                    memory.write_u64(item + 24, uv).map_err(str::to_owned)?;
-                    log_once_fmt!(
-                        "ARM64 Minecraft compatibility: synthesized second missing TextureAtlas item at {item:#x}; resuming guest [repeated recoveries suppressed]"
-                    );
-                    context.regs[21] = item;
-                    cpu.load_context(&context);
-                    cpu.clear_halt(A64_HALT_USER_DEFINED1);
-                    cpu.clear_halt(A64_HALT_USER_DEFINED2);
-                    cpu.clear_halt(A64_HALT_USER_DEFINED3);
-                    continue;
                 }
                 failure_diagnostics(
                     &memory,
