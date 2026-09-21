@@ -28,6 +28,7 @@ pub extern "C" fn touchHLE_perf_record_arm32_jit(
     record_arm32_jit(run_time_ns, code_fetches, interpreter_fallbacks);
 }
 
+#[inline]
 pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
@@ -39,6 +40,7 @@ pub struct Scope {
 }
 
 impl Scope {
+    #[inline]
     pub fn new(counter: &'static AtomicU64, time_ns: &'static AtomicU64) -> Option<Self> {
         if enabled() {
             Some(Self {
@@ -62,18 +64,22 @@ impl Drop for Scope {
     }
 }
 
+#[inline]
 pub fn interpreter_scope() -> Option<Scope> {
     Scope::new(&ARM32_CPU_COUNT, &ARM32_CPU_TIME_NS)
 }
 
+#[inline]
 pub fn memory_scope() -> Option<Scope> {
     Scope::new(&MEMORY_COUNT, &MEMORY_TIME_NS)
 }
 
+#[inline]
 pub fn objc_scope() -> Option<Scope> {
     Scope::new(&OBJC_COUNT, &OBJC_TIME_NS)
 }
 
+#[inline]
 pub fn gles_scope() -> Option<Scope> {
     Scope::new(&GLES_COUNT, &GLES_TIME_NS)
 }

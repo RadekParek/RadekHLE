@@ -10,14 +10,6 @@ use crate::mem::{guest_size_of, GuestUSize, Mem, MutPtr, Ptr, SafeRead};
 use std::any::{Any, TypeId};
 use std::num::NonZeroU32;
 
-fn phantom_host_object<T: Default + 'static>() -> &'static T {
-    Box::leak(Box::new(T::default()))
-}
-
-fn phantom_host_object_mut<T: Default + 'static>() -> &'static mut T {
-    Box::leak(Box::new(T::default()))
-}
-
 
 #[repr(C, packed)]
 pub struct objc_object {
@@ -191,11 +183,13 @@ impl super::ObjC {
         }
 
         let key = (object, TypeId::of::<T>());
-        if let Some(host_object) = self.missing_objects.get(&key) {
-            return host_object
+        if let Some(host_object) = self.missing_objects.borrow().get(&key) {
+            let host_object = host_object
                 .as_any()
                 .downcast_ref::<T>()
-                .expect("missing-object compatibility cache type mismatch");
+                .expect("missing-object compatibility cache type mismatch")
+                as *const T;
+            return unsafe { &*host_object };
         }
 
         if object == nil {
@@ -217,7 +211,17 @@ impl super::ObjC {
                 std::any::type_name::<T>(),
             );
         }
-        phantom_host_object::<T>()
+        let mut missing_objects = self.missing_objects.borrow_mut();
+        let host_object = missing_objects
+            .entry(key)
+            .or_insert_with(|| Box::new(T::default()));
+        let host_object = host_object
+            .as_any()
+            .downcast_ref::<T>()
+            .expect("missing-object compatibility cache type mismatch")
+            as *const T;
+        drop(missing_objects);
+        unsafe { &*host_object }
     }
 
     pub fn borrow_mut<T: AnyHostObject + Default + 'static>(&mut self, object: id) -> &mut T {
@@ -241,10 +245,9 @@ impl super::ObjC {
 
         if object == nil {
             log_dbg!(
-                "borrow_mut on nil receiver of type {} — returning isolated phantom",
+                "borrow_mut on nil receiver of type {} — returning isolated compatibility state",
                 std::any::type_name::<T>()
             );
-            return phantom_host_object_mut::<T>();
         }
 
         if let Some(entry) = self.objects.get(&object) {
@@ -265,6 +268,7 @@ impl super::ObjC {
         let key = (object, TypeId::of::<T>());
         let host_object = self
             .missing_objects
+            .get_mut()
             .entry(key)
             .or_insert_with(|| Box::new(T::default()));
         host_object
@@ -383,6 +387,7 @@ impl super::ObjC {
         // because the writeback uses guest memory only.
         self.zero_weak_references_for(object, mem);
         self.missing_objects
+            .borrow_mut()
             .retain(|(candidate, _), _| *candidate != object);
 
         if let Some(entry) = self.objects.remove(&object) {

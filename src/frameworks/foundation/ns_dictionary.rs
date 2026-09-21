@@ -520,7 +520,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 - (id)init {
     // The class-cluster allocator has already returned the internal concrete
     // dictionary object, so initialise that object in place.
-    log_once!(
+    log_dbg_once!(
         "NSDictionary class-cluster init: using the internal concrete empty dictionary"
     );
     *env.objc.borrow_mut(this) = <DictionaryHostObject as Default>::default();

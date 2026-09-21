@@ -87,22 +87,37 @@ impl Thread {
 struct SchedulerWatchdog {
     last_switch: Option<(ThreadId, ThreadId)>,
     alternating_switches: u32,
+    burst_started: Option<Instant>,
     warning_issued: bool,
 }
 
 impl SchedulerWatchdog {
     fn record_switch(&mut self, current: ThreadId, next: ThreadId) -> bool {
+        const WARNING_THRESHOLD: u32 = 1024;
+        const WARNING_WINDOW: Duration = Duration::from_millis(250);
+
         if self.last_switch == Some((next, current)) {
             self.alternating_switches = self.alternating_switches.saturating_add(1);
+            if self.alternating_switches == 1 {
+                self.burst_started = Some(Instant::now());
+            }
         } else {
             self.alternating_switches = 0;
+            self.burst_started = None;
             self.warning_issued = false;
         }
         self.last_switch = Some((current, next));
 
-        if self.alternating_switches >= 64 && !self.warning_issued {
-            self.warning_issued = true;
-            return true;
+        if self.alternating_switches >= WARNING_THRESHOLD && !self.warning_issued {
+            let burst_is_hot = self
+                .burst_started
+                .is_some_and(|started| started.elapsed() <= WARNING_WINDOW);
+            if burst_is_hot {
+                self.warning_issued = true;
+                return true;
+            }
+            self.alternating_switches = 0;
+            self.burst_started = Some(Instant::now());
         }
         false
     }
@@ -1846,11 +1861,10 @@ impl Environment {
             .record_switch(old_thread, new_thread)
         {
             log!(
-                "Warning: scheduler observed 64 alternating guest-thread switches ({} <=> {}). Both threads remain runnable; continuing with cooperative scheduling.",
+                "Warning: scheduler observed a hot alternating guest-thread burst ({} <=> {}). Both threads remain runnable; continuing with cooperative scheduling.",
                 old_thread,
                 new_thread
             );
-            std::thread::yield_now();
         }
         log_sampled!(1024, "Switching thread: {} => {}", old_thread, new_thread);
         let mut guest_ctx = self.threads[new_thread].guest_context.take().unwrap();
@@ -2440,6 +2454,7 @@ impl Environment {
         loop {
             // Try to find a new thread to execute, starting with the thread
             // following the one currently executing.
+            let now = Instant::now();
             let mut next_awakening: Option<Instant> = None;
             for i in 0..self.threads.len() {
                 let thread_id = (self.current_thread + 1 + i) % self.threads.len();
@@ -2450,7 +2465,7 @@ impl Environment {
                 }
                 match candidate.blocked_by {
                     ThreadBlock::Sleeping(sleeping_until) => {
-                        if sleeping_until <= Instant::now() {
+                        if sleeping_until <= now {
                             log_dbg!("Thread {} finished sleeping.", thread_id);
                             candidate.blocked_by = ThreadBlock::NotBlocked;
                             return thread_id;
@@ -2777,9 +2792,29 @@ impl Drop for Environment {
 
 #[cfg(test)]
 mod dylib_sorting_tests {
+    use super::*;
     use std::collections::HashSet;
 
-    use super::*;
+    #[test]
+    fn scheduler_watchdog_ignores_non_alternating_switches() {
+        let mut watchdog = SchedulerWatchdog::default();
+        for _ in 0..1024 {
+            assert!(!watchdog.record_switch(0, 1));
+            assert!(!watchdog.record_switch(1, 2));
+        }
+    }
+
+    #[test]
+    fn scheduler_watchdog_detects_hot_alternation() {
+        let mut watchdog = SchedulerWatchdog::default();
+        let mut warned = false;
+        for _ in 0..1025 {
+            warned |= watchdog.record_switch(0, 1);
+            warned |= watchdog.record_switch(1, 0);
+        }
+        assert!(warned);
+    }
+
     fn create_dylib_graph(bin_configs: &[(&str, &[&str])]) -> Vec<BinaryDependencyNode> {
         bin_configs
             .iter()

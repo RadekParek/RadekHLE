@@ -5,7 +5,8 @@
  */
 //! Logging and terminal output macros.
 
-use std::fs::File;
+use std::io::BufWriter;
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{LazyLock, Mutex};
 
@@ -50,11 +51,10 @@ pub fn append_log_line(line: &str) {
         return;
     }
     if let Ok(mut log_file) = get_log_file().lock() {
-        let _ = std::io::Write::write_all(&mut *log_file, line.as_bytes());
-        let _ = std::io::Write::write_all(&mut *log_file, b"\n");
+        let _ = writeln!(log_file, "{line}");
         let count = LOG_LINES.fetch_add(1, Ordering::Relaxed) + 1;
         if count % LOG_FLUSH_INTERVAL == 0 || should_flush_immediately(line) {
-            let _ = std::io::Write::flush(&mut *log_file);
+            let _ = log_file.flush();
         }
     }
 }
@@ -64,11 +64,12 @@ pub fn append_log_line(line: &str) {
 /// All the logging macros print to stderr or (on Android) logcat, but this
 /// is not convenient for users who aren't accustomed to command-line tools or
 /// who don't have access to ADB, so we also write to a log file.
-pub fn get_log_file() -> &'static Mutex<File> {
-    static LOG_FILE: LazyLock<Mutex<File>> = LazyLock::new(|| {
-        Mutex::new(
-            File::create(crate::paths::user_data_base_path().join("touchHLE_log.txt")).unwrap(),
-        )
+pub fn get_log_file() -> &'static Mutex<BufWriter<std::fs::File>> {
+    static LOG_FILE: LazyLock<Mutex<BufWriter<std::fs::File>>> = LazyLock::new(|| {
+        Mutex::new(BufWriter::new(
+            std::fs::File::create(crate::paths::user_data_base_path().join("touchHLE_log.txt"))
+                .unwrap(),
+        ))
     });
 
     &LOG_FILE

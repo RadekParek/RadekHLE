@@ -334,7 +334,7 @@ where
     };
     let call_id = crate::gles::next_gl_call_id();
     let res = f(gles.as_mut(), &mut env.mem);
-    let err = unsafe { gles.GetError() };
+    let err = if trace { unsafe { gles.GetError() } } else { 0 };
     trace_gl_error(
         trace,
         call_id,
@@ -395,7 +395,7 @@ where
     };
     let call_id = crate::gles::next_gl_call_id();
     let res = f(gles.as_mut(), &mut env.mem);
-    let err = unsafe { gles.GetError() };
+    let err = if trace { unsafe { gles.GetError() } } else { 0 };
     trace_gl_error(
         trace,
         call_id,

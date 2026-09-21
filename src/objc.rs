@@ -24,6 +24,7 @@ use crate::dyld::{
 };
 use crate::MutexId;
 use std::any::TypeId;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 mod classes;
@@ -117,7 +118,7 @@ pub struct ObjC {
     objects: HashMap<id, HostObjectEntry>,
 
     /// Isolated compatibility state for mutable access to a missing object.
-    missing_objects: HashMap<(id, TypeId), Box<dyn AnyHostObject>>,
+    missing_objects: RefCell<HashMap<(id, TypeId), Box<dyn AnyHostObject>>>,
 
     /// Known classes.
     ///
@@ -227,7 +228,7 @@ impl ObjC {
             class_names: HashMap::new(),
             class_name_ptrs: HashMap::new(),
             objects: HashMap::new(),
-            missing_objects: HashMap::new(),
+            missing_objects: RefCell::new(HashMap::new()),
             classes: HashMap::new(),
             sync_mutexes: HashMap::new(),
             property_locks: HashMap::new(),
