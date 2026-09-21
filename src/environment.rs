@@ -1615,7 +1615,13 @@ impl Environment {
         let mut curr_host_context = self.threads[0].host_context.take().unwrap();
         let panic_cell = self.panic_cell.clone();
         let mut stepping = false;
-        let normal_execution_slice = 100_000;
+        // A larger slice reduces host/coroutine transitions for normal JIT
+        // execution while keeping the conservative slice for ordinary mode.
+        let normal_execution_slice = if self.options.high_performance {
+            250_000
+        } else {
+            100_000
+        };
         loop {
             if stepping {
                 self.remaining_ticks = None;

@@ -787,7 +787,9 @@ impl TryFrom<u64> for DeviceFamily {
 impl TryFrom<&str> for DeviceFamily {
     type Error = ();
     fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value.to_ascii_lowercase().as_str() {
+        let normalized = value.to_ascii_lowercase();
+        let compact = normalized.replace(['-', '_'], "");
+        match normalized.as_str() {
             "iphone" => Ok(DeviceFamily::iPhone3GS),
             "iphone-2g" | "iphone1,1" => Ok(DeviceFamily::iPhone),
             "iphone-3g" | "iphone1,2" => Ok(DeviceFamily::iPhone3G),
@@ -851,7 +853,11 @@ impl TryFrom<&str> for DeviceFamily {
             "ipod-touch-3" | "ipod3,1" => Ok(DeviceFamily::iPodTouch3),
             "ipod-touch-4" | "ipod4,1" => Ok(DeviceFamily::iPodTouch4),
             "ipod-touch-5" | "ipod5,1" => Ok(DeviceFamily::iPodTouch5),
-            _ => Err(()),
+            _ => Self::ALL_SELECTABLE
+                .iter()
+                .copied()
+                .find(|family| family.option_name().replace(['-', '_'], "") == compact)
+                .ok_or(()),
         }
     }
 }

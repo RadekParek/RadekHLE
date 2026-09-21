@@ -1362,4 +1362,19 @@ mod tests {
         assert_eq!(options.anti_aliasing, 1);
         assert_eq!(options.memory_management, MemoryManagement::Light);
     }
+
+    #[test]
+    fn device_family_defaults_to_no_command_line_override() {
+        assert!(Options::default().device_family.is_none());
+        assert!(!Options::default().auto_device_family);
+    }
+
+    #[test]
+    fn accepts_legacy_compact_device_family_names() {
+        let mut options = Options::default();
+        options.parse_argument("--device-family=iphone5").unwrap();
+        assert_eq!(options.device_family, Some(DeviceFamily::iPhone5));
+        options.parse_argument("--device-family=ipad2").unwrap();
+        assert_eq!(options.device_family, Some(DeviceFamily::iPad2));
+    }
 }

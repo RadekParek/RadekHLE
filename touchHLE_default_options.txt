@@ -316,9 +316,8 @@ com.madfingergames.SamuraiHD: --force-composition
 # NEX
 com.StarByte.NEX: --landscape-left --force-composition
 
-# BioShock (requires a newer device model; the game refuses to start its
-# engine if it detects an unsupported device like the original iPhone)
-com.2k.bioshock: --landscape-right --device-family=iphone5
+# BioShock uses the device class from its bundle; leave the model unset by default.
+com.2k.bioshock: --landscape-right
 
 # Galaxy on Fire
 # In Game controls A = Weapon Select, X = Boost, B = Fire, Y = Missle, Start = Pause

@@ -248,9 +248,10 @@ class DynarmicWrapper {
 
 public:
   DynarmicWrapper(void *direct_memory_access_ptr, size_t null_page_count) {
+    env.perf_enabled = std::getenv("TOUCHHLE_PERF") != nullptr;
     Dynarmic::A32::UserConfig user_config;
     user_config.optimizations = Dynarmic::all_safe_optimizations;
-    user_config.code_cache_size = 64 * 1024 * 1024;
+    user_config.code_cache_size = 128 * 1024 * 1024;
     user_config.callbacks = &env;
     user_config.coprocessors[15] = std::make_shared<ArmDynarmicCP15>();
     mon = std::make_unique<Dynarmic::ExclusiveMonitor>(1);
@@ -307,7 +308,6 @@ public:
     env.mem = mem;
     env.code_fetches = 0;
     env.interpreter_fallbacks = 0;
-    env.perf_enabled = std::getenv("TOUCHHLE_PERF") != nullptr;
     const auto run_started = env.perf_enabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     Dynarmic::HaltReason hr;
     if (ticks) {
