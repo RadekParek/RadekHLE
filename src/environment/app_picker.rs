@@ -1145,7 +1145,8 @@ fn app_picker_inner(
     let mut quick_options_revert_x_axis = false;
     let mut quick_options_revert_y_axis = false;
     let mut quick_options_analog_stick_tilt_controls = true;
-    let mut quick_options_network = false;
+    let mut quick_options_network = env.options.network_access;
+    let mut quick_options_network_changed = false;
     let mut quick_options_rtcs = false;
     let mut quick_options_show_fps = true;
     let mut quick_options_frame_pacing = true;
@@ -1894,6 +1895,7 @@ fn app_picker_inner(
             quick_options_analog_stick_tilt_controls = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.network) {
             quick_options_network = enabled;
+            quick_options_network_changed = true;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.rtcs) {
             quick_options_rtcs = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.show_fps) {
@@ -2148,10 +2150,15 @@ fn app_picker_inner(
     if !quick_options_analog_stick_tilt_controls {
         option_args.push("--disable-analog-stick-tilt-controls".to_string());
     }
-    if quick_options_network {
-        option_args.push("--allow-network-access".to_string());
-    } else {
-        option_args.push("--disable-network-access".to_string());
+    if quick_options_network_changed || quick_options_network {
+        option_args.push(
+            if quick_options_network {
+                "--allow-network-access"
+            } else {
+                "--disable-network-access"
+            }
+            .to_string(),
+        );
     }
     option_args.push(
         if quick_options_rtcs {
