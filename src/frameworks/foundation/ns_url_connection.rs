@@ -38,7 +38,7 @@ fn is_optional_unity_telemetry(method: &str, url: &str) -> bool {
             || url.starts_with("https://stats.unity3d.com/"))
 }
 
-fn log_request_failure(error: &str) {
+pub(crate) fn log_request_failure(error: &str) {
     if error.contains("Dns Failed") || error.contains("failed to lookup address information") {
         log_once_fmt!(
             "NSURLConnection: request failed: {} [repeated DNS failures suppressed]",
@@ -197,7 +197,7 @@ pub(crate) fn perform_request(
     })
 }
 
-fn make_data_from_bytes(env: &mut crate::Environment, body: &[u8]) -> id {
+pub(crate) fn make_data_from_bytes(env: &mut crate::Environment, body: &[u8]) -> id {
     if body.is_empty() {
         return msg_class![env; NSData data];
     }
@@ -219,7 +219,7 @@ fn make_data_from_bytes(env: &mut crate::Environment, body: &[u8]) -> id {
     data
 }
 
-fn make_http_response(
+pub(crate) fn make_http_response(
     env: &mut crate::Environment,
     request: id,
     status_code: u16,
@@ -437,6 +437,15 @@ pub const CLASSES: ClassExports = objc_classes! {
 // — iOS 5+ block-based convenience. Requests use the same host-network
 // bridge as the synchronous API and report transport failures through the
 // completion handler.
+
++ (())customSendAsynchronousRequest:(id)request
+                              queue:(id)queue
+                  completionHandler:(MutVoidPtr)handler {
+    () = msg![env;
+        this sendAsynchronousRequest:request
+                                queue:queue
+                    completionHandler:handler];
+}
 
 + (())sendAsynchronousRequest:(id)request
                         queue:(id)queue

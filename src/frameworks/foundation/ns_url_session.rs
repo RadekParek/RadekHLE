@@ -7,11 +7,9 @@
 //! `NSURLSession`, `NSURLSessionConfiguration` and `NSURLSessionTask`
 //! (iOS 7+ networking).
 //!
-//! This is a stub implementation that does not perform real networking, in
-//! keeping with the existing `NSURLConnection` stub (see `ns_url_connection`).
-//! touchHLE has no live network stack, so requests are completed with the
-//! standard `NSURLErrorNotConnectedToInternet` (-1009) error in the
-//! `NSURLErrorDomain`, exactly as Apple documents for the offline case.
+//! Requests use the host network when the emulator's network option is
+//! enabled. Transport failures are delivered through the normal Foundation
+//! error callback so apps can handle offline conditions without hanging.
 //!
 //! The shape of the API faithfully follows Apple's reference:
 //! - `+[NSURLSessionConfiguration defaultSessionConfiguration]` /
@@ -26,19 +24,17 @@
 //!   `state`, `taskIdentifier`, `originalRequest`, `currentRequest`, `error`.
 //!
 //! Behaviour on `resume`:
-//! - If the task was created with a completion handler, it is invoked with
-//!   `(nil data, nil response, error)` — matching Apple's contract for
-//!   failures.
-//! - Otherwise the session delegate is notified via
-//!   `URLSession:task:didCompleteWithError:` (if implemented), matching
-//!   Apple's documented delegate flow.
-//!
-//! Returning an error (rather than fake success) is deliberate and matches
-//! the `NSURLConnection` stub's rationale: faking `200 OK` with empty data
-//! crashes apps that parse protocol-specific fields from the body.
+//! - With network access enabled, the request is performed through the same
+//!   host HTTP bridge as `NSURLConnection` and its response body is delivered.
+//! - Transport failures are delivered as `NSURLErrorNotConnectedToInternet`.
+//! - A completion handler receives `(data, response, error)`; delegate-based
+//!   tasks receive data followed by `URLSession:task:didCompleteWithError:`.
 
 use crate::abi::{CallFromHost, GuestFunction};
-use crate::mem::{ConstVoidPtr, Ptr};
+use crate::frameworks::foundation::ns_url_connection::{
+    log_request_failure, make_data_from_bytes, make_http_response, perform_request, NetworkResponse,
+};
+use crate::mem::{ConstVoidPtr, MutVoidPtr, Ptr};
 use crate::objc::{
     autorelease, id, msg, msg_class, msg_super, nil, objc_classes, release, retain, ClassExports,
     HostObject,
@@ -109,6 +105,9 @@ struct NSURLSessionTaskHostObject {
     task_identifier: u64,
     /// Set once the task completes, so the `error` getter can report it.
     error: id,
+    /// Host-side result queued until the next guest run-loop turn. Real
+    /// NSURLSession never invokes completion handlers re-entrantly from resume.
+    pending_result: Option<Result<NetworkResponse, String>>,
 }
 impl HostObject for NSURLSessionTaskHostObject {}
 
@@ -178,7 +177,6 @@ fn invoke_completion_handler(
 /// then either invokes its completion handler with `(nil, nil, error)` or
 /// notifies the session delegate via `URLSession:task:didCompleteWithError:`.
 fn deliver_task_failure(env: &mut crate::Environment, task: id) {
-    // Build and retain the error we will store on the task for `-error`.
     let stored_error = make_network_error(env);
     retain(env, stored_error);
 
@@ -190,7 +188,6 @@ fn deliver_task_failure(env: &mut crate::Environment, task: id) {
         (host.completion_handler, host.session, previous_error)
     };
 
-    // Release any error from a previous completion now that the borrow ended.
     if previous_error != nil {
         release(env, previous_error);
     }
@@ -201,8 +198,7 @@ fn deliver_task_failure(env: &mut crate::Environment, task: id) {
         return;
     }
 
-    // No completion handler: notify the session delegate if present.
-    let delegate: id = if session != nil {
+    let delegate = if session != nil {
         env.objc.borrow::<NSURLSessionHostObject>(session).delegate
     } else {
         nil
@@ -210,6 +206,45 @@ fn deliver_task_failure(env: &mut crate::Environment, task: id) {
     if delegate != nil {
         let err = make_network_error(env);
         () = msg![env; delegate URLSession:session task:task didCompleteWithError:err];
+    }
+}
+
+fn task_request(env: &mut crate::Environment, task: id) -> id {
+    env.objc
+        .borrow::<NSURLSessionTaskHostObject>(task)
+        .original_request
+}
+
+fn deliver_task_success(env: &mut crate::Environment, task: id, result: NetworkResponse) {
+    let (handler, session, previous_error) = {
+        let host = env.objc.borrow_mut::<NSURLSessionTaskHostObject>(task);
+        host.state = NS_URL_SESSION_TASK_STATE_COMPLETED;
+        let previous_error = host.error;
+        host.error = nil;
+        (host.completion_handler, host.session, previous_error)
+    };
+
+    if previous_error != nil {
+        release(env, previous_error);
+    }
+
+    let request = task_request(env, task);
+    let response = make_http_response(env, request, result.status_code, &result.headers);
+    let data = make_data_from_bytes(env, &result.body);
+
+    if handler != nil {
+        invoke_completion_handler(env, handler, data, response, nil);
+        return;
+    }
+
+    let delegate = if session != nil {
+        env.objc.borrow::<NSURLSessionHostObject>(session).delegate
+    } else {
+        nil
+    };
+    if delegate != nil {
+        () = msg![env; delegate URLSession:session dataTask:task didReceiveData:data];
+        () = msg![env; delegate URLSession:session task:task didCompleteWithError:nil];
     }
 }
 
@@ -414,6 +449,16 @@ pub const CLASSES: ClassExports = objc_classes! {
     autorelease(env, new)
 }
 
+// Some Unity versions use this legacy selector on NSURLSession instead of NSURLConnection.
++ (())customSendAsynchronousRequest:(id)request
+                              queue:(id)queue
+                  completionHandler:(MutVoidPtr)handler {
+    () = msg![env;
+        this sendAsynchronousRequest:request
+                                queue:queue
+                    completionHandler:handler];
+}
+
 - (id)configuration {
     env.objc.borrow::<NSURLSessionHostObject>(this).configuration
 }
@@ -510,19 +555,46 @@ pub const CLASSES: ClassExports = objc_classes! {
         .objc
         .borrow::<NSURLSessionTaskHostObject>(this)
         .state;
-    if state == NS_URL_SESSION_TASK_STATE_COMPLETED
-        || state == NS_URL_SESSION_TASK_STATE_CANCELING
-    {
+    if state != NS_URL_SESSION_TASK_STATE_SUSPENDED {
         return;
     }
     env.objc
         .borrow_mut::<NSURLSessionTaskHostObject>(this)
         .state = NS_URL_SESSION_TASK_STATE_RUNNING;
-    log!(
-        "NSURLSessionTask resume: delivering NSURLErrorNotConnectedToInternet \
-         (touchHLE has no network)"
-    );
-    deliver_task_failure(env, this);
+
+    let request = task_request(env, this);
+    let result = if env.options.network_access {
+        match perform_request(env, request) {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                log_request_failure(&error);
+                Err(error)
+            }
+        }
+    } else {
+        Err("network access is disabled".to_string())
+    };
+
+    env.objc
+        .borrow_mut::<NSURLSessionTaskHostObject>(this)
+        .pending_result = Some(result);
+    let selector = env
+        .objc
+        .register_host_selector("_touchHLE_deliverNetworkResult".to_string(), &mut env.mem);
+    () = msg![env; this performSelector:selector withObject:nil afterDelay:0.0_f64];
+}
+
+- (())_touchHLE_deliverNetworkResult {
+    let result = env
+        .objc
+        .borrow_mut::<NSURLSessionTaskHostObject>(this)
+        .pending_result
+        .take();
+    match result {
+        Some(Ok(response)) => deliver_task_success(env, this, response),
+        Some(Err(_)) => deliver_task_failure(env, this),
+        None => {}
+    }
 }
 
 - (())suspend {
