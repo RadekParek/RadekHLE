@@ -2626,7 +2626,11 @@ fn glTexSubImage2D(
         gles.GetIntegerv(gles11::UNPACK_ALIGNMENT, &mut alignment);
         let size =
             image_size_estimate(width, height, format, type_, alignment.max(1) as GuestUSize);
-        let pixels = mem.ptr_at(pixels.cast::<u8>(), size).cast::<GLvoid>();
+        let pixels = if pixels.is_null() {
+            std::ptr::null()
+        } else {
+            mem.ptr_at(pixels.cast::<u8>(), size).cast::<GLvoid>()
+        };
         if let Some(decoded) = crate::gles::util::decode_texture_to_rgba8(
             width, height, format, type_, pixels, alignment,
         ) {
