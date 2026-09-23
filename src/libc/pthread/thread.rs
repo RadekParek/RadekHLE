@@ -425,12 +425,28 @@ pub fn pthread_self(env: &mut Environment) -> pthread_t {
         );
     }
 
-    let (&ptr, _) = State::get(env)
+    if let Some((&ptr, _)) = State::get(env)
         .threads
         .iter()
         .find(|&(_ptr, host_obj)| host_obj.thread_id == current_thread)
-        .unwrap();
-    ptr
+    {
+        return ptr;
+    }
+
+    let opaque = env.mem.alloc_and_write(OpaqueThread {
+        magic: MAGIC_THREAD,
+    });
+    assert!(!State::get(env).threads.contains_key(&opaque));
+    State::get(env)
+        .threads
+        .insert(opaque, ThreadHostObject::new(current_thread, DEFAULT_ATTR));
+    log!(
+        "Warning: pthread_self: thread {} had no registered pthread object; \
+         created synthetic object {:?} instead of panicking",
+        current_thread,
+        opaque
+    );
+    opaque
 }
 
 pub fn pthread_exit(env: &mut Environment, retval: MutVoidPtr) {

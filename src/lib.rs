@@ -95,8 +95,8 @@ pub extern "C" fn SDL_main(
     }));
     // Empty args: brings up app picker.
     match main([String::new()].into_iter()) {
-        Ok(_) => echo!("RadekHLE9.1 finished"),
-        Err(e) => echo!("RadekHLE9.1 errored: {e:?}"),
+        Ok(_) => echo!("RadekHLE 9.2 finished"),
+        Err(e) => echo!("RadekHLE 9.2 errored: {e:?}"),
     }
     0
 }
@@ -190,7 +190,7 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
     crate::perf::configure_from_environment();
     crate::perf::reset();
     echo!(
-        "RadekHLE9.1 {}{}{} git_sha={}",
+        "RadekHLE 9.2 {}{}{} git_sha={}",
         branding(),
         if branding().is_empty() { "" } else { " " },
         VERSION,
@@ -210,7 +210,7 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
 
     {
         let base_path = paths::user_data_base_path();
-        log!("Base path for RadekHLE9.1 files: {}", base_path.display());
+        log!("Base path for RadekHLE 9.2 files: {}", base_path.display());
         paths::prepopulate_user_data_dir();
     }
 
@@ -333,6 +333,7 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
         std::env::remove_var("TOUCHHLE_FORCE_LANDSCAPE_VIEWPORT");
         std::env::remove_var("TOUCHHLE_FORCE_LANDSCAPE_RENDERBUFFER");
         std::env::remove_var("TOUCHHLE_FORCE_LANDSCAPE_VIEW_BOUNDS");
+        std::env::remove_var("TOUCHHLE_LANDSCAPE_UISCREEN_BOUNDS");
         std::env::remove_var("TOUCHHLE_TOUCH_LOCATION_PORTRAIT_TO_LANDSCAPE");
         std::env::remove_var("TOUCHHLE_TOUCH_MODE");
         std::env::remove_var("TOUCHHLE_PRESENT_STRETCH_TO_VIEWPORT");
@@ -343,31 +344,13 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
         std::env::remove_var("TOUCHHLE_TOUCH_LOCATION_X_OFFSET");
 
         if app_id == "com.robtop.geometryjump" && cfg!(target_os = "android") {
-            std::env::set_var("TOUCHHLE_FORCE_LANDSCAPE_VIEWPORT", "1");
             std::env::set_var("TOUCHHLE_FORCE_LANDSCAPE_RENDERBUFFER", "1");
             std::env::set_var("TOUCHHLE_FORCE_LANDSCAPE_VIEW_BOUNDS", "1");
-            std::env::set_var("TOUCHHLE_PRESENT_STRETCH_TO_VIEWPORT", "1");
+            std::env::set_var("TOUCHHLE_LANDSCAPE_UISCREEN_BOUNDS", "1");
         }
 
         std::env::remove_var("TOUCHHLE_TOUCH_LOCATION_Y_OFFSET");
         std::env::remove_var("TOUCHHLE_POTATO_ANDROID_THUMB2_COMPAT");
-    }
-
-    if app_id == "com.robtop.geometryjump" && cfg!(target_os = "android") {
-        unsafe {
-            // Same bug as Potato Story/Panic below: on Android the
-            // UIWindow/EAGLView bounds and GL viewport can stay at
-            // Android's 320x480 portrait Cocos shape instead of the real
-            // 480x320 landscape shape, even though touches are already
-            // being remapped above as if it were 480x320. That shape
-            // mismatch means every remapped tap lands on the wrong spot
-            // in the actual view, so menu buttons never register. Force
-            // the real landscape shape to match, same fix as Potato.
-            std::env::set_var("TOUCHHLE_FORCE_LANDSCAPE_VIEWPORT", "1");
-            std::env::set_var("TOUCHHLE_FORCE_LANDSCAPE_RENDERBUFFER", "1");
-            std::env::set_var("TOUCHHLE_FORCE_LANDSCAPE_VIEW_BOUNDS", "1");
-            std::env::set_var("TOUCHHLE_PRESENT_STRETCH_TO_VIEWPORT", "1");
-        }
     }
 
     if matches!(app_id, "at.source.potpan" | "at.source.potato3D") {
@@ -459,7 +442,7 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
 
     if required_device_capabilities.contains(&"opengles-3") {
         echo!(
-            "Warning: app requires OpenGL ES 3.0+ support. RadekHLE9.1 now routes EAGL OpenGL ES 3 contexts to its GLES 3 backend."
+            "Warning: app requires OpenGL ES 3.0+ support. RadekHLE 9.2 now routes EAGL OpenGL ES 3 contexts to its GLES 3 backend."
         );
     }
 

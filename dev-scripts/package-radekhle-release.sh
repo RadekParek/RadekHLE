@@ -1,5 +1,5 @@
 #!/bin/sh
-# Package RadekHLE9.1 release zips and write release notes for action-gh-release.
+# Package RadekHLE 9.2 release zips and write release notes for action-gh-release.
 set -eu
 
 VERSION="$1"
@@ -41,7 +41,7 @@ if [ ! -e artifacts/macos/radekhle.dmg ]; then
 fi
 
 android_apk=""
-for candidate in artifacts/android/RadekHLE-9.1.apk; do
+for candidate in artifacts/android/RadekHLE-9.2.apk; do
     if [ -e "$candidate" ]; then
         android_apk="$candidate"
         break
@@ -51,9 +51,9 @@ if [ -z "$android_apk" ]; then
     echo "Missing build artifact (all platform builds must succeed): an Android APK" >&2
     exit 1
 fi
-if [ "$(basename "$android_apk")" != "RadekHLE-9.1.apk" ]; then
-    cp "$android_apk" artifacts/android/RadekHLE-9.1.apk
-    android_apk="artifacts/android/RadekHLE-9.1.apk"
+if [ "$(basename "$android_apk")" != "RadekHLE-9.2.apk" ]; then
+    cp "$android_apk" artifacts/android/RadekHLE-9.2.apk
+    android_apk="artifacts/android/RadekHLE-9.2.apk"
 fi
 if [ -z "$windows_exe" ]; then
     echo "Missing build artifact (all platform builds must succeed): artifacts/windows/radekhle.exe" >&2
@@ -77,7 +77,7 @@ rm -rf release
 mkdir -p release
 
 {
-    printf '%s\n\n' "RadekHLE9.1 ${VERSION}"
+    printf '%s\n\n' "RadekHLE 9.2 ${VERSION}"
     if [ "${FORCE_RADEKHLE_RELEASE:-}" = "true" ]; then
         printf '%s\n\n' "_Manual release — changelog shows the latest 5 commits._"
     fi
@@ -116,7 +116,7 @@ mkdir -p release
 cd "$ROOT/dev-scripts"
 ./prepare-release.sh --prepare-files
 
-prefix="RadekHLE_9.1"
+prefix="RadekHLE_9.2"
 
 ./prepare-release.sh --create-zip-macos "$ROOT/artifacts/macos/radekhle.dmg" \
     -o "$ROOT/release/${prefix}_macOS_x86_64.zip"

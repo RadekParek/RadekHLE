@@ -1052,7 +1052,7 @@ fn app_picker_inner(
         let text = ns_string::from_rust_string(
             env,
             format!(
-                "RadekHLE9.1 {}{}{}",
+                "RadekHLE 9.2 {}{}{}",
                 crate::branding(),
                 if crate::branding().is_empty() {
                     ""
