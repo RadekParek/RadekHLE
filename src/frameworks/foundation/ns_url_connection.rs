@@ -89,15 +89,6 @@ pub(crate) fn perform_request(
     } else {
         method
     };
-    if is_optional_unity_telemetry(&method, &url) {
-        log_once!("NSURLConnection: ignoring optional Unity telemetry upload to stats.unity3d.com");
-        return Ok(NetworkResponse {
-            status_code: 204,
-            headers: Vec::new(),
-            body: Vec::new(),
-        });
-    }
-
     let timeout: f64 = msg![env; request timeoutInterval];
     let timeout = timeout.clamp(1.0, 20.0);
 
@@ -134,22 +125,36 @@ pub(crate) fn perform_request(
         }
     }
 
-    log_sampled!(
-        16,
-        "NSURLConnection: fetching {} {} (timeout {:.0}s)",
-        method,
-        url,
-        timeout
-    );
+    perform_http_request(&method, &url, timeout, &request_headers, &body)
+}
 
+pub(crate) fn perform_http_request(
+    method: &str,
+    url: &str,
+    timeout: f64,
+    request_headers: &[(String, String)],
+    body: &[u8],
+) -> Result<NetworkResponse, String> {
+    if is_optional_unity_telemetry(method, url) {
+        log_once!("NSURLConnection: ignoring optional Unity telemetry upload to stats.unity3d.com");
+        return Ok(NetworkResponse {
+            status_code: 204,
+            headers: Vec::new(),
+            body: Vec::new(),
+        });
+    }
+
+    let method = if method.is_empty() { "GET" } else { method };
+    let timeout = timeout.clamp(1.0, 20.0);
+    log_once_fmt!("Foundation networking: sending {} {}", method, url);
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs_f64(timeout))
         .build();
-    let mut builder = agent.request(&method, &url);
+    let mut builder = agent.request(method, url);
     let has_user_agent = request_headers
         .iter()
         .any(|(name, _)| name.eq_ignore_ascii_case("User-Agent"));
-    for (name, value) in &request_headers {
+    for (name, value) in request_headers {
         builder = builder.set(name, value);
     }
     if !has_user_agent {
@@ -158,7 +163,7 @@ pub(crate) fn perform_request(
     let result = if body.is_empty() && method.eq_ignore_ascii_case("GET") {
         builder.call()
     } else {
-        builder.send_bytes(&body)
+        builder.send_bytes(body)
     };
     let response = match result {
         Ok(response) => response,
@@ -182,19 +187,50 @@ pub(crate) fn perform_request(
         .map_err(|error| error.to_string())?;
     log_sampled!(
         16,
-        "NSURLConnection: received HTTP {} ({} bytes)",
+        "Foundation networking: received HTTP {} ({} bytes)",
         status_code,
         response_body.len()
     );
-    // HTTP status codes, including 4xx and 5xx, are still successful URL-loading
-    // transactions. Only transport failures belong on didFailWithError:. Passing
-    // an HTTP error through as an NSHTTPURLResponse lets guest code inspect the
-    // status and body instead of entering a malformed error-retry path.
     Ok(NetworkResponse {
         status_code,
         headers,
         body: response_body,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::perform_http_request;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    #[test]
+    fn http_request_returns_response_body_and_status() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request).unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 12\r\nConnection: close\r\n\r\n{\"time\":123}",
+                )
+                .unwrap();
+        });
+        let response = perform_http_request(
+            "GET",
+            &format!("http://{address}/identity/2.0/time"),
+            2.0,
+            &[],
+            &[],
+        )
+        .unwrap();
+        server.join().unwrap();
+        assert_eq!(response.status_code, 200);
+        assert_eq!(response.body, b"{\"time\":123}");
+    }
 }
 
 pub(crate) fn make_data_from_bytes(env: &mut crate::Environment, body: &[u8]) -> id {

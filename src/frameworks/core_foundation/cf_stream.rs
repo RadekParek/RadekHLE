@@ -279,11 +279,18 @@ pub const CONSTANTS: ConstantExports = &[
 
 // MARK: - ObjC backing classes
 
+#[derive(Clone)]
+struct CFReadStreamHttpResponse {
+    status_code: u16,
+    headers: Vec<(String, String)>,
+}
+
 #[derive(Default)]
 struct CFReadStreamHostObject {
     status: CFStreamStatus,
     offset: usize,
     data: Vec<u8>,
+    http_response: Option<CFReadStreamHttpResponse>,
 }
 impl HostObject for CFReadStreamHostObject {}
 
@@ -324,9 +331,26 @@ fn alloc_read_stream(env: &mut Environment) -> CFReadStreamRef {
             status: kCFStreamStatusNotOpen,
             offset: 0,
             data: Vec::new(),
+            http_response: None,
         }),
         &mut env.mem,
     )
+}
+
+pub(crate) fn create_read_stream_with_http_response(
+    env: &mut Environment,
+    status_code: u16,
+    headers: Vec<(String, String)>,
+    data: Vec<u8>,
+) -> CFReadStreamRef {
+    let stream = alloc_read_stream(env);
+    let host = env.objc.borrow_mut::<CFReadStreamHostObject>(stream);
+    host.data = data;
+    host.http_response = Some(CFReadStreamHttpResponse {
+        status_code,
+        headers,
+    });
+    stream
 }
 
 fn alloc_write_stream(env: &mut Environment) -> CFWriteStreamRef {
@@ -618,11 +642,30 @@ fn CFWriteStreamCanAcceptBytes(env: &mut Environment, stream: CFWriteStreamRef) 
 // MARK: - Properties
 
 fn CFReadStreamCopyProperty(
-    _env: &mut Environment,
-    _stream: CFReadStreamRef,
-    _property_name: CFStringRef,
+    env: &mut Environment,
+    stream: CFReadStreamRef,
+    property_name: CFStringRef,
 ) -> CFTypeRef {
-    nil
+    if stream.is_null() || property_name.is_null() {
+        return nil;
+    }
+    let property_name = ns_string::to_rust_string(env, property_name).into_owned();
+    if property_name != "kCFStreamPropertyHTTPResponseHeader" {
+        return nil;
+    }
+    let response = env
+        .objc
+        .borrow::<CFReadStreamHostObject>(stream)
+        .http_response
+        .clone();
+    match response {
+        Some(response) => crate::frameworks::cf_http_message::create_response_message(
+            env,
+            response.status_code,
+            response.headers,
+        ),
+        None => nil,
+    }
 }
 
 fn CFReadStreamSetProperty(

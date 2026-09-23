@@ -86,6 +86,29 @@ struct CFHTTPMessageHostObject {
 }
 impl HostObject for CFHTTPMessageHostObject {}
 
+pub(crate) fn request_parts(
+    env: &mut Environment,
+    message: CFHTTPMessageRef,
+) -> Option<(String, String, Vec<(String, String)>, Vec<u8>)> {
+    if message.is_null() {
+        return None;
+    }
+    let host = env.objc.borrow::<CFHTTPMessageHostObject>(message);
+    if !host.is_request || host.request_url.is_empty() {
+        return None;
+    }
+    Some((
+        if host.method.is_empty() {
+            "GET".to_string()
+        } else {
+            host.method.clone()
+        },
+        host.request_url.clone(),
+        host.headers.clone(),
+        host.body.clone(),
+    ))
+}
+
 pub const CLASSES: ClassExports = objc_classes! {
 
 (env, this, _cmd);
@@ -111,6 +134,26 @@ fn alloc_message(env: &mut Environment, msg: CFHTTPMessageHostObject) -> CFHTTPM
         .objc
         .get_known_class("_touchHLE_CFHTTPMessage", &mut env.mem);
     env.objc.alloc_object(class, Box::new(msg), &mut env.mem)
+}
+
+pub(crate) fn create_response_message(
+    env: &mut Environment,
+    status_code: u16,
+    headers: Vec<(String, String)>,
+) -> CFHTTPMessageRef {
+    alloc_message(
+        env,
+        CFHTTPMessageHostObject {
+            is_request: false,
+            method: String::new(),
+            version: "HTTP/1.1".to_string(),
+            request_url: String::new(),
+            status_code: status_code as CFIndex,
+            headers,
+            body: Vec::new(),
+            header_complete: true,
+        },
+    )
 }
 
 // MARK: - Retain / Release
