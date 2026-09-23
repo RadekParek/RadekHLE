@@ -14,7 +14,7 @@ pub const DYLIB: HostDylib = HostDylib {
     aliases: &[],
     class_exports: &[],
     constant_exports: &[],
-    function_exports: &[FUNCTIONS],
+    function_exports: &[FUNCTIONS, PINVOKE_FUNCTIONS],
 };
 
 #[derive(Default)]
@@ -69,7 +69,9 @@ fn call_metadata_error(
     }
 }
 
-fn skynest_initialize_sdk(_env: &mut Environment, _parameters: MutVoidPtr) {}
+fn skynest_initialize_sdk(_env: &mut Environment, _parameters: MutVoidPtr) {
+    log_once!("Skynest __Internal SDK initializer resolved");
+}
 
 fn skynest_destroy_sdk(_env: &mut Environment) {}
 
@@ -128,7 +130,9 @@ fn skynest_identity_time(env: &mut Environment) {
     call_i32(env, callback, timestamp);
 }
 
-fn skynest_assets_initialize(_env: &mut Environment) {}
+fn skynest_assets_initialize(_env: &mut Environment) {
+    log_once!("Skynest __Internal assets initializer resolved");
+}
 
 fn skynest_assets_destroy(_env: &mut Environment) {}
 
@@ -231,3 +235,97 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(skynest_assets_initialize()),
     export_c_func!(skynest_assets_destroy()),
 ];
+
+pub const PINVOKE_FUNCTIONS: FunctionExports = &[
+    export_c_func_aliased!("_skynest_initializeSdk", skynest_initialize_sdk(_)),
+    export_c_func_aliased!("_skynest_destroySdk", skynest_destroy_sdk()),
+    export_c_func_aliased!("_skynest_update", skynest_update(_)),
+    export_c_func_aliased!("_skynest_activate", skynest_activate(_)),
+    export_c_func_aliased!(
+        "_skynest_identity_setCallbacks",
+        skynest_identity_set_callbacks(_, _, _, _, _, _)
+    ),
+    export_c_func_aliased!(
+        "_skynest_identity_login_by_method",
+        skynest_identity_login_by_method(_)
+    ),
+    export_c_func_aliased!("_skynest_identity_login", skynest_identity_login(_)),
+    export_c_func_aliased!(
+        "_skynest_identity_login_with_ui",
+        skynest_identity_login_with_ui(_)
+    ),
+    export_c_func_aliased!("_skynest_identity_logout", skynest_identity_logout()),
+    export_c_func_aliased!(
+        "_skynest_identity_get_user_profile",
+        skynest_identity_get_user_profile(_, _)
+    ),
+    export_c_func_aliased!(
+        "_skynest_identity_fetch_accesstoken",
+        skynest_identity_fetch_access_token()
+    ),
+    export_c_func_aliased!(
+        "_skynest_identity_isServiceAvailable",
+        skynest_identity_is_service_available(_)
+    ),
+    export_c_func_aliased!("_skynest_identity_time", skynest_identity_time()),
+    export_c_func_aliased!(
+        "_skynest_assets_setCallbacks",
+        skynest_assets_set_callbacks(_, _, _, _, _)
+    ),
+    export_c_func_aliased!("_skynest_assets_load", skynest_assets_load(_, _, _, _)),
+    export_c_func_aliased!(
+        "_skynest_assets_loadMetadata",
+        skynest_assets_load_metadata(_, _, _)
+    ),
+    export_c_func_aliased!(
+        "_skynest_assets_load_all_metadata",
+        skynest_assets_load_all_metadata(_, _)
+    ),
+    export_c_func_aliased!(
+        "_skynest_analytics_logEvent",
+        skynest_analytics_log_event(_)
+    ),
+    export_c_func_aliased!(
+        "_skynest_analytics_logEventWithParameters",
+        skynest_analytics_log_event_with_parameters(_, _)
+    ),
+    export_c_func_aliased!("_skynest_assets_initialize", skynest_assets_initialize()),
+    export_c_func_aliased!("_skynest_assets_destroy", skynest_assets_destroy()),
+];
+
+#[cfg(test)]
+mod tests {
+    use super::PINVOKE_FUNCTIONS;
+
+    #[test]
+    fn mono_internal_pinvoke_symbols_match_dlsym_mangling() {
+        let expected = [
+            "__skynest_initializeSdk",
+            "__skynest_destroySdk",
+            "__skynest_update",
+            "__skynest_activate",
+            "__skynest_identity_setCallbacks",
+            "__skynest_identity_login_by_method",
+            "__skynest_identity_login",
+            "__skynest_identity_login_with_ui",
+            "__skynest_identity_logout",
+            "__skynest_identity_get_user_profile",
+            "__skynest_identity_fetch_accesstoken",
+            "__skynest_identity_isServiceAvailable",
+            "__skynest_identity_time",
+            "__skynest_assets_setCallbacks",
+            "__skynest_assets_load",
+            "__skynest_assets_loadMetadata",
+            "__skynest_assets_load_all_metadata",
+            "__skynest_analytics_logEvent",
+            "__skynest_analytics_logEventWithParameters",
+            "__skynest_assets_initialize",
+            "__skynest_assets_destroy",
+        ];
+        let actual = PINVOKE_FUNCTIONS
+            .iter()
+            .map(|(symbol, _)| *symbol)
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected.to_vec());
+    }
+}
