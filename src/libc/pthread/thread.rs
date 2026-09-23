@@ -463,9 +463,15 @@ pub fn pthread_exit(env: &mut Environment, retval: MutVoidPtr) {
 fn pthread_join(env: &mut Environment, thread: pthread_t, retval: MutPtr<MutVoidPtr>) -> i32 {
     let current_thread = env.current_thread;
     let curr_pthread_t = pthread_self(env);
-    let Some(joinee_thread) = State::get(env).threads.get(&thread).map(|host| host.thread_id)
+    let Some(joinee_thread) = State::get(env)
+        .threads
+        .get(&thread)
+        .map(|host| host.thread_id)
     else {
-        log_dbg!("pthread_join({:?}) on an unknown thread, returning ESRCH", thread);
+        log_dbg!(
+            "pthread_join({:?}) on an unknown thread, returning ESRCH",
+            thread
+        );
         return ESRCH;
     };
 

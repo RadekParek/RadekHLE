@@ -274,7 +274,8 @@ fn posix_memalign(
     let aligned: MutVoidPtr = MutVoidPtr::from_bits(aligned_bits);
     let magic_ptr: MutPtr<u32> = MutPtr::from_bits(aligned_bits - header);
     let raw_ptr: MutPtr<u32> = MutPtr::from_bits(aligned_bits - std::mem::size_of::<u32>() as u32);
-    env.mem.write(magic_ptr, crate::mem::ALIGNED_ALLOCATION_MAGIC);
+    env.mem
+        .write(magic_ptr, crate::mem::ALIGNED_ALLOCATION_MAGIC);
     env.mem.write(raw_ptr, raw_bits);
     env.mem.write(memptr, aligned);
     0
@@ -491,7 +492,11 @@ fn host_entropy_seed() -> u32 {
     let address = (&bytes as *const [u8; 4]) as usize as u64;
     let mixed = clock ^ address.rotate_left(17) ^ (clock >> 29);
     let seed = (mixed as u32) ^ ((mixed >> 32) as u32);
-    if seed == 0 { 0x6d2b79f5 } else { seed }
+    if seed == 0 {
+        0x6d2b79f5
+    } else {
+        seed
+    }
 }
 
 fn sranddev(env: &mut Environment) {
@@ -1056,18 +1061,68 @@ fn strtol(env: &mut Environment, str: ConstPtr<u8>, endptr: MutPtr<MutPtr<u8>>, 
     }
 }
 
+fn dirname(env: &mut Environment, path: MutPtr<u8>) -> MutPtr<u8> {
+    if path.is_null() {
+        set_errno(env, EINVAL);
+        return Ptr::null();
+    }
+
+    let len = strlen(env, path.cast_const());
+    let mut bytes: Vec<u8> = (0..len).map(|i| env.mem.read(path + i)).collect();
+    while bytes.len() > 1 && bytes.last() == Some(&b'/') {
+        bytes.pop();
+    }
+
+    let output = if bytes.is_empty() {
+        b".".to_vec()
+    } else if let Some(slash) = bytes.iter().rposition(|&b| b == b'/') {
+        if slash == 0 {
+            b"/".to_vec()
+        } else {
+            bytes[..slash].to_vec()
+        }
+    } else {
+        b".".to_vec()
+    };
+
+    let output_path: MutPtr<u8> = if output.len() > len as usize {
+        env.mem.alloc((output.len() + 1) as GuestUSize).cast()
+    } else {
+        path
+    };
+    for (i, byte) in output.iter().enumerate() {
+        env.mem.write(output_path + i as GuestUSize, *byte);
+    }
+    env.mem
+        .write(output_path + output.len() as GuestUSize, b'\0');
+    output_path
+}
+
 fn realpath(
     env: &mut Environment,
     file_name: ConstPtr<u8>,
     resolve_name: MutPtr<u8>,
 ) -> MutPtr<u8> {
-    assert!(!resolve_name.is_null());
-    let file_name_str = env.mem.cstr_at_utf8(file_name).unwrap();
+    let file_name_str = match env.mem.cstr_at_utf8(file_name) {
+        Ok(s) => s,
+        Err(_) => {
+            set_errno(env, EINVAL);
+            return Ptr::null();
+        }
+    };
     let resolved = resolve_path(
         GuestPath::new(file_name_str),
         Some(env.fs.working_directory()),
     );
     let result = format!("/{}", resolved.join("/"));
+    let resolve_name = if resolve_name.is_null() {
+        // POSIX: when @resolve_name is NULL, realpath() must allocate a
+        // buffer for the resolved path (up to PATH_MAX bytes).
+        let buf: MutPtr<u8> = env.mem.alloc((result.len() + 1) as GuestUSize).cast();
+        buf
+    } else {
+        resolve_name
+    };
     env.mem
         .bytes_at_mut(resolve_name, result.len() as GuestUSize)
         .copy_from_slice(result.as_bytes());
@@ -1817,6 +1872,7 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func_aliased!("strtoq", strtoll(_, _, _)),
     export_c_func_aliased!("strtouq", strtoull(_, _, _)),
     export_c_func!(strtol(_, _, _)),
+    export_c_func!(dirname(_)),
     export_c_func!(realpath(_, _)),
     export_c_func_aliased!("realpath$DARWIN_EXTSN", realpath(_, _)),
     // mbstowcs and wcstombs are exported from libc::wchar; not duplicated here.

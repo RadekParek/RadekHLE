@@ -579,8 +579,7 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
         "Selected executable architecture: {}",
         mach_o::architecture_name(architecture)
     );
-    let arm64_selected =
-        architecture == mach_o::MachOArchitecture::Arm64 && !options.force_32_bit;
+    let arm64_selected = architecture == mach_o::MachOArchitecture::Arm64 && !options.force_32_bit;
     if arm64_selected {
         options.high_performance = false;
         options.force_max_clocks = false;
@@ -594,7 +593,11 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
         log!("ARM64 executable detected; enabling verbose logging and OpenGL error tracing automatically");
     }
     options.apply_power_profile(display_rate);
-    window::configure_host_performance(options.high_performance, options.force_max_clocks);
+    window::configure_host_performance(
+        options.high_performance,
+        options.force_max_clocks,
+        options.affinity.as_deref(),
+    );
     crate::gles::present::set_onscreen_hud_architecture(mach_o::architecture_name(architecture));
     if options.llvmpipe_fallback && crate::gles::llvmpipe_fallback_available() {
         options.prefer_gles2_context = true;

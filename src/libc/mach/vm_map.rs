@@ -230,7 +230,9 @@ fn vm_region_recurse(
 
     let requested_words = env.mem.read(info_count).min(16);
     if !info.is_null() {
-        env.mem.bytes_at_mut(info.cast(), requested_words * 4).fill(0);
+        env.mem
+            .bytes_at_mut(info.cast(), requested_words * 4)
+            .fill(0);
     }
     env.mem.write(info_count, requested_words);
     log_dbg!(

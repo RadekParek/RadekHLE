@@ -171,7 +171,10 @@ fn log_gpu_state(gles: &mut dyn GLES, reason: &str) {
         gles.GetIntegerv(gles11::FRAMEBUFFER_BINDING_OES, &mut framebuffer);
         gles.GetIntegerv(gles11::RENDERBUFFER_BINDING_OES, &mut renderbuffer);
         gles.GetIntegerv(gles11::ARRAY_BUFFER_BINDING, &mut array_buffer);
-        gles.GetIntegerv(gles11::ELEMENT_ARRAY_BUFFER_BINDING, &mut element_array_buffer);
+        gles.GetIntegerv(
+            gles11::ELEMENT_ARRAY_BUFFER_BINDING,
+            &mut element_array_buffer,
+        );
         gles.GetIntegerv(gles11::VIEWPORT, viewport.as_mut_ptr());
         gles.GetIntegerv(gles11::SCISSOR_BOX, scissor.as_mut_ptr());
         if gles.is_es2() {
@@ -1354,13 +1357,21 @@ fn glResolveMultisampleFramebufferAPPLE(env: &mut Environment) {
 }
 fn glDiscardFramebufferEXT(
     env: &mut Environment,
-    _target: GLenum,
-    _numAttachments: GLsizei,
-    _attachments: ConstPtr<GLenum>,
+    target: GLenum,
+    num_attachments: GLsizei,
+    attachments: ConstPtr<GLenum>,
 ) {
-    with_ctx_and_mem(env, |_gles, _mem| {
-        // GL_EXT_discard_framebuffer is a hint; safe to ignore.
-    })
+    with_ctx_and_mem(env, |gles, mem| unsafe {
+        let bytes = if num_attachments > 0 && !attachments.is_null() {
+            (num_attachments as GuestUSize).checked_mul(std::mem::size_of::<GLenum>() as GuestUSize)
+        } else {
+            None
+        };
+        let pointer = bytes
+            .map(|length| mem.bytes_at(attachments.cast(), length).as_ptr().cast())
+            .unwrap_or(std::ptr::null());
+        gles.DiscardFramebufferEXT(target, num_attachments, pointer);
+    });
 }
 
 /// `glPushGroupMarkerEXT` — debug marker from `GL_EXT_debug_marker`.

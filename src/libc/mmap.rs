@@ -121,10 +121,22 @@ fn munmap(env: &mut Environment, addr: MutVoidPtr, len: GuestUSize) -> i32 {
     log_dbg!("munmap({:?}, {})", addr, len);
 
     if len == 0 {
-        set_errno(env, EINVAL);
-        // TODO: should we clear allocations for `addr` here too?
-        log!("Warning: munmap({:?}, {}) failed, returning -1", addr, len);
-        return -1;
+        if let Some(&mapped_len) = env.libc_state.mmap.allocations.get(&addr) {
+            log_dbg!(
+                "munmap({:?}, 0): releasing known {}-byte mapping",
+                addr,
+                mapped_len
+            );
+            env.mem.free(addr);
+            env.libc_state.mmap.allocations.remove(&addr);
+        } else {
+            log_dbg!(
+                "munmap({:?}, 0): unknown mapping, treating as a no-op",
+                addr
+            );
+        }
+        set_errno(env, 0);
+        return 0;
     }
 
     if let Some(&expected_len) = env.libc_state.mmap.allocations.get(&addr) {

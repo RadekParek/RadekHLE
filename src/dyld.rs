@@ -215,9 +215,17 @@ fn alloc_a32_ret_stub(mem: &mut Mem) -> MutPtr<u32> {
     fn_ptr
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CxxAbiTypeInfoKind {
+    Class,
+    SingleInheritance,
+    MultipleInheritance,
+}
+
 fn link_cxxabi_vtable(
     name: &str,
     cxxabi_vtable_addrs: &mut HashMap<String, u32>,
+    typeinfo_vtable_kinds: &mut HashMap<u32, CxxAbiTypeInfoKind>,
     mem: &mut Mem,
 ) -> ConstVoidPtr {
     let addr = *cxxabi_vtable_addrs
@@ -233,31 +241,36 @@ fn link_cxxabi_vtable(
             }
             v.to_bits()
         });
+    let kind = match name {
+        "__ZTVN10__cxxabiv117__class_type_infoE" => Some(CxxAbiTypeInfoKind::Class),
+        "__ZTVN10__cxxabiv120__si_class_type_infoE" => Some(CxxAbiTypeInfoKind::SingleInheritance),
+        "__ZTVN10__cxxabiv121__vmi_class_type_infoE" => {
+            Some(CxxAbiTypeInfoKind::MultipleInheritance)
+        }
+        _ => None,
+    };
+    if let Some(kind) = kind {
+        typeinfo_vtable_kinds.insert(addr + 8, kind);
+    }
     Ptr::from_bits(addr).cast_const()
 }
 
 fn link_cxxabi_typeinfo(
     name: &str,
     cxxabi_vtable_addrs: &mut HashMap<String, u32>,
+    typeinfo_vtable_kinds: &mut HashMap<u32, CxxAbiTypeInfoKind>,
     mem: &mut Mem,
 ) -> ConstVoidPtr {
     let name_bytes = name.strip_prefix('_').unwrap_or(name);
     let name_cstr = mem.alloc_and_write_cstr(name_bytes.as_bytes());
     let ti: MutPtr<u32> = mem.alloc(8).cast();
-    let vtable_addr = *cxxabi_vtable_addrs
-        .entry("__ZTVN10__cxxabiv117__class_type_infoE".to_string())
-        .or_insert_with(|| {
-            let stub = alloc_a32_ret_stub(mem);
-            let stub_addr = stub.to_bits();
-            let v: MutPtr<u32> = mem.alloc(40).cast();
-            mem.write(v + 0, 0);
-            mem.write(v + 1, 0);
-            for i in 2..10 {
-                mem.write(v + i, stub_addr);
-            }
-            v.to_bits()
-        });
-    mem.write(ti + 0, vtable_addr + 8);
+    let vtable = link_cxxabi_vtable(
+        "__ZTVN10__cxxabiv117__class_type_infoE",
+        cxxabi_vtable_addrs,
+        typeinfo_vtable_kinds,
+        mem,
+    );
+    mem.write(ti + 0, vtable.to_bits() + 8);
     mem.write(ti + 1, name_cstr.to_bits());
     ti.cast().cast_const()
 }
@@ -403,6 +416,7 @@ pub struct Dyld {
     non_lazy_host_functions: HashMap<&'static str, GuestFunction>,
     host_function_cache: HashMap<String, Option<(&'static str, HostFunction)>>,
     host_constant_cache: HashMap<String, Option<&'static HostConstant>>,
+    cxxabi_typeinfo_vtable_kinds: HashMap<u32, CxxAbiTypeInfoKind>,
 }
 
 impl Dyld {
@@ -435,20 +449,26 @@ impl Dyld {
             non_lazy_host_functions: HashMap::new(),
             host_function_cache: HashMap::new(),
             host_constant_cache: HashMap::new(),
+            cxxabi_typeinfo_vtable_kinds: HashMap::new(),
         }
     }
 
-    fn lookup_host_function(
-        &mut self,
-        symbol: &str,
-    ) -> Option<(&'static str, HostFunction)> {
+    pub(crate) fn cxxabi_typeinfo_kind(
+        &self,
+        typeinfo_vtable_addrpoint: u32,
+    ) -> Option<CxxAbiTypeInfoKind> {
+        self.cxxabi_typeinfo_vtable_kinds
+            .get(&typeinfo_vtable_addrpoint)
+            .copied()
+    }
+
+    fn lookup_host_function(&mut self, symbol: &str) -> Option<(&'static str, HostFunction)> {
         if let Some(cached) = self.host_function_cache.get(symbol) {
             return *cached;
         }
         let result = search_host_dylibs(|dylib| dylib.function_exports, symbol)
             .map(|entry| (entry.0, entry.1));
-        self.host_function_cache
-            .insert(symbol.to_owned(), result);
+        self.host_function_cache.insert(symbol.to_owned(), result);
         result
     }
 
@@ -456,10 +476,9 @@ impl Dyld {
         if let Some(cached) = self.host_constant_cache.get(symbol) {
             return *cached;
         }
-        let result = search_host_dylibs(|dylib| dylib.constant_exports, symbol)
-            .map(|entry| &entry.1);
-        self.host_constant_cache
-            .insert(symbol.to_owned(), result);
+        let result =
+            search_host_dylibs(|dylib| dylib.constant_exports, symbol).map(|entry| &entry.1);
+        self.host_constant_cache.insert(symbol.to_owned(), result);
         result
     }
 
@@ -915,7 +934,12 @@ impl Dyld {
                 //
                 // The relocation addend (usually +8) is applied below, so we
                 // return the vtable base here.
-                let target = link_cxxabi_vtable(name, &mut cxxabi_vtable_addrs, mem);
+                let target = link_cxxabi_vtable(
+                    name,
+                    &mut cxxabi_vtable_addrs,
+                    &mut self.cxxabi_typeinfo_vtable_kinds,
+                    mem,
+                );
                 log_sampled!(
                     1024,
                     "Stubbed C++ vtable {} -> {:#x}",
@@ -986,6 +1010,9 @@ impl Dyld {
                 || name == "__ZTIPc"
                 || name == "__ZTIPv"
                 || name == "__ZTIPKv"
+                || name == "__ZTIw"
+                || name == "__ZTIPw"
+                || name == "__ZTIPKw"
             {
                 // C++ RTTI type_info objects for fundamental types (double,
                 // float, int, long, unsigned int, short, char, void, bool,
@@ -1001,7 +1028,12 @@ impl Dyld {
                 // The name string is never actually used for comparison (RTTI
                 // compares by pointer identity on most embedded platforms), but
                 // providing a non-NULL value prevents crashes in debuggers.
-                let ti = link_cxxabi_typeinfo(name, &mut cxxabi_vtable_addrs, mem);
+                let ti = link_cxxabi_typeinfo(
+                    name,
+                    &mut cxxabi_vtable_addrs,
+                    &mut self.cxxabi_typeinfo_vtable_kinds,
+                    mem,
+                );
                 log_dbg!("Stubbed C++ typeinfo {} at {:#x}", name, ti.to_bits());
                 ti
             } else if name == "___objc_personality_v0" {
@@ -1363,7 +1395,12 @@ impl Dyld {
                 || symbol == "__ZTVN10__cxxabiv117__pbase_type_infoE"
                 || symbol == "__ZTVN10__cxxabiv129__pointer_to_member_type_infoE"
             {
-                let target = link_cxxabi_vtable(symbol, &mut cxxabi_vtable_addrs, mem);
+                let target = link_cxxabi_vtable(
+                    symbol,
+                    &mut cxxabi_vtable_addrs,
+                    &mut self.cxxabi_typeinfo_vtable_kinds,
+                    mem,
+                );
                 // A non-lazy symbol pointer holds the plain address of the
                 // named symbol (no addend), so it resolves to the vtable base.
                 mem.write(ptr_ptr, target);
@@ -1399,8 +1436,16 @@ impl Dyld {
                 || symbol == "__ZTIPc"
                 || symbol == "__ZTIPv"
                 || symbol == "__ZTIPKv"
+                || symbol == "__ZTIw"
+                || symbol == "__ZTIPw"
+                || symbol == "__ZTIPKw"
             {
-                let ti = link_cxxabi_typeinfo(symbol, &mut cxxabi_vtable_addrs, mem);
+                let ti = link_cxxabi_typeinfo(
+                    symbol,
+                    &mut cxxabi_vtable_addrs,
+                    &mut self.cxxabi_typeinfo_vtable_kinds,
+                    mem,
+                );
                 mem.write(ptr_ptr, ti);
                 log_dbg!("Stubbed C++ typeinfo {} at {:#x}", symbol, ti.to_bits());
                 continue;

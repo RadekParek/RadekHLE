@@ -865,6 +865,10 @@ pub const STUB_CONSTANTS: ConstantExports = &[
         HostConstant::NSString("kMDItemFSContentChangeDate"),
     ),
     (
+        "_NSMetadataItemFSSizeKey",
+        HostConstant::NSString("kMDItemFSSize"),
+    ),
+    (
         "_NSMetadataUbiquitousItemIsDownloadedKey",
         HostConstant::NSString("NSMetadataUbiquitousItemIsDownloadedKey"),
     ),

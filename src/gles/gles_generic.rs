@@ -106,6 +106,14 @@ pub trait GLES {
     fn is_native_es1(&self) -> bool {
         false
     }
+    unsafe fn DiscardFramebufferEXT(
+        &mut self,
+        _target: GLenum,
+        _num_attachments: GLsizei,
+        _attachments: *const GLenum,
+    ) -> bool {
+        false
+    }
     fn is_software(&self) -> bool {
         false
     }

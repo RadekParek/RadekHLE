@@ -1066,7 +1066,7 @@ fn CFStringFindCharacterFromSet(
 // MARK: - Comparison
 
 pub type CFStringCompareFlags = CFOptionFlags;
-fn CFStringCompare(
+pub fn CFStringCompare(
     env: &mut Environment,
     a: CFStringRef,
     b: CFStringRef,

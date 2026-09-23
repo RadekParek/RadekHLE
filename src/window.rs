@@ -1137,9 +1137,19 @@ pub fn host_screen_resolutions() -> Vec<(u32, u32)> {
 
 /// Query the host display refresh rate. SDL receives this from Android's
 /// Display.getRefreshRate(), so high-refresh devices are not forced to 60 Hz.
-pub fn configure_host_performance(high_performance: bool, force_max_clocks: bool) {
+pub fn configure_host_performance(
+    high_performance: bool,
+    force_max_clocks: bool,
+    affinity: Option<&str>,
+) {
+    #[cfg(not(target_os = "android"))]
+    let _ = affinity;
+
     #[cfg(target_os = "android")]
     {
+        if high_performance {
+            pin_android_thread_to_big_cores(affinity);
+        }
         let flags = i32::from(high_performance) | (i32::from(force_max_clocks) << 1);
         let result = unsafe { SDL_AndroidSendMessage(PERFORMANCE_MODE_COMMAND, flags) };
         if result != 0 {
@@ -1186,6 +1196,71 @@ pub fn configure_host_performance(high_performance: bool, force_max_clocks: bool
             std::env::remove_var("TOUCHHLE_FORCE_MAX_CLOCKS");
         }
     }
+}
+
+#[cfg(target_os = "android")]
+fn pin_android_thread_to_big_cores(configured: Option<&str>) {
+    let env_override = std::env::var("TOUCHHLE_AFFINITY")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let policy = env_override
+        .as_deref()
+        .or(configured)
+        .unwrap_or("big")
+        .trim();
+    if policy.eq_ignore_ascii_case("off") || policy.eq_ignore_ascii_case("all") {
+        log!("CPU affinity disabled by policy {policy:?}");
+        return;
+    }
+    let cpus = if policy.is_empty() || policy.eq_ignore_ascii_case("big") {
+        android_big_core_cpus().unwrap_or_default()
+    } else {
+        crate::options::parse_cpu_list(policy)
+    };
+    let max_cpu = std::mem::size_of::<libc::cpu_set_t>() * 8;
+    let cpus: Vec<usize> = cpus.into_iter().filter(|cpu| *cpu < max_cpu).collect();
+    if cpus.is_empty() {
+        log!("CPU affinity policy {policy:?} did not resolve to available cores; leaving scheduler unchanged");
+        return;
+    }
+    unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        libc::CPU_ZERO(&mut set);
+        for &cpu in &cpus {
+            libc::CPU_SET(cpu, &mut set);
+        }
+        if libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set) == 0 {
+            log!("Emulator thread pinned to Android CPUs {cpus:?}");
+        } else {
+            log!(
+                "Could not apply Android CPU affinity to {cpus:?}: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+fn android_big_core_cpus() -> Option<Vec<usize>> {
+    let mut frequencies = Vec::new();
+    for cpu in 0..64 {
+        let path = format!("/sys/devices/system/cpu/cpu{cpu}/cpufreq/cpuinfo_max_freq");
+        if let Ok(value) = std::fs::read_to_string(path) {
+            if let Ok(khz) = value.trim().parse::<u64>() {
+                frequencies.push((cpu, khz));
+            }
+        }
+    }
+    if frequencies.len() < 2 {
+        return None;
+    }
+    let fastest = frequencies.iter().map(|(_, frequency)| *frequency).max()?;
+    let big: Vec<usize> = frequencies
+        .iter()
+        .filter(|(_, frequency)| frequency.saturating_mul(10) >= fastest.saturating_mul(9))
+        .map(|(cpu, _)| *cpu)
+        .collect();
+    (big.len() < frequencies.len()).then_some(big)
 }
 
 pub fn host_refresh_rate() -> Option<f64> {

@@ -41,6 +41,7 @@ pub mod net;
 pub mod netdb;
 pub mod posix_io;
 pub mod pthread;
+pub mod pwd;
 pub mod resolv;
 pub mod sched;
 pub mod semaphore;
@@ -131,6 +132,7 @@ pub const DYLIB: crate::dyld::HostDylib = crate::dyld::HostDylib {
         pthread::once::FUNCTIONS,
         pthread::rwlock::FUNCTIONS,
         pthread::thread::FUNCTIONS,
+        pwd::FUNCTIONS,
         resolv::FUNCTIONS,
         sched::FUNCTIONS,
         semaphore::FUNCTIONS,
@@ -144,6 +146,7 @@ pub const DYLIB: crate::dyld::HostDylib = crate::dyld::HostDylib {
         string::FUNCTIONS,
         sys::mount::FUNCTIONS,
         sys::ptrace::FUNCTIONS,
+        sys::resource::FUNCTIONS,
         sys::timeb::FUNCTIONS,
         sys::socket::FUNCTIONS,
         sys::utsname::FUNCTIONS,
@@ -171,6 +174,7 @@ pub struct State {
     pub semaphore: semaphore::State,
     pub socket: sys::socket::State,
     stdlib: stdlib::State,
+    pub(crate) resource: sys::resource::State,
     string: string::State,
     signal: signal::State,
     pub(crate) stdio: stdio::State,

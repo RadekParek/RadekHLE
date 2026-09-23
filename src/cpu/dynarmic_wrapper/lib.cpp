@@ -176,10 +176,29 @@ private:
       cpu->HaltExecution(HaltReasonUndefinedInstruction);
     } else if (exception == Dynarmic::A32::Exception::Breakpoint) {
       cpu->HaltExecution(HaltReasonBreakpoint);
+    } else if (exception == Dynarmic::A32::Exception::Yield ||
+               exception == Dynarmic::A32::Exception::WaitForEvent ||
+               exception == Dynarmic::A32::Exception::WaitForInterrupt ||
+               exception == Dynarmic::A32::Exception::SendEvent ||
+               exception == Dynarmic::A32::Exception::SendEventLocal ||
+               exception == Dynarmic::A32::Exception::PreloadData ||
+               exception == Dynarmic::A32::Exception::PreloadDataWithIntentToWrite ||
+               exception == Dynarmic::A32::Exception::PreloadInstruction ||
+               exception == Dynarmic::A32::Exception::UnpredictableInstruction ||
+               exception == Dynarmic::A32::Exception::DecodeError) {
+      // Hint instructions (WFE/WFI/YIELD/SEV/PLD): on real hardware these
+      // are no-ops or low-power hints, and dynarmic has already advanced the
+      // PC past the instruction, so just continue execution without halting.
+      // Aborting here (as we used to) killed apps like N.O.V.A. 3 with an
+      // unexplained SIGABRT when guest code ran these hints in a spin loop.
     } else {
+      // UnpredictableInstruction / DecodeError / anything else: treat exactly
+      // like an undefined instruction so the Rust-side graceful bypass
+      // (fake return to LR / skip instruction) can handle it instead of
+      // aborting the whole host process.
       std::fprintf(stderr, "ExceptionRaised: unexpected exception %u at %x\n",
                    unsigned(exception), pc);
-      abort();
+      cpu->HaltExecution(HaltReasonUndefinedInstruction);
     }
   }
   void AddTicks(std::uint64_t ticks) override {

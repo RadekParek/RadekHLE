@@ -32,6 +32,7 @@ pub struct GLES1NativeContext {
     /// to the first `make_current` because we need a current GL context to
     /// query `GL_EXTENSIONS`.
     pvrtc_native_checked: bool,
+    discard_ext: bool,
 }
 
 impl GLESContext for GLES1NativeContext {
@@ -45,6 +46,7 @@ impl GLESContext for GLES1NativeContext {
             is_loaded: false,
             pvrtc_native: false,
             pvrtc_native_checked: false,
+            discard_ext: false,
         })
     }
 
@@ -57,6 +59,7 @@ impl GLESContext for GLES1NativeContext {
                 _gl_lifetime: PhantomData,
                 pending_synthetic_error: std::cell::Cell::new(gles11::NO_ERROR),
                 pvrtc_native: self.pvrtc_native,
+                discard_ext: self.discard_ext,
             });
         }
 
@@ -67,6 +70,7 @@ impl GLESContext for GLES1NativeContext {
         self.is_loaded = true;
         if !self.pvrtc_native_checked {
             self.pvrtc_native = unsafe { detect_pvrtc_support() };
+            self.discard_ext = unsafe { host_extension_present("GL_EXT_discard_framebuffer") };
             self.pvrtc_native_checked = true;
             log!(
                 "GLES1Native: GL_IMG_texture_compression_pvrtc {} (PVRTC textures will \
@@ -87,6 +91,7 @@ impl GLESContext for GLES1NativeContext {
             _gl_lifetime: PhantomData,
             pending_synthetic_error: std::cell::Cell::new(gles11::NO_ERROR),
             pvrtc_native: self.pvrtc_native,
+            discard_ext: self.discard_ext,
         })
     }
 
@@ -100,6 +105,7 @@ impl GLESContext for GLES1NativeContext {
                 _gl_lifetime: PhantomData,
                 pending_synthetic_error: std::cell::Cell::new(gles11::NO_ERROR),
                 pvrtc_native: self.pvrtc_native,
+                discard_ext: self.discard_ext,
             });
         }
 
@@ -108,22 +114,20 @@ impl GLESContext for GLES1NativeContext {
         self.is_loaded = true;
         if !self.pvrtc_native_checked {
             self.pvrtc_native = detect_pvrtc_support();
+            self.discard_ext = host_extension_present("GL_EXT_discard_framebuffer");
             self.pvrtc_native_checked = true;
         }
         Box::new(GLES1Native {
             _gl_lifetime: PhantomData,
             pending_synthetic_error: std::cell::Cell::new(gles11::NO_ERROR),
             pvrtc_native: self.pvrtc_native,
+            discard_ext: self.discard_ext,
         })
     }
 }
 
 /// Query `GL_EXTENSIONS` on the currently-bound OpenGL ES 1.1 context and
-/// return whether it advertises `GL_IMG_texture_compression_pvrtc`.
-///
-/// Must be called with a current GL context. Returns `false` on any
-/// driver-reported error (NULL string, non-UTF-8 string, missing token);
-/// software-decoding PVRTC is the safe-default behaviour.
+/// return whether it advertises PVRTC. Software decoding is the safe default.
 unsafe fn detect_pvrtc_support() -> bool {
     let raw = gles11::GetString(gles11::EXTENSIONS);
     if raw.is_null() {
@@ -137,6 +141,19 @@ unsafe fn detect_pvrtc_support() -> bool {
     }
     s.split(' ')
         .any(|ext| ext == "GL_IMG_texture_compression_pvrtc")
+}
+
+unsafe fn host_extension_present(name: &str) -> bool {
+    let raw = gles11::GetString(gles11::EXTENSIONS);
+    if raw.is_null() {
+        return false;
+    }
+    let Ok(extensions) = CStr::from_ptr(raw as *const _).to_str() else {
+        return false;
+    };
+    extensions
+        .split_ascii_whitespace()
+        .any(|extension| extension == name)
 }
 
 pub struct GLES1Native<'gl_ctx> {
@@ -157,10 +174,24 @@ pub struct GLES1Native<'gl_ctx> {
     /// time so the per-call `CompressedTexImage2D` path doesn't have to
     /// re-query `GL_EXTENSIONS`.
     pvrtc_native: bool,
+    discard_ext: bool,
 }
 
 impl GLES for GLES1Native<'_> {
     fn is_native_es1(&self) -> bool {
+        true
+    }
+
+    unsafe fn DiscardFramebufferEXT(
+        &mut self,
+        target: GLenum,
+        num_attachments: GLsizei,
+        attachments: *const GLenum,
+    ) -> bool {
+        if !self.discard_ext || target != 0x8D40 || num_attachments <= 0 || attachments.is_null() {
+            return false;
+        }
+        gles11::DiscardFramebufferEXT(target, num_attachments, attachments);
         true
     }
     unsafe fn driver_description(&self) -> String {

@@ -476,6 +476,10 @@ pub struct Options {
     /// command line. Apps that legitimately rely on the ES 1.1 fixed-function
     /// pipeline should NOT enable this flag.
     pub prefer_gles2_context: bool,
+    /// Force EAGL context creation to use GLES 1.1 when the default backend is selected.
+    pub force_gles1_context: bool,
+    /// Android CPU affinity policy: None uses the default big-core policy.
+    pub affinity: Option<String>,
     pub network_access: bool,
     pub popup_errors: bool,
     pub dumping_options: DumpingOptions,
@@ -582,6 +586,8 @@ impl Default for Options {
             rtcs: false,
             force_composition: false,
             prefer_gles2_context: false,
+            force_gles1_context: false,
+            affinity: None,
             network_access: false,
             popup_errors: true,
             dumping_options: Default::default(),
@@ -988,6 +994,13 @@ impl Options {
             self.metal_translator = false;
         } else if arg == "--prefer-gles2-context" {
             self.prefer_gles2_context = true;
+        } else if arg == "--force-gles1-context" {
+            self.force_gles1_context = true;
+        } else if let Some(value) = arg.strip_prefix("--affinity=") {
+            if !matches!(value, "big" | "all" | "off") && parse_cpu_list(value).is_empty() {
+                return Err(format!("Invalid CPU affinity policy {value:?}"));
+            }
+            self.affinity = Some(value.to_string());
         } else if arg == "--allow-network-access" {
             self.network_access = true;
         } else if arg == "--disable-network-access" {
@@ -1149,6 +1162,33 @@ fn parse_dump_options(options: &str) -> Result<DumpingOptions, String> {
         }
     }
     Ok(dumping_options)
+}
+
+pub(crate) fn parse_cpu_list(value: &str) -> Vec<usize> {
+    const MAX_CPU_INDEX: usize = 1024;
+    let mut cpus = Vec::new();
+    for part in value.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if let Some((start, end)) = part.split_once('-') {
+            let (Ok(start), Ok(end)) = (start.trim().parse::<usize>(), end.trim().parse::<usize>())
+            else {
+                continue;
+            };
+            if start <= end && end < MAX_CPU_INDEX {
+                cpus.extend(start..=end);
+            }
+        } else if let Ok(cpu) = part.parse::<usize>() {
+            if cpu < MAX_CPU_INDEX {
+                cpus.push(cpu);
+            }
+        }
+    }
+    cpus.sort_unstable();
+    cpus.dedup();
+    cpus
 }
 
 #[cfg(test)]
@@ -1353,6 +1393,24 @@ mod tests {
         options.parse_argument("--graphics-api=software").unwrap();
         assert_eq!(options.graphics_api, GraphicsApi::Software);
         assert!(!options.force_composition);
+    }
+
+    #[test]
+    fn force_gles1_context_is_opt_in() {
+        let mut options = Options::default();
+        assert!(!options.force_gles1_context);
+        options.parse_argument("--force-gles1-context").unwrap();
+        assert!(options.force_gles1_context);
+    }
+
+    #[test]
+    fn affinity_policy_accepts_named_modes_and_cpu_lists() {
+        let mut options = Options::default();
+        assert_eq!(options.affinity, None);
+        options.parse_argument("--affinity=4-7,6").unwrap();
+        assert_eq!(options.affinity.as_deref(), Some("4-7,6"));
+        assert_eq!(parse_cpu_list("4-7,6"), vec![4, 5, 6, 7]);
+        assert!(options.parse_argument("--affinity=7-4").is_err());
     }
 
     #[test]

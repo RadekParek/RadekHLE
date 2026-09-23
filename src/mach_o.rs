@@ -644,7 +644,25 @@ impl MachO {
                         })
                     }
 
-                    let extrels = &bytes[extreloff as usize..][..nextrel as usize * 8];
+                    let extrels = {
+                        let start = extreloff as usize;
+                        let len = (nextrel as usize).saturating_mul(8);
+                        if len == 0 {
+                            &[][..]
+                        } else if let Some(end) =
+                            start.checked_add(len).filter(|end| *end <= bytes.len())
+                        {
+                            &bytes[start..end]
+                        } else {
+                            log!(
+                                "Warning: external relocation table out of bounds (offset {:#x}, {} entries, file size {:#x}); skipping.",
+                                extreloff,
+                                nextrel,
+                                bytes.len()
+                            );
+                            &[][..]
+                        }
+                    };
                     for entry in extrels.chunks(8) {
                         let entry_arr: [u8; 8] = match entry.try_into() {
                             Ok(a) => a,

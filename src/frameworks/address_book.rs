@@ -110,6 +110,11 @@ fn ABAddressBookCopyPeopleWithName(
     Ptr::null()
 }
 
+fn ABGroupCreate(_env: &mut Environment) -> ABRecordRef {
+    log!("ABGroupCreate stubbed, returning NULL");
+    Ptr::null()
+}
+
 // MARK: - Record add / remove
 
 fn ABAddressBookAddRecord(
@@ -148,6 +153,63 @@ fn ABRecordCopyValue(
     _property: ABPropertyID,
 ) -> MutVoidPtr {
     Ptr::null()
+}
+
+/// `CFComparisonResult ABPersonComparePeopleByName(ABRecordRef person1,
+/// ABRecordRef person2, ABPersonSortOrdering ordering)` — the comparison
+/// function guest code passes to `qsort`/`NSArray sortUsingFunction` when
+/// sorting contacts by name (used e.g. by N.O.V.A. 3's Gameloft LIVE
+/// friends list).
+///
+/// The emulator's address book is empty, so records normally carry no name
+/// values and everything compares equal, which keeps sorting stable.
+/// When values *are* present (e.g. the app added records itself), we do a
+/// real lexicographic comparison of the requested key(s) so sort order is
+/// meaningful.
+fn ABPersonComparePeopleByName(
+    env: &mut Environment,
+    person1: ABRecordRef,
+    person2: ABRecordRef,
+    ordering: i32,
+) -> i32 {
+    // kABSortByFirstName = 0 / kABFirstNameOrdering = 0,
+    // kABSortByLastName = 1 / kABLastNameOrdering = 1.
+    const KAB_FIRST: i32 = 0;
+    const KCF_COMPARE_GREATER_THAN: i32 = 1;
+    const KCF_COMPARE_LESS_THAN: i32 = -1;
+
+    if person1.is_null() || person2.is_null() {
+        return 0; // kCFCompareEqualTo — nothing to order by
+    }
+
+    // Property IDs from AddressBook/ABPerson.h.
+    let (primary_prop, secondary_prop) = if ordering == KAB_FIRST {
+        (0u32, 1u32) // kABFirstNameProperty, kABLastNameProperty
+    } else {
+        (1u32, 0u32) // kABLastNameProperty, kABFirstNameProperty
+    };
+
+    for prop in [primary_prop, secondary_prop] {
+        let name1 = ABRecordCopyValue(env, person1, prop as i32);
+        let name2 = ABRecordCopyValue(env, person2, prop as i32);
+        if name1.is_null() && name2.is_null() {
+            continue; // fall through to the secondary key
+        }
+        if name1.is_null() {
+            return KCF_COMPARE_LESS_THAN;
+        }
+        if name2.is_null() {
+            return KCF_COMPARE_GREATER_THAN;
+        }
+        let s1: CFStringRef = name1.cast();
+        let s2: CFStringRef = name2.cast();
+        let cmp = crate::frameworks::core_foundation::cf_string::CFStringCompare(env, s1, s2, 0);
+        if cmp != 0 {
+            return cmp;
+        }
+        // Equal on this key; try the secondary key.
+    }
+    0 // kCFCompareEqualTo
 }
 
 fn ABRecordCopyCompositeName(_env: &mut Environment, _record: ABRecordRef) -> MutVoidPtr {
@@ -317,9 +379,11 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(ABAddressBookAddRecord(_, _, _)),
     export_c_func!(ABAddressBookRemoveRecord(_, _, _)),
     // ABRecord
+    export_c_func!(ABGroupCreate()),
     export_c_func!(ABRecordGetRecordID(_)),
     export_c_func!(ABRecordGetRecordType(_)),
     export_c_func!(ABRecordCopyValue(_, _)),
+    export_c_func!(ABPersonComparePeopleByName(_, _, _)),
     export_c_func!(ABRecordCopyCompositeName(_)),
     export_c_func!(ABRecordSetValue(_, _, _, _)),
     export_c_func!(ABRecordRemoveValue(_, _, _)),

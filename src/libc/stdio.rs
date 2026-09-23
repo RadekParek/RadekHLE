@@ -10,12 +10,12 @@ use super::posix_io::{
     STDIN_FILENO, STDOUT_FILENO,
 };
 use crate::dyld::{export_c_func, ConstantExports, FunctionExports, HostConstant};
+use crate::environment::{ThreadBlock, ThreadId};
 use crate::fs::{FsError, GuestPath};
 use crate::libc::errno::{set_errno, EACCES, EBUSY, EINVAL, ENOENT, ENOTDIR, ENOTEMPTY};
 use crate::libc::string::strlen;
 use crate::mem::{ConstPtr, ConstVoidPtr, GuestUSize, Mem, MutPtr, MutVoidPtr, Ptr, SafeRead};
 use crate::Environment;
-use crate::environment::{ThreadBlock, ThreadId};
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -129,7 +129,9 @@ fn _touchHLE_check_file_object_lock(env: &mut Environment, file_ptr: MutPtr<FILE
         .libc_state
         .stdio
         .get_file_host_obj_mut(&mut env.mem, file_ptr);
-    assert!((owning_thread.is_none() && *lock_count == 0) || *owning_thread == Some(env.current_thread));
+    assert!(
+        (owning_thread.is_none() && *lock_count == 0) || *owning_thread == Some(env.current_thread)
+    );
 }
 
 #[allow(non_camel_case_types)]

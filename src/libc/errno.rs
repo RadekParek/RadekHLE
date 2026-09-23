@@ -159,12 +159,9 @@ impl State {
 pub fn set_errno(env: &mut Environment, val: i32) {
     let thread = env.current_thread;
     let thread_local_storage = env.thread_local_storage(thread);
-    env.libc_state.errno.set_errno_for_thread(
-        &mut env.mem,
-        thread,
-        thread_local_storage,
-        val,
-    );
+    env.libc_state
+        .errno
+        .set_errno_for_thread(&mut env.mem, thread, thread_local_storage, val);
 }
 
 /// Helper to read the current thread's `errno`, mirroring the C `errno`

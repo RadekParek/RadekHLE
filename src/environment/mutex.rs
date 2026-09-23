@@ -36,6 +36,13 @@ struct Mutex {
     /// The `NonZeroU32` is the number of locks on this thread (if it's a
     /// recursive mutex).
     locked: Option<(ThreadId, NonZeroU32)>,
+    /// Counts of "phantom" no-op locks per thread, created when a NORMAL
+    /// mutex self-lock that would deadlock on real iOS is instead allowed to
+    /// succeed (see `Environment::lock_mutex`). Each phantom lock must be
+    /// paired with a matching unlock that releases nothing, so the guest's
+    /// lock/unlock bookkeeping stays consistent with the real lock held by
+    /// the original owner.
+    phantom_locks: HashMap<ThreadId, u32>,
 }
 
 #[repr(i32)]
@@ -73,6 +80,7 @@ impl MutexState {
                 type_: mutex_type,
                 waiting_count: 0,
                 locked: None,
+                phantom_locks: HashMap::new(),
             },
         );
         log_dbg!("Created mutex #{}, type {:?}", mutex_id, mutex_type);
@@ -175,15 +183,34 @@ impl Environment {
             match mutex.type_ {
                 MutexType::PTHREAD_MUTEX_NORMAL => {
                     // POSIX says behaviour is undefined here; on real iOS the
-                    // guest deadlocks. We can't deadlock a single host thread
-                    // safely, and panicking tears the whole emulator down for
-                    // a guest bug. Treat it like an error-checking mutex and
-                    // surface EDEADLK so the guest at least has a chance to
-                    // notice rather than corrupting host state.
-                    log!(
-                        "Warning: pthread_mutex_lock: non-error-checking mutex #{mutex_id} would deadlock on thread {current_thread}; returning EDEADLK instead of panicking the host.",
-                    );
-                    return Err(EDEADLK);
+                    // guest would deadlock forever. We can't deadlock a single
+                    // host thread safely, and returning an error is actively
+                    // harmful: guests rarely check pthread_mutex_lock's return
+                    // value, and the failed lock sends them into corrupted
+                    // lock/unlock states that end in guest aborts (observed
+                    // with N.O.V.A. 3, which spun a mutex-unlock loop for
+                    // seconds after receiving EDEADLK here and then aborted).
+                    // We grant a "phantom" lock: it succeeds without changing
+                    // real ownership, and is consumed by a matching unlock
+                    // (see `unlock_mutex`), so the guest's lock/unlock pair
+                    // bookkeeping stays balanced without touching the lock
+                    // actually held by the other thread.
+                    static SELF_LOCK_LOGGED: std::sync::atomic::AtomicU64 =
+                        std::sync::atomic::AtomicU64::new(0);
+                    let bit = 1u64 << (mutex_id % 64);
+                    let logged =
+                        SELF_LOCK_LOGGED.fetch_or(bit, std::sync::atomic::Ordering::Relaxed);
+                    if logged & bit == 0 {
+                        log!(
+                            "Warning: pthread_mutex_lock: non-error-checking mutex #{mutex_id} would deadlock on thread {current_thread}; granting phantom lock instead (real iOS would deadlock here).",
+                        );
+                    }
+                    let _ = mutex
+                        .phantom_locks
+                        .entry(current_thread)
+                        .and_modify(|count| *count += 1)
+                        .or_insert(1);
+                    return Ok(1);
                 }
                 MutexType::PTHREAD_MUTEX_ERRORCHECK => {
                     log_dbg!("Attempted to lock error-checking mutex #{} for thread {}, already locked by same thread! Returning EDEADLK.", mutex_id, current_thread);
@@ -217,6 +244,25 @@ impl Environment {
         let current_thread = self.current_thread;
         let mutex: &mut _ = self.mutex_state.mutexes.get_mut(&mutex_id).unwrap();
 
+        // If this thread holds a phantom lock (granted when a NORMAL mutex
+        // self-lock that would deadlock was allowed to succeed instead), an
+        // unlock just consumes the phantom and releases nothing: the real
+        // lock belongs to whichever thread owns it.
+        if let Some(phantom_count) = mutex.phantom_locks.get_mut(&current_thread) {
+            if *phantom_count > 0 {
+                *phantom_count -= 1;
+                if *phantom_count == 0 {
+                    mutex.phantom_locks.remove(&current_thread);
+                }
+                log_dbg!(
+                    "Consumed phantom lock on mutex #{} for thread {}.",
+                    mutex_id,
+                    current_thread
+                );
+                return Ok(0);
+            }
+        }
+
         let Some((locking_thread, lock_count)) = mutex.locked else {
             match mutex.type_ {
                 MutexType::PTHREAD_MUTEX_NORMAL => {
@@ -242,9 +288,17 @@ impl Environment {
                 MutexType::PTHREAD_MUTEX_NORMAL => {
                     // This case is undefined,
                     // but tests on macOS/iOS shows it is allowed!
-                    log!(
-                        "Warning: Allowing to unlock non-error-checking mutex #{mutex_id} for thread {current_thread}, locked by different thread {locking_thread}!",
-                    );
+                    // Logging is capped: games like N.O.V.A. 3 unlock this mutex
+                    // from another thread every frame, flooding the log.
+                    static CROSS_UNLOCK_LOGGED: std::sync::atomic::AtomicU32 =
+                        std::sync::atomic::AtomicU32::new(0);
+                    let n = CROSS_UNLOCK_LOGGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if n < 8 || n == 1000 {
+                        log!(
+                            "Warning: Allowing to unlock non-error-checking mutex #{mutex_id} for thread {current_thread}, locked by different thread {locking_thread}! (occurrence {})",
+                            n + 1
+                        );
+                    }
                 }
                 MutexType::PTHREAD_MUTEX_ERRORCHECK | MutexType::PTHREAD_MUTEX_RECURSIVE => {
                     log_dbg!(

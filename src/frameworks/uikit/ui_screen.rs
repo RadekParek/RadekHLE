@@ -14,6 +14,15 @@ pub struct State {
     current_mode: Option<id>,
 }
 
+/// Return the main screen's physical pixel size for the current orientation.
+/// UIKit `bounds` is expressed in logical points; `nativeBounds` and
+/// `UIScreenMode.size` are expressed in pixels.
+fn screen_pixel_size_for_current_orientation(env: &mut crate::Environment) -> (CGFloat, CGFloat) {
+    let (width, height) = screen_size_for_current_orientation(env);
+    let scale = env.window().screen_scale() as CGFloat;
+    (width as CGFloat * scale, height as CGFloat * scale)
+}
+
 fn screen_size_for_current_orientation(env: &mut crate::Environment) -> (u32, u32) {
     let (portrait_width, portrait_height) = env.window().screen_size();
 
@@ -87,7 +96,14 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 - (CGRect)nativeBounds {
     // Same as bounds at scale 1 — we don't model the physical pixel grid.
-    msg![env; this bounds]
+    // nativeBounds is the physical screen in pixels (bounds.size * scale);
+    // aliasing it to point-sized bounds made games render at half resolution
+    // on Retina device profiles.
+    let (width, height) = screen_pixel_size_for_current_orientation(env);
+    CGRect {
+        origin: CGPoint { x: 0.0, y: 0.0 },
+        size: CGSize { width, height },
+    }
 }
 
 - (CGRect)applicationFrame {
@@ -131,11 +147,17 @@ pub const CLASSES: ClassExports = objc_classes! {
 // MARK: - Display mode / overscan
 
 - (id)currentMode {
-    let (width, height) = screen_size_for_current_orientation(env);
-    let size = CGSize {
-        width:  width  as CGFloat,
-        height: height as CGFloat,
-    };
+    // `UIScreenMode.size` is in *pixels*, not points (it is the size of the
+    // framebuffer the screen is currently rendering at). On a real device
+    // this is `bounds.size * scale` — e.g. 640x960 on a Retina iPhone 4
+    // whose `bounds` are 320x480 points. We used to report the point size,
+    // which made engines that size their renderbuffer/projection from
+    // `currentMode.size` (Gameloft's Dust engine — N.O.V.A. 3, Firemint,
+    // …) allocate a viewport of half (or quarter) the EAGL renderbuffer
+    // area and draw the scene into a corner of the screen on Retina
+    // device profiles.
+    let (width, height) = screen_pixel_size_for_current_orientation(env);
+    let size = CGSize { width, height };
 
     crate::frameworks::uikit::ui_screen_mode::from_size(env, size, 1.0)
 }

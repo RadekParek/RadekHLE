@@ -13,7 +13,7 @@
 //! <https://developer.apple.com/documentation/foundation/nsindexset>
 
 use super::ns_string::from_rust_string;
-use super::{NSInteger, NSUInteger};
+use super::{NSInteger, NSRange, NSUInteger};
 use crate::objc::{
     autorelease, id, msg, msg_class, nil, objc_classes, retain, ClassExports, HostObject, NSZonePtr,
 };
@@ -67,12 +67,12 @@ pub const CLASSES: ClassExports = objc_classes! {
     autorelease(env, new)
 }
 
-+ (id)indexSetWithIndexesInRange:(NSUInteger)location :(NSUInteger)length {
++ (id)indexSetWithIndexesInRange:(NSRange)range {
     let new: id = msg![env; this alloc];
     let new: id = msg![env; new init];
     {
         let host = env.objc.borrow_mut::<NSIndexSetHostObject>(new);
-        set_range(host, location, length);
+        set_range(host, range.location, range.length);
     }
     autorelease(env, new)
 }
@@ -89,9 +89,9 @@ pub const CLASSES: ClassExports = objc_classes! {
     this
 }
 
-- (id)initWithIndexesInRange:(NSUInteger)location :(NSUInteger)length {
+- (id)initWithIndexesInRange:(NSRange)range {
     let host = env.objc.borrow_mut::<NSIndexSetHostObject>(this);
-    set_range(host, location, length);
+    set_range(host, range.location, range.length);
     this
 }
 
@@ -121,13 +121,13 @@ pub const CLASSES: ClassExports = objc_classes! {
     env.objc.borrow::<NSIndexSetHostObject>(this).indexes.contains(&index)
 }
 
-- (NSUInteger)countOfIndexesInRange:(NSUInteger)location :(NSUInteger)length {
-    let end = (location as u64) + (length as u64);
+- (NSUInteger)countOfIndexesInRange:(NSRange)range {
+    let end = (range.location as u64) + (range.length as u64);
     env.objc
         .borrow::<NSIndexSetHostObject>(this)
         .indexes
         .iter()
-        .filter(|&&i| (i as u64) >= (location as u64) && (i as u64) < end)
+        .filter(|&&i| (i as u64) >= (range.location as u64) && (i as u64) < end)
         .count() as NSUInteger
 }
 

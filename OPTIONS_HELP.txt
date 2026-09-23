@@ -422,6 +422,12 @@ Other options:
         where available, but clock governors remain controlled by the operating
         system and device. Enabling it also enables high-performance mode.
 
+    --affinity=big|all|off|<cpu list>
+        On Android, use the fastest CPU cores by default while high-performance
+        mode is enabled. Use 'all' or 'off' to leave scheduling to Android, or
+        a list such as '4-7' to select specific cores. This is best-effort and
+        is ignored when the device does not permit affinity changes.
+
     --rtcs / --disable-rtcs
         Enable or disable the safe visual-only accelerating corruption effect.
         Off by default; it never writes guest memory or changes game logic.
@@ -462,6 +468,12 @@ Other options:
         (glMatrixMode, glColor4f, glEnableClientState, glVertexPointer, …)
         should NOT enable this flag, because real ES 2.0 has no fixed-function
         pipeline.
+
+    --force-gles1-context
+        Force the default EAGL graphics path to use OpenGL ES 1.1, even when
+        the game asks for ES 2.0 or 3.x. This can help games that ship both
+        rendering paths but misrender on the shader-based path. ES 2.0/3.x-only
+        games will not work with this option enabled.
 
     --allow-network-access
         Allow apps running in touchHLE to access the Internet and the local network.

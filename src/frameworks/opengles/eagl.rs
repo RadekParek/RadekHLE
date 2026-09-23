@@ -81,6 +81,7 @@ const kEAGLRenderingAPIOpenGLES3: EAGLRenderingAPI = 3;
 fn effective_eagl_api(
     requested: EAGLRenderingAPI,
     prefer_gles2_context: bool,
+    force_gles1_context: bool,
     angle_driver: bool,
     graphics_api: GraphicsApi,
 ) -> EAGLRenderingAPI {
@@ -107,7 +108,15 @@ fn effective_eagl_api(
             kEAGLRenderingAPIOpenGLES2
         }
         GraphicsApi::Default => {
-            if (prefer_gles2_context || angle_driver) && requested == kEAGLRenderingAPIOpenGLES1 {
+            if force_gles1_context && requested != kEAGLRenderingAPIOpenGLES1 {
+                log!(
+                    "EAGL: force_gles1_context downgrading requested API {} to GLES 1.1",
+                    requested
+                );
+                kEAGLRenderingAPIOpenGLES1
+            } else if (prefer_gles2_context || angle_driver)
+                && requested == kEAGLRenderingAPIOpenGLES1
+            {
                 log!(
                     "EAGL: upgrading initWithAPI:{} to OpenGL ES 2.0 (prefer_gles2_context={}, angle_driver={})",
                     requested,
@@ -210,6 +219,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     let effective_api = effective_eagl_api(
         api,
         env.options.prefer_gles2_context,
+        env.options.force_gles1_context,
         env.options.angle_driver,
         env.options.graphics_api,
     );
@@ -253,6 +263,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     let effective_api = effective_eagl_api(
         api,
         env.options.prefer_gles2_context,
+        env.options.force_gles1_context,
         env.options.angle_driver,
         env.options.graphics_api,
     );
@@ -2048,6 +2059,8 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id, context_toke
     // critical path of the frame, so spending a few hundred microseconds
     // ensuring correctness is fine. (And on lenient drivers glFinish on
     // an already-flushed pipeline is essentially free.)
+    let old_scissor_enabled = gles.IsEnabled(gles11::SCISSOR_TEST) == gles11::TRUE;
+    let old_scissor_box: [GLint; 4] = get_ints(gles, gles11::SCISSOR_BOX);
     gles.Disable(gles11::SCISSOR_TEST);
     gles.Finish();
     gles.CopyTexImage2D(
@@ -2542,6 +2555,17 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id, context_toke
             gles11::FALSE => gles.Disable(name),
             _ => unreachable!(),
         }
+    }
+    gles.Scissor(
+        old_scissor_box[0],
+        old_scissor_box[1],
+        old_scissor_box[2],
+        old_scissor_box[3],
+    );
+    if old_scissor_enabled {
+        gles.Enable(gles11::SCISSOR_TEST);
+    } else {
+        gles.Disable(gles11::SCISSOR_TEST);
     }
     for mode in [gles11::MODELVIEW, gles11::PROJECTION, gles11::TEXTURE] {
         gles.MatrixMode(mode);

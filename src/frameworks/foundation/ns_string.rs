@@ -721,6 +721,11 @@ pub const CLASSES: ClassExports = objc_classes! {
     smallest_encoding(env, this)
 }
 
+- (bool)canBeConvertedToEncoding:(NSStringEncoding)encoding {
+    let string = to_rust_string(env, this);
+    encode_string(&string, encoding, false).is_some()
+}
+
 - (u16)characterAtIndex:(NSUInteger)index {
     let host_object = env.objc.borrow_mut::<StringHostObject>(this);
     let (utf16, did_convert) = host_object.convert_to_utf16_inplace();
