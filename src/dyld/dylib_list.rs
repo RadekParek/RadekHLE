@@ -209,6 +209,7 @@ pub const DYLIB_LIST: &[&super::HostDylib] = &[
     &frameworks::metal::DYLIB,
     &frameworks::vulkan::DYLIB,
     &frameworks::openal::DYLIB,
+    &frameworks::skynest::DYLIB,
     &frameworks::opengles::DYLIB,
     &frameworks::security::DYLIB,
     &frameworks::store_kit::DYLIB,

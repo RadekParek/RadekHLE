@@ -65,6 +65,7 @@ pub mod mobile_core_services;
 pub mod openal;
 pub mod opengles;
 pub mod security;
+pub mod skynest;
 pub mod social;
 pub mod store_kit;
 pub mod system_configuration;
@@ -88,6 +89,7 @@ pub struct State {
     openal: openal::State,
     opengles: opengles::State,
     uikit: uikit::State,
+    skynest: skynest::State,
 }
 
 /// Container for thread local state of various child modules
