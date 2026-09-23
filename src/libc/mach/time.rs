@@ -8,7 +8,7 @@
 use crate::dyld::{export_c_func, FunctionExports};
 use crate::mem::{MutPtr, SafeRead};
 use crate::Environment;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[repr(C, packed)]
 struct struct_mach_timebase_info {
@@ -46,7 +46,24 @@ fn mach_absolute_time(env: &mut Environment) -> u64 {
         .unwrap()
 }
 
+fn mach_wait_until(env: &mut Environment, deadline: u64) -> kern_return_t {
+    const MAX_SLEEP_NANOS: u64 = 60 * 60 * 1_000_000_000;
+    loop {
+        let now = Instant::now()
+            .duration_since(env.startup_time)
+            .as_nanos()
+            .try_into()
+            .unwrap_or(u64::MAX);
+        if deadline <= now {
+            return KERN_SUCCESS;
+        }
+        let remaining = deadline - now;
+        env.sleep(Duration::from_nanos(remaining.min(MAX_SLEEP_NANOS)));
+    }
+}
+
 pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(mach_timebase_info(_)),
     export_c_func!(mach_absolute_time()),
+    export_c_func!(mach_wait_until(_)),
 ];
