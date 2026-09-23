@@ -720,14 +720,38 @@ pub const CLASSES: ClassExports = objc_classes! {
 
     std::mem::drop(gles);
 
-    let Some(&drawable) = env
+    let bindings: Vec<(GLuint, id)> = env
         .objc
         .borrow::<EAGLContextHostObject>(this)
         .renderbuffer_drawable_bindings
         .borrow()
-        .get(&renderbuffer) else {
-        log_dbg!("Can't present a renderbuffer {:?} not bound to a drawable!", renderbuffer);
-        return false;
+        .iter()
+        .map(|(&rb, &drawable)| (rb, drawable))
+        .collect();
+    let drawable = match bindings.iter().find(|(rb, _)| *rb == renderbuffer) {
+        Some((_, drawable)) => *drawable,
+        None if bindings.len() == 1 => {
+            let (registered, drawable) = bindings[0];
+            log_once_fmt!(
+                "[EAGLContext presentRenderbuffer:] renderbuffer binding mismatch: \
+                 driver reports {:#x}, drawable uses {:#x}; presenting the sole bound drawable.",
+                renderbuffer,
+                registered
+            );
+            drawable
+        }
+        None => {
+            log_once_fmt!(
+                "Cannot present EAGL renderbuffer {:#x}: it has no drawable mapping; \
+                 {} renderbuffer mapping(s) are registered.",
+                renderbuffer,
+                bindings.len()
+            );
+            if let Some(sleep_for) = sleep_for {
+                env.sleep(sleep_for);
+            }
+            return false;
+        }
     };
 
     // We're presenting to the opaque CAEAGLLayer that covers the screen.
@@ -744,13 +768,13 @@ pub const CLASSES: ClassExports = objc_classes! {
                 if gles.is_translator() {
                     "translator-readback"
                 } else if gles.is_native_es1() {
-                    "native-es1-direct"
+                    "native-es1-readback"
                 } else {
                     "shader-direct"
                 }
             })
         };
-        if matches!(presentation_mode, Some("translator-readback")) {
+        if matches!(presentation_mode, Some("translator-readback" | "native-es1-readback")) {
             log_once_fmt!(
                 "Layer {:?} uses {}; presenting renderbuffer {:?} through resolved RAM readback to preserve tile contents and alpha.",
                 drawable,
@@ -767,7 +791,7 @@ pub const CLASSES: ClassExports = objc_classes! {
                 renderbuffer,
             );
             unsafe {
-                present_renderbuffer(env, drawable);
+                present_renderbuffer(env, drawable, this.to_bits() as usize);
             }
         }
     } else {
@@ -860,7 +884,11 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 };
 
-unsafe fn present_renderbuffer_readback(env: &mut Environment, drawable: id, renderbuffer: Option<GLuint>) {
+unsafe fn present_renderbuffer_readback(
+    env: &mut Environment,
+    drawable: id,
+    renderbuffer: Option<GLuint>,
+) {
     let read_result = {
         let maybe_gles = super::sync_context(
             &mut env.framework_state.opengles,
@@ -1014,7 +1042,11 @@ unsafe fn get_renderbuffer_size(gles: &mut dyn GLES) -> (GLsizei, GLsizei) {
 /// The returned values are the [Vec], the width and height.
 ///
 /// The provided context must be current.
-unsafe fn read_renderbuffer(gles: &mut dyn GLES, mut pixel_buffer: Vec<u8>, override_renderbuffer: Option<GLuint>) -> (Vec<u8>, u32, u32) {
+unsafe fn read_renderbuffer(
+    gles: &mut dyn GLES,
+    mut pixel_buffer: Vec<u8>,
+    override_renderbuffer: Option<GLuint>,
+) -> (Vec<u8>, u32, u32) {
     let current_renderbuffer: GLuint = get_int(gles, gles11::RENDERBUFFER_BINDING_OES) as _;
     let renderbuffer: GLuint = override_renderbuffer.unwrap_or(current_renderbuffer);
     if renderbuffer != current_renderbuffer {
@@ -1063,6 +1095,8 @@ unsafe fn read_renderbuffer(gles: &mut dyn GLES, mut pixel_buffer: Vec<u8>, over
     pixel_buffer.clear();
     pixel_buffer.reserve_exact(size);
     let before = Instant::now();
+    let old_pack_alignment = get_int(gles, gles11::PACK_ALIGNMENT);
+    gles.PixelStorei(gles11::PACK_ALIGNMENT, 1);
     gles.Finish();
     gles.ReadPixels(
         0,
@@ -1073,8 +1107,9 @@ unsafe fn read_renderbuffer(gles: &mut dyn GLES, mut pixel_buffer: Vec<u8>, over
         gles11::UNSIGNED_BYTE,
         pixel_buffer.as_mut_ptr() as *mut _,
     );
-    let elapsed = Instant::now().saturating_duration_since(before);
+    gles.PixelStorei(gles11::PACK_ALIGNMENT, old_pack_alignment);
     pixel_buffer.set_len(size);
+    let elapsed = Instant::now().saturating_duration_since(before);
     if crate::gles::translator_tracing_enabled() || crate::gles::verbose_logging_enabled() {
         log!(
             "[EAGL READBACK] framebuffer={} renderbuffer={} size={}x{} status=0x{:x} read={} bytes took {:?}",
@@ -1257,6 +1292,7 @@ unsafe fn present_renderbuffer_es2(
     viewport: (u32, u32, u32, u32),
     rotation_matrix: crate::matrix::Matrix<2>,
     virtual_cursor_visible_at: Option<(f32, f32, bool)>,
+    context_token: usize,
 ) {
     use crate::gles::gles2_raw as gles2;
 
@@ -1332,6 +1368,7 @@ unsafe fn present_renderbuffer_es2(
         verts.as_ptr().cast(),
         gles2::STREAM_DRAW,
     );
+    gles.Disable(gles2::SCISSOR_TEST);
     gles.CopyTexImage2D(gles2::TEXTURE_2D, 0, gles2::RGB, 0, 0, width, height, 0);
 
     gles.BindFramebuffer(gles2::FRAMEBUFFER, 0);
@@ -1436,6 +1473,7 @@ unsafe fn present_renderbuffer_es2(
         8usize as *const _,
     );
     gles.DrawArrays(gles2::TRIANGLES, 0, 6);
+    crate::trainer_ui::draw_es2(gles, viewport, context_token);
 
     // Optional: virtual cursor.
     if let Some((cx, cy, pressed)) = virtual_cursor_visible_at {
@@ -1716,7 +1754,7 @@ unsafe fn ensure_present_objects(gles: &mut dyn GLES) -> PresentObjects {
 /// (which should be provided by the app) to a texture and presents it with
 /// [present_frame], trying to avoid noticeably modifying OpenGL ES state while
 /// doing so. The front and back buffers are then swapped.
-unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
+unsafe fn present_renderbuffer(env: &mut Environment, drawable: id, context_token: usize) {
     // Capture this up front because the env borrow is moved into the GL
     // context machinery below.
     let trace_gl_errors = env.options.trace_gl_errors;
@@ -1846,7 +1884,13 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
             std::mem::drop(gles_boxed);
             present_renderbuffer_readback(env, drawable, None);
         } else {
-            present_renderbuffer_es2(gles, viewport, rotation_matrix, virtual_cursor_visible_at);
+            present_renderbuffer_es2(
+                gles,
+                viewport,
+                rotation_matrix,
+                virtual_cursor_visible_at,
+                context_token,
+            );
             std::mem::drop(gles_boxed);
             env.window.as_mut().unwrap().swap_window();
         }
@@ -1890,6 +1934,8 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
     // To avoid confusing the guest app, we need to be able to undo any
     // state changes we make.
     let old_framebuffer: GLuint = get_int(gles, gles11::FRAMEBUFFER_BINDING_OES) as _;
+    let old_active_texture: GLenum = get_int(gles, gles11::ACTIVE_TEXTURE) as _;
+    gles.ActiveTexture(gles11::TEXTURE0);
     let old_texture_2d: GLuint = get_int(gles, gles11::TEXTURE_BINDING_2D) as _;
     {
         static SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -2002,6 +2048,7 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
     // critical path of the frame, so spending a few hundred microseconds
     // ensuring correctness is fine. (And on lenient drivers glFinish on
     // an already-flushed pipeline is essentially free.)
+    gles.Disable(gles11::SCISSOR_TEST);
     gles.Finish();
     gles.CopyTexImage2D(
         gles11::TEXTURE_2D,
@@ -2580,7 +2627,9 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id) {
     }
 
     // Restore the other bindings
+    gles.ActiveTexture(gles11::TEXTURE0);
     gles.BindTexture(gles11::TEXTURE_2D, old_texture_2d);
+    gles.ActiveTexture(old_active_texture);
     gles.BindFramebufferOES(gles11::FRAMEBUFFER_OES, old_framebuffer);
     {
         static SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

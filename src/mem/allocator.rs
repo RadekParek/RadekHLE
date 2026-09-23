@@ -320,6 +320,19 @@ mod allocator_tests {
         );
         assert_eq!(allocator.allocation_containing(base + PAGE_SIZE * 2), None);
     }
+
+    #[test]
+    fn live_allocation_snapshot_adds_and_removes_freed_chunks() {
+        let mut allocator = Allocator::new();
+        let initial = allocator.live_allocations();
+        let base = allocator.alloc(PAGE_SIZE);
+        let live = allocator.live_allocations();
+        assert!(live.contains(&(base, PAGE_SIZE)));
+        assert_eq!(live.len(), initial.len() + 1);
+
+        let _ = allocator.free(base);
+        assert_eq!(allocator.live_allocations(), initial);
+    }
 }
 
 impl Allocator {
@@ -472,6 +485,14 @@ impl Allocator {
         self.used_chunks
             .find_containing(addr)
             .map(|chunk| (chunk.base, chunk.size.get()))
+    }
+
+    /// Return a sorted snapshot of all currently live guest allocations.
+    pub fn live_allocations(&self) -> Vec<(VAddr, GuestUSize)> {
+        self.used_chunks
+            .iter()
+            .map(|chunk| (chunk.base, chunk.size.get()))
+            .collect()
     }
 
     pub fn was_freed(&self, base: VAddr) -> bool {

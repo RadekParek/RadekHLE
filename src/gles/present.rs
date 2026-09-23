@@ -444,6 +444,8 @@ pub unsafe fn present_frame(
             }
         }
     }
+
+    crate::trainer_ui::draw(gles, viewport);
 }
 
 // --- Tiny bitmap font & overlay drawing implementation ---

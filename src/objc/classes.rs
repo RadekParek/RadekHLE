@@ -46,6 +46,7 @@ pub(super) struct ClassHostObject {
     /// Maps ivar name to a tuple of an offset (as pointer) and an alignment.
     /// (Alignment is used during ivar reconciliation.)
     pub(super) ivars: HashMap<String, (ConstPtr<GuestUSize>, u32)>,
+    pub(super) scalar_ivars: HashMap<String, (u8, u32)>,
     /// Maps declared @property name to the guest-memory pointer of its
     /// `property_t` entry (as read from the binary's property list).
     /// This is what `class_getProperty` queries.
@@ -310,6 +311,7 @@ impl ClassHostObject {
             instance_start: size,
             instance_size: size,
             ivars: HashMap::default(),
+            scalar_ivars: Default::default(),
             properties: HashMap::default(),
         }
     }
@@ -358,6 +360,7 @@ impl ClassHostObject {
             instance_start,
             instance_size,
             ivars: HashMap::new(),
+            scalar_ivars: Default::default(),
             properties: HashMap::new(),
         };
         if !base_methods.is_null() {
@@ -1079,6 +1082,7 @@ impl ObjC {
                         instance_start: Default::default(),
                         instance_size: Default::default(),
                         ivars: Default::default(),
+                        scalar_ivars: Default::default(),
                         properties: Default::default(),
                     },
                 );

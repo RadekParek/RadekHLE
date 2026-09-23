@@ -404,6 +404,8 @@ pub struct Options {
     /// `--device-family=auto` (from the host display) or via the explicit
     /// `--screen-size=WxH` override below.
     pub host_screen_size: Option<(u32, u32)>,
+    /// Disable the optional in-game Cheat Engine panel.
+    pub trainer_disabled: bool,
     /// Explicit custom logical screen size selected in the app picker.
     pub custom_screen_size: Option<(u32, u32)>,
     pub initial_orientation: DeviceOrientation,
@@ -530,6 +532,7 @@ impl Default for Options {
             device_family: None,
             auto_device_family: false,
             host_screen_size: None,
+            trainer_disabled: true,
             custom_screen_size: None,
             initial_orientation: DeviceOrientation::Portrait,
             render_rotation: RenderRotation::Default,
@@ -626,7 +629,11 @@ impl Options {
             }
         }
 
-        if arg == "--fullscreen" {
+        if arg == "--trainer" {
+            self.trainer_disabled = false;
+        } else if arg == "--no-trainer" {
+            self.trainer_disabled = true;
+        } else if arg == "--fullscreen" {
             self.fullscreen = true;
         } else if arg == "--fullscreen-stretched" {
             self.fullscreen = true;
@@ -1392,5 +1399,15 @@ mod tests {
         assert_eq!(options.device_family, Some(DeviceFamily::iPhone5));
         options.parse_argument("--device-family=ipad2").unwrap();
         assert_eq!(options.device_family, Some(DeviceFamily::iPad2));
+    }
+
+    #[test]
+    fn cheat_engine_is_disabled_by_default_and_has_explicit_flags() {
+        let mut options = Options::default();
+        assert!(options.trainer_disabled);
+        options.parse_argument("--trainer").unwrap();
+        assert!(!options.trainer_disabled);
+        options.parse_argument("--no-trainer").unwrap();
+        assert!(options.trainer_disabled);
     }
 }

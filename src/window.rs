@@ -1322,7 +1322,10 @@ impl Window {
         let llvmpipe_requested = options.llvmpipe_fallback
             && !matches!(options.graphics_api, crate::options::GraphicsApi::Software);
         let llvmpipe_active = crate::gles::configure_llvmpipe_fallback(
-            llvmpipe_requested && cpu_only_requested && !custom_driver_active && !angle_driver_active,
+            llvmpipe_requested
+                && cpu_only_requested
+                && !custom_driver_active
+                && !angle_driver_active,
         );
         let native_cpu_renderer = cpu_only_requested && llvmpipe_active;
         let software_presentation =
@@ -2107,9 +2110,18 @@ impl Window {
                     // TODO: handle out of order touches
                     let curr_timestamp = timestamp;
                     let abs_coords = finger_absolute_coords(self, (x, y));
+                    let trainer_consumed = match event {
+                        E::FingerDown { .. } => crate::trainer_ui::touch_down(abs_coords, self.viewport()),
+                        E::FingerUp { .. } => crate::trainer_ui::touch_up(abs_coords, self.viewport()),
+                        _ => crate::trainer_ui::touch_motion(abs_coords, self.viewport()),
+                    };
                     let coords = transform_input_coords(self, abs_coords, false);
                     log_sampled!(256, "Finger event x {}, y {}, coords {:?}", x, y, coords);
-                    let mut map = HashMap::from([(FingerId::Touch(finger_id), coords)]);
+                    let mut map = if trainer_consumed {
+                        HashMap::new()
+                    } else {
+                        HashMap::from([(FingerId::Touch(finger_id), coords)])
+                    };
                     while let Some(next) = self.event_pump.poll_event() {
                         match next {
                             E::Unknown { .. } => (),
@@ -2138,8 +2150,15 @@ impl Window {
                                 ..
                             } if timestamp == curr_timestamp && next.is_same_kind_as(&event) => {
                                 let abs_coords = finger_absolute_coords(self, (x, y));
+                                let trainer_consumed = match next {
+                                    E::FingerDown { .. } => crate::trainer_ui::touch_down(abs_coords, self.viewport()),
+                                    E::FingerUp { .. } => crate::trainer_ui::touch_up(abs_coords, self.viewport()),
+                                    _ => crate::trainer_ui::touch_motion(abs_coords, self.viewport()),
+                                };
                                 let coords = transform_input_coords(self, abs_coords, false);
-                                map.insert(FingerId::Touch(finger_id), coords);
+                                if !trainer_consumed {
+                                    map.insert(FingerId::Touch(finger_id), coords);
+                                }
                             }
                             E::MultiGesture { timestamp, .. } if timestamp == curr_timestamp => {
                                 // TODO: handle gestures

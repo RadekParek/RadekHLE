@@ -85,12 +85,12 @@ impl ClassHostObject {
         for i in 0..count {
             let ivar_ptr: ConstPtr<ivar_t> = Ptr::from_bits(ivars_base_ptr.to_bits() + i * entsize);
 
-            // TODO: support type strings
             let ivar_t {
                 offset,
                 name,
+                type_,
                 alignment,
-                ..
+                size,
             } = mem.read(ivar_ptr);
 
             let Ok(name_string) = mem.cstr_at_utf8(name) else {
@@ -100,6 +100,19 @@ impl ClassHostObject {
                 );
                 continue;
             };
+            self.scalar_ivars.remove(name_string);
+            if let Some(bytes) = mem.get_bytes_fallible(type_.cast(), 2) {
+                let code = bytes[0];
+                let width = match code {
+                    b'c' | b'C' => 1,
+                    b's' | b'S' => 2,
+                    b'i' | b'I' | b'l' | b'L' | b'f' => 4,
+                    _ => 0,
+                };
+                if bytes[1] == 0 && width != 0 && size == width {
+                    self.scalar_ivars.insert(name_string.into(), (code, width));
+                }
+            }
             self.ivars.insert(name_string.into(), (offset, alignment));
         }
     }
@@ -153,6 +166,57 @@ impl ClassHostObject {
 }
 
 impl ObjC {
+    pub(crate) fn diagnostic_scalar_field(
+        &self,
+        mem: &Mem,
+        base: u32,
+        allocation_size: u32,
+        addr: u32,
+        width: u32,
+        encoding: u8,
+    ) -> Option<&str> {
+        let object = id::from_bits(base);
+        self.get_host_object(object)?;
+        let offset = addr.checked_sub(base)?;
+        if offset < 4 || offset.checked_add(width)? > allocation_size {
+            return None;
+        }
+        let bytes = mem.get_bytes_fallible(ConstVoidPtr::from_bits(base), 4)?;
+        let mut class = id::from_bits(u32::from_le_bytes(bytes.try_into().ok()?));
+        let mut budget = 256usize;
+        for _ in 0..16 {
+            let host = self
+                .get_host_object(class)?
+                .as_any()
+                .downcast_ref::<ClassHostObject>()?;
+            if host.is_metaclass {
+                return None;
+            }
+            for (name, &(code, size)) in &host.scalar_ivars {
+                budget = budget.checked_sub(1)?;
+                let code = match code {
+                    b'l' => b'i',
+                    b'L' => b'I',
+                    _ => code,
+                };
+                if code != encoding || size != width {
+                    continue;
+                }
+                let (pointer, _) = host.ivars.get(name)?;
+                let bytes = mem.get_bytes_fallible(pointer.cast(), 4)?;
+                let field_offset = u32::from_le_bytes(bytes.try_into().ok()?);
+                if field_offset == offset && offset.checked_add(width)? <= host.instance_size {
+                    return Some(name);
+                }
+            }
+            if host.superclass == nil {
+                break;
+            }
+            class = host.superclass;
+        }
+        None
+    }
+
     /// Checks if the object's class has an ivar in its class chain with the
     /// provided name and returns the pointer to the object's ivar, if any,
     /// or None if the object's class doesn't have an ivar with that name.

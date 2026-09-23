@@ -344,6 +344,7 @@ struct AppPickerDelegateHostObject {
     revert_y_axis: Option<bool>,
     analog_stick_tilt_controls: Option<bool>,
     network: Option<bool>,
+    cheat_engine: Option<bool>,
     rtcs: Option<bool>,
     /// Quick option: show FPS counter (maps to --print-fps)
     show_fps: Option<bool>,
@@ -569,6 +570,10 @@ const CLASSES: ClassExports = objc_classes! {
 - (())network:(id)switch { // UISwitch*
     let switch_state: bool = msg![env; switch isOn];
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).network = Some(switch_state);
+}
+- (())cheatEngine:(id)switch {
+    let switch_state: bool = msg![env; switch isOn];
+    env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).cheat_engine = Some(switch_state);
 }
 - (())rtcs:(id)switch { // UISwitch*
     let switch_state: bool = msg![env; switch isOn];
@@ -1147,6 +1152,7 @@ fn app_picker_inner(
     let mut quick_options_analog_stick_tilt_controls = true;
     let mut quick_options_network = env.options.network_access;
     let mut quick_options_network_changed = false;
+    let mut quick_options_cheat_engine = !env.options.trainer_disabled;
     let mut quick_options_rtcs = false;
     let mut quick_options_show_fps = true;
     let mut quick_options_frame_pacing = true;
@@ -1896,6 +1902,8 @@ fn app_picker_inner(
         } else if let Some(enabled) = std::mem::take(&mut host_obj.network) {
             quick_options_network = enabled;
             quick_options_network_changed = true;
+        } else if let Some(enabled) = std::mem::take(&mut host_obj.cheat_engine) {
+            quick_options_cheat_engine = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.rtcs) {
             quick_options_rtcs = enabled;
         } else if let Some(enabled) = std::mem::take(&mut host_obj.show_fps) {
@@ -2160,6 +2168,14 @@ fn app_picker_inner(
             .to_string(),
         );
     }
+    option_args.push(
+        if quick_options_cheat_engine {
+            "--trainer"
+        } else {
+            "--no-trainer"
+        }
+        .to_string(),
+    );
     option_args.push(
         if quick_options_rtcs {
             "--rtcs"
@@ -3518,7 +3534,6 @@ fn setup_quick_options(
         RowKind::Switch("llvmpipeFallback:", false),
         RowKind::Label("ANGLE driver"),
         RowKind::Switch("angleDriver:", false),
-
         RowKind::Section("SYSTEM & COMPATIBILITY"),
         RowKind::Subsection("iOS / device"),
         RowKind::Label("iOS version"),
@@ -3544,7 +3559,6 @@ fn setup_quick_options(
         RowKind::Subsection("Networking"),
         RowKind::Label("Network access"),
         RowKind::Switch("network:", false),
-
         RowKind::Section("DISPLAY, CONTROLS & DEBUG"),
         RowKind::Subsection("Display"),
         RowKind::Label("Custom resolution"),
@@ -3586,6 +3600,8 @@ fn setup_quick_options(
         RowKind::Label("Use analog sticks for tilt controls"),
         RowKind::Switch("analogStickTiltControls:", true),
         RowKind::Subsection("Games"),
+        RowKind::Label("Cheat Engine"),
+        RowKind::Switch("cheatEngine:", !env.options.trainer_disabled),
         RowKind::Label("Game folder"),
         RowKind::Buttons(&[
             ("Open folder", "openFileManager"),
@@ -3679,7 +3695,8 @@ fn setup_quick_options(
                     y: row_center - (if is_section { 24.0 } else { 18.0 }) * ui_scale,
                 },
                 size: CGSize {
-                    width: main_frame.size.width - (if is_section { 28.0 } else { 44.0 }) * ui_scale,
+                    width: main_frame.size.width
+                        - (if is_section { 28.0 } else { 44.0 }) * ui_scale,
                     height: (if is_section { 40.0 } else { 28.0 }) * ui_scale,
                 },
             };
@@ -3764,7 +3781,8 @@ fn setup_quick_options(
                     () = msg![env; warning setTextAlignment:UITextAlignmentCenter];
                     let warning_font = picker_font(env, 17.0 * ui_scale);
                     () = msg![env; warning setFont:warning_font];
-                    let warning_color: id = msg_class![env; UIColor colorWithRed:0.95 green:0.62 blue:0.0 alpha:1.0];
+                    let warning_color: id =
+                        msg_class![env; UIColor colorWithRed:0.95 green:0.62 blue:0.0 alpha:1.0];
                     () = msg![env; warning setTextColor:warning_color];
                     let clear: id = msg_class![env; UIColor clearColor];
                     () = msg![env; warning setBackgroundColor:clear];

@@ -55,6 +55,8 @@ mod options;
 mod paths;
 mod perf;
 mod stack;
+mod trainer;
+mod trainer_ui;
 mod window;
 
 // Environment is used very frequently used and used to be in this module, so

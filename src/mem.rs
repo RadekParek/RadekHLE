@@ -974,6 +974,11 @@ impl Mem {
         self.allocator.allocation_containing(addr)
     }
 
+    /// Return a snapshot of the base address and size of each live allocation.
+    pub fn live_allocations(&self) -> Vec<(VAddr, GuestUSize)> {
+        self.allocator.live_allocations()
+    }
+
     pub fn was_freed(&self, addr: VAddr) -> bool {
         self.allocator.was_freed(addr)
     }

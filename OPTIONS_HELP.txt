@@ -518,3 +518,9 @@ Other options:
         Downsample decoded PCM audio by two while preserving its playback
         duration. This trades some fidelity for lower decode and mixer cost,
         which can help audio remain continuous on heavily loaded devices.
+
+Game options:
+    --trainer / --no-trainer
+        Enable or disable the optional in-game Cheat Engine memory search and
+        patch overlay. It is disabled by default and can also be toggled in
+        the app picker settings.

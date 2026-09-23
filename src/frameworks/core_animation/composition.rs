@@ -200,6 +200,18 @@ pub fn recomposite_if_necessary(env: &mut Environment, force: bool) -> Option<In
     let window = env.window.as_mut().unwrap();
     let mut gles = window.make_internal_gl_ctx_current();
 
+    let mut saved_array_buffer = 0;
+    let mut saved_element_array_buffer = 0;
+    unsafe {
+        gles.GetIntegerv(gles11::ARRAY_BUFFER_BINDING, &mut saved_array_buffer);
+        let _ = gles.GetError();
+        gles.GetIntegerv(
+            gles11::ELEMENT_ARRAY_BUFFER_BINDING,
+            &mut saved_element_array_buffer,
+        );
+        let _ = gles.GetError();
+    }
+
     // Set up GL objects needed for render-to-texture. We could draw directly
     // to the screen instead, but this way we can reuse the code for scaling and
     // rotating the screen and drawing the virtual cursor.
@@ -420,6 +432,12 @@ pub fn recomposite_if_necessary(env: &mut Environment, force: bool) -> Option<In
             present_frame_args.1,
             present_frame_args.2,
         );
+        gles.BindBuffer(gles11::ARRAY_BUFFER, saved_array_buffer as _);
+        gles.BindBuffer(
+            gles11::ELEMENT_ARRAY_BUFFER,
+            saved_element_array_buffer as _,
+        );
+        let _ = gles.GetError();
     }
     if frame_generation {
         unsafe {

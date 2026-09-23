@@ -174,6 +174,7 @@ pub struct Environment {
     /// cannot flood the log with otherwise identical warnings.
     udf_log_counts: HashMap<u32, u32>,
     scheduler_watchdog: SchedulerWatchdog,
+    trainer: crate::trainer::Trainer,
 }
 
 /// What to do next when executing this thread.
@@ -313,6 +314,7 @@ impl Environment {
         mut options: options::Options,
         app_args: Vec<String>,
     ) -> Result<Environment, String> {
+        let trainer_enabled = !options.trainer_disabled;
         let startup_time = Instant::now();
         let launched_bundle_id = bundle.bundle_identifier().to_owned();
 
@@ -853,7 +855,9 @@ impl Environment {
             udf_bypass_count: 0,
             udf_log_counts: HashMap::new(),
             scheduler_watchdog: SchedulerWatchdog::default(),
+            trainer: crate::trainer::Trainer::new(trainer_enabled),
         };
+        crate::trainer_ui::set_hardware_enabled(trainer_enabled);
 
         if env.options.dumping_options.any() {
             env.dump_file =
@@ -1007,7 +1011,9 @@ impl Environment {
             udf_bypass_count: 0,
             udf_log_counts: HashMap::new(),
             scheduler_watchdog: SchedulerWatchdog::default(),
+            trainer: crate::trainer::Trainer::new(false),
         };
+        crate::trainer_ui::set_hardware_enabled(false);
 
         env.set_up_initial_env_vars();
 
@@ -1076,6 +1082,7 @@ impl Environment {
             udf_bypass_count: 0,
             udf_log_counts: HashMap::new(),
             scheduler_watchdog: SchedulerWatchdog::default(),
+            trainer: crate::trainer::Trainer::new(false),
         }
     }
 
@@ -1720,6 +1727,13 @@ impl Environment {
                 // thread, lest every single callback call pay this cost.
                 if let Some(ref mut window) = self.window {
                     window.poll_for_events(&self.options);
+                }
+                if !self.options.trainer_disabled {
+                    self.trainer.tick(
+                        &mut self.mem,
+                        Some(self.bundle.bundle_identifier()),
+                        &self.objc,
+                    );
                 }
                 let curr_thread_block = self.threads[self.current_thread].blocked_by.clone();
                 if stepping || matches!(curr_thread_block, ThreadBlock::WaitingForDebugger(_)) {
