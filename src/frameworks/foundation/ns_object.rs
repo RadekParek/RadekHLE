@@ -8,12 +8,12 @@
 //! `NSObject`, the root of most class hierarchies in Objective-C.
 
 use super::ns_dictionary::dict_from_keys_and_objects;
-use super::ns_run_loop::NSDefaultRunLoopMode;
+use super::ns_run_loop::{self, NSDefaultRunLoopMode};
 use super::ns_string::{from_rust_string, get_static_str, to_rust_string};
 use super::{NSInteger, NSTimeInterval, NSUInteger};
 // ДОБАВЛЕНЫ ИМПОРТЫ ДЛЯ ЭКСПОРТА ФУНКЦИИ И ОКРУЖЕНИЯ
 use crate::dyld::{export_c_func, FunctionExports};
-use crate::frameworks::foundation::ns_thread::detach_new_thread_inner;
+use crate::frameworks::foundation::ns_thread::{self, detach_new_thread_inner};
 use crate::libc::semaphore::{host_create_semaphore, host_destroy_semaphore, sem_post, sem_wait};
 use crate::mem::MutVoidPtr;
 use crate::objc::{
@@ -145,6 +145,82 @@ fn deliver_kvo_notification(
     let change_dict = dict_from_keys_and_objects(env, &pairs);
     let _: () = msg_send(env, (observer, sel, key_path, object, change_dict, context));
     release(env, change_dict);
+}
+
+fn perform_selector_on_thread(
+    env: &mut Environment,
+    receiver: id,
+    selector: SEL,
+    argument: id,
+    thread: id,
+    wait_until_done: bool,
+) {
+    assert!(!selector.is_null());
+    let selector_name = selector.as_str(&env.mem).to_string();
+    let Some(thread_id) = ns_thread::thread_id_for_ns_thread(env, thread) else {
+        log!(
+            "Warning: performSelector:{} on invalid or inactive NSThread {:?}; skipping",
+            selector_name,
+            thread
+        );
+        return;
+    };
+
+    log_dbg!(
+        "performSelector:{} onThread:{:?} current_thread={} target_thread={} waitUntilDone={}",
+        selector_name,
+        thread,
+        env.current_thread,
+        thread_id,
+        wait_until_done
+    );
+
+    if thread_id == env.current_thread && wait_until_done {
+        if selector_name.ends_with(':') {
+            let _: () = msg_send(env, (receiver, selector, argument));
+        } else {
+            let _: () = msg_send(env, (receiver, selector));
+        }
+        return;
+    }
+
+    let sel_key: id = get_static_str(env, "SEL");
+    let sel_str = from_rust_string(env, selector_name);
+    let arg_key: id = get_static_str(env, "arg");
+    let user_info = dict_from_keys_and_objects(env, &[(sel_key, sel_str), (arg_key, argument)]);
+    let fire_selector = env
+        .objc
+        .lookup_selector("_touchHLE_timerFireMethod:")
+        .unwrap();
+    let timer: id = msg_class![env;
+        NSTimer timerWithTimeInterval:(0.0 as NSTimeInterval)
+                               target:receiver
+                             selector:fire_selector
+                             userInfo:user_info
+                              repeats:false
+    ];
+
+    let semaphore = if wait_until_done {
+        Some(host_create_semaphore(env, 0))
+    } else {
+        None
+    };
+    if let Some(semaphore) = semaphore {
+        SYNC_PERFORM_SEMAPHORES
+            .lock()
+            .unwrap()
+            .push((timer.to_bits(), semaphore.to_bits()));
+    }
+
+    let run_loop_class = env.objc.get_known_class("NSRunLoop", &mut env.mem);
+    let run_loop = ns_run_loop::run_loop_for_thread(env, run_loop_class, thread_id);
+    let mode: id = get_static_str(env, NSDefaultRunLoopMode);
+    () = msg![env; run_loop addTimer:timer forMode:mode];
+
+    if let Some(semaphore) = semaphore {
+        sem_wait(env, semaphore);
+        host_destroy_semaphore(env, semaphore);
+    }
 }
 
 pub const CLASSES: ClassExports = objc_classes! {
@@ -769,13 +845,11 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (())performSelector:(SEL)sel onThread:(id)_thread withObject:(id)arg waitUntilDone:(bool)_wait {
-    log_dbg!("performSelector:{} onThread:withObject:waitUntilDone: — scheduling on main thread instead", sel.as_str(&env.mem));
-    msg![env; this performSelector:sel withObject:arg afterDelay:0.0]
+    perform_selector_on_thread(env, this, sel, arg, _thread, _wait)
 }
 
 - (())performSelector:(SEL)sel onThread:(id)_thread withObject:(id)arg waitUntilDone:(bool)_wait modes:(id)_modes {
-    log_dbg!("performSelector:{} onThread:withObject:waitUntilDone:modes: — scheduling on main thread instead", sel.as_str(&env.mem));
-    msg![env; this performSelector:sel withObject:arg afterDelay:0.0]
+    perform_selector_on_thread(env, this, sel, arg, _thread, _wait)
 }
 
 - (id)valueForKey:(id)key {
