@@ -174,6 +174,7 @@ impl Default for AudioComponentInstanceHostObject {
             mic_input_enabled: false,
             component_desc: None,
             audio_channel_layouts: HashMap::new(),
+            should_allocate_buffers: HashMap::new(),
         }
     }
 }
