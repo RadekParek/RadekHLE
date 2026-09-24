@@ -108,6 +108,7 @@ pub const DYLIB: crate::dyld::HostDylib = crate::dyld::HostDylib {
         libkern::os_atomic::FUNCTIONS,
         mach::arm::task::FUNCTIONS,
         mach::arm::thread_act::FUNCTIONS,
+        mach::error::FUNCTIONS,
         libkern::task::FUNCTIONS,
         mach::host::FUNCTIONS,
         mach::init::FUNCTIONS,
@@ -183,5 +184,10 @@ pub struct State {
     clocale: clocale::State,
     mach_o: mach_o::State,
     mach_vm: mach::vm_map::State,
+<<<<<<< HEAD
+=======
+    mach_ports: mach::mach_port::State,
+    mach_error: mach::error::State,
+>>>>>>> 83bd8437 (Implement mach_error_string, AudioUnitRemovePropertyListenerWithUserData, poll fully)
     mmap: mmap::State,
 }

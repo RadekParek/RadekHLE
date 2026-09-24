@@ -245,10 +245,53 @@ fn AudioUnitRemovePropertyListener(
     in_unit: AudioUnit,
     in_id: AudioUnitPropertyID,
     in_proc: AudioUnitPropertyListenerProc,
+) -> OSStatus {
+    log_dbg!(
+        "AudioUnitRemovePropertyListener(unit={:?}, property={}, proc={:?})",
+        in_unit,
+        in_id,
+        in_proc
+    );
+
+    if in_unit.is_null() {
+        return paramErr;
+    }
+
+    let Some(host_object) = audio_components::State::get(&mut env.framework_state)
+        .audio_component_instances
+        .get_mut(&in_unit)
+    else {
+        return paramErr;
+    };
+
+    // Нативный API (без userData) удаляет первую регистрацию, совпавшую по
+    // (property, proc). Удаляется только одно совпадение: один и тот же
+    // колбэк может быть зарегистрирован несколько раз.
+    if let Some(index) = host_object
+        .property_listeners
+        .iter()
+        .position(|&(property_id, callback, _)| property_id == in_id && callback == in_proc)
+    {
+        host_object.property_listeners.remove(index);
+    }
+
+    0
+}
+
+/// `AudioUnitRemovePropertyListenerWithUserData` — как
+/// `AudioUnitRemovePropertyListener`, но регистрация считается своей только
+/// при полном совпадении (property, proc, userData), как при
+/// `AudioUnitAddPropertyListener`.
+fn AudioUnitRemovePropertyListenerWithUserData(
+    env: &mut Environment,
+    in_unit: AudioUnit,
+    in_id: AudioUnitPropertyID,
+    in_proc: AudioUnitPropertyListenerProc,
     in_proc_ref_con: MutVoidPtr,
 ) -> OSStatus {
     log_dbg!(
-        "AudioUnitRemovePropertyListener(unit={:?}, property={}, proc={:?}, ref_con={:?})",
+        "AudioUnitRemovePropertyListenerWithUserData(unit={:?}, property={}, proc={:?}, \
+         ref_con={:?})",
         in_unit,
         in_id,
         in_proc,
@@ -266,8 +309,7 @@ fn AudioUnitRemovePropertyListener(
         return paramErr;
     };
 
-    // Remove only one matching registration, preserving the behaviour of the
-    // native API when the same callback is registered more than once.
+    // Удаляется только одно полное совпадение (см. AudioUnitAddPropertyListener).
     if let Some(index) = host_object
         .property_listeners
         .iter()
@@ -1893,7 +1935,8 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(AudioUnitInitialize(_)),
     export_c_func!(AudioUnitUninitialize(_)),
     export_c_func!(AudioUnitAddPropertyListener(_, _, _, _)),
-    export_c_func!(AudioUnitRemovePropertyListener(_, _, _, _)),
+    export_c_func!(AudioUnitRemovePropertyListener(_, _, _)),
+    export_c_func!(AudioUnitRemovePropertyListenerWithUserData(_, _, _, _)),
     export_c_func!(AudioUnitSetProperty(_, _, _, _, _, _)),
     export_c_func!(AudioUnitGetProperty(_, _, _, _, _, _)),
     export_c_func!(AudioUnitGetPropertyInfo(_, _, _, _, _, _)),
