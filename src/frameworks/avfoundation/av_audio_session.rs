@@ -502,6 +502,20 @@ pub const CLASSES: ClassExports = objc_classes! {
     msg![env; this maximumOutputNumberOfChannels]
 }
 
+- (NSInteger)outputNumberOfChannels {
+    // Current channel count on the active output route (stereo for the
+    // built-in route). Geometry Dash queries this selector; without a host
+    // implementation it fell through to the missing-selector soft-fail
+    // (logged a warning and returned 0).
+    msg![env; this currentHardwareOutputNumberOfChannels]
+}
+
+- (NSInteger)inputNumberOfChannels {
+    // Mirror of outputNumberOfChannels for the input side: one built-in mic
+    // channel when the host hardware has one.
+    msg![env; this currentHardwareInputNumberOfChannels]
+}
+
 - (f64)outputLatency {
     0.005 // 5ms — typical for built-in speaker
 }
