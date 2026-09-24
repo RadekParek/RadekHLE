@@ -1438,7 +1438,8 @@ fn evaluate_poll_fd(env: &mut Environment, fd: FileDescriptor, events: i16) -> i
         // Файл не открыт → POLLNVAL (не ошибка, а готовый fd, как в POSIX).
         return POLLNVAL;
     };
-    match &file_obj.file {
+    // file_obj: &GuestFile (из guest_file).
+    match file_obj {
         GuestFile::PipeRead(pipe) => {
             let pipe = pipe.borrow();
             let mut revents = 0;
@@ -1493,7 +1494,9 @@ fn poll(env: &mut Environment, fds: MutPtr<PollFd>, nfds: u32, timeout: i32) -> 
     const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
 
     let mut revents = vec![0i16; nfds as usize];
-    let count;
+    // count читается после цикла — инициализируем сразу, т.к. присваиваем
+    // на каждой итерации (mut-переменная, ей же и управляется break).
+    let mut count = 0i32;
     loop {
         let mut ready = 0i32;
         for i in 0..nfds {

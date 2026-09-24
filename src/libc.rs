@@ -184,10 +184,5 @@ pub struct State {
     clocale: clocale::State,
     mach_o: mach_o::State,
     mach_vm: mach::vm_map::State,
-<<<<<<< HEAD
-=======
-    mach_ports: mach::mach_port::State,
-    mach_error: mach::error::State,
->>>>>>> 83bd8437 (Implement mach_error_string, AudioUnitRemovePropertyListenerWithUserData, poll fully)
     mmap: mmap::State,
 }
