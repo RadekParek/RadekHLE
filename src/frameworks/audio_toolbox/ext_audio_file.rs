@@ -9,7 +9,8 @@
 use crate::audio;
 use crate::dyld::{export_c_func, FunctionExports};
 use crate::frameworks::audio_toolbox::audio_file::{
-    AudioFileHostObject, AudioFileID, State as AudioFileState,
+    create_output_path, persist_writable_audio_file, AudioFileHostObject, AudioFileID,
+    State as AudioFileState,
 };
 use crate::frameworks::carbon_core::{eofErr, OSStatus};
 use crate::frameworks::core_audio_types::{
@@ -133,23 +134,28 @@ fn register_ext_audio_file(
 
 pub fn ExtAudioFileCreateWithURL(
     env: &mut Environment,
-    _in_url: CFURLRef,
-    _file_type: u32,
+    in_url: CFURLRef,
+    file_type: u32,
     in_format: crate::mem::ConstPtr<AudioStreamBasicDescription>,
     _in_channel_layout: crate::mem::ConstVoidPtr,
     _in_flags: u32,
     out_ext_audio_file: MutPtr<ExtAudioFileRef>,
 ) -> OSStatus {
-    if in_format.is_null() || out_ext_audio_file.is_null() {
+    if in_url.is_null() || in_format.is_null() || out_ext_audio_file.is_null() {
         return -50;
     }
     let format = env.mem.read(in_format);
+    let path = match create_output_path(env, in_url, file_type, &format) {
+        Ok(path) => path,
+        Err(status) => return status,
+    };
     let audio_file = AudioFileHostObject::Writable {
+        file_type,
+        path: Some(path),
         format,
         data: Vec::new(),
         user_data: Vec::new(),
     };
-    log_dbg!("ExtAudioFileCreateWithURL(): creating virtual writable audio file");
     register_ext_audio_file(env, audio_file, None, out_ext_audio_file)
 }
 
@@ -216,10 +222,14 @@ pub fn ExtAudioFileWrapAudioFileID(
                 packet_count: *packet_count,
             },
             AudioFileHostObject::Writable {
+                file_type,
+                path,
                 format,
                 ref data,
                 ref user_data,
             } => AudioFileHostObject::Writable {
+                file_type: *file_type,
+                path: path.clone(),
                 format: *format,
                 data: data.clone(),
                 user_data: user_data.clone(),
@@ -247,18 +257,17 @@ pub fn ExtAudioFileDispose(env: &mut Environment, in_ext_audio_file: ExtAudioFil
         return kExtAudioFileError_InvalidOperationOrder;
     };
 
-    if host_object.wrapped_audio_file_id.is_some() {
-        log_dbg!(
-            "ExtAudioFileDispose {:?}: wrapped AudioFileID retained by caller",
-            in_ext_audio_file
-        );
-    }
+    let status = if host_object.wrapped_audio_file_id.is_none() {
+        persist_writable_audio_file(env, &host_object.audio_file)
+    } else {
+        0
+    };
     env.mem.free(in_ext_audio_file.cast());
     log_dbg!(
         "ExtAudioFileDispose() destroyed handle {:?}",
         in_ext_audio_file
     );
-    0 // success
+    status
 }
 
 pub fn ExtAudioFileGetPropertyInfo(
