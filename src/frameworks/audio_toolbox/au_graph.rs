@@ -248,8 +248,22 @@ fn AUGraphOpen(env: &mut Environment, graph: AUGraph) -> OSStatus {
     log_dbg!("AUGraphOpen({:?}) {} node(s)", graph, node_ids.len());
 
     for node_id in node_ids {
+        // Прокидываем описание узла (type, subtype, manufacturer) в
+        // создаваемый инстанс — для ответов на kAudioUnitProperty_ClassInfo.
+        let component_desc = State::get(&mut env.framework_state)
+            .graphs
+            .get(&graph)
+            .and_then(|s| s.nodes.get(&node_id))
+            .map(|n| {
+                let d = n.desc;
+                (
+                    d.component_type,
+                    d.component_sub_type,
+                    d.component_manufacturer,
+                )
+            });
         let guest_instance: AudioComponentInstance =
-            audio_components::create_audio_unit_instance(env);
+            audio_components::create_audio_unit_instance(env, component_desc);
         if let Some(state) = State::get(&mut env.framework_state).graphs.get_mut(&graph) {
             if let Some(graph_node) = state.nodes.get_mut(&node_id) {
                 graph_node.audio_unit = Some(guest_instance);
