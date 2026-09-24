@@ -23,8 +23,79 @@ use super::gles_generic::{GLchar, GLES};
 use super::util::{try_decode_pvrtc, PalettedTextureFormat};
 use super::GLESContext;
 use crate::window::{GLContext, GLVersion, Window};
+use std::collections::HashMap;
 use std::ffi::CStr;
 use std::marker::PhantomData;
+use std::sync::{Mutex, OnceLock};
+
+// Fallback state for `glMapBufferOES` on drivers whose OES-suffixed entry
+// point resolves to a libEGL stub (see `MapBufferOES` below). Keyed by
+// buffer target: GL allows at most one mapping per buffer object, and only
+// one object is bound to a target at a time, so one entry per target is
+// sufficient to round-trip map -> unmap.
+#[derive(Clone, Copy, PartialEq)]
+enum FallbackMapKind {
+    // Mapped via core `glMapBufferRange`; unmap with core `glUnmapBuffer`.
+    Range,
+    // A CPU-side mirror buffer; upload via `glBufferSubData` on unmap.
+    Mirror,
+}
+
+struct FallbackMapping {
+    ptr: *mut u8,
+    size: usize,
+    kind: FallbackMapKind,
+}
+
+// Only raw pointers are stored, so the registry needs a manual `Send` impl.
+// All uses are on the thread with the current GL context, and access is
+// serialized behind the mutex.
+unsafe impl Send for FallbackMapping {}
+
+static FALLBACK_MAPPINGS: OnceLock<Mutex<HashMap<GLenum, FallbackMapping>>> = OnceLock::new();
+
+fn fallback_mappings() -> &'static Mutex<HashMap<GLenum, FallbackMapping>> {
+    FALLBACK_MAPPINGS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+// `glGetBufferParameteriv(GL_BUFFER_SIZE)` for the currently bound buffer.
+unsafe fn query_buffer_size_native(target: GLenum) -> usize {
+    let mut size: GLint = 0;
+    gles30::GetBufferParameteriv(target, gles30::BUFFER_SIZE, &mut size);
+    usize::try_from(size.max(0)).unwrap_or(0)
+}
+
+fn register_fallback_mapping(target: GLenum, ptr: *mut GLvoid, size: usize, kind: FallbackMapKind) {
+    let mut mappings = fallback_mappings().lock().unwrap();
+    // A new map on the same target without a matching unmap is unbalanced
+    // guest state; release the stale mapping instead of leaking it.
+    if let Some(stale) = mappings.remove(&target) {
+        match stale.kind {
+            FallbackMapKind::Range => unsafe { gles30::UnmapBuffer(target); },
+            FallbackMapKind::Mirror => free_mirror(stale.ptr, stale.size),
+        }
+    }
+    mappings.insert(
+        target,
+        FallbackMapping {
+            ptr: ptr as *mut u8,
+            size,
+            kind,
+        },
+    );
+}
+
+fn take_fallback_mapping(target: GLenum) -> Option<FallbackMapping> {
+    fallback_mappings().lock().unwrap().remove(&target)
+}
+
+fn alloc_mirror(size: usize) -> *mut u8 {
+    Box::leak(vec![0u8; size].into_boxed_slice()).as_mut_ptr()
+}
+
+fn free_mirror(ptr: *mut u8, size: usize) {
+    drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, size)) });
+}
 
 pub struct GLES3NativeContext {
     gl_ctx: GLContext,
@@ -767,16 +838,62 @@ impl GLES for GLES3Native<'_> {
     // `--prefer-gles2-context`, they end up here.
     unsafe fn MapBufferOES(&mut self, target: GLenum, access: GLenum) -> *mut GLvoid {
         if gles30::MapBufferOES::is_loaded() {
-            gles30::MapBufferOES(target, access)
-        } else {
-            log!(
-                "Warning: glMapBufferOES called but GL_OES_mapbuffer is not \
-                 available on this ES 2.0 driver; returning NULL"
-            );
-            std::ptr::null_mut()
+            let mapped = gles30::MapBufferOES(target, access);
+            if !mapped.is_null() {
+                return mapped;
+            }
         }
+        // Some Android drivers (e.g. Adreno via SDL's EGL loader) resolve
+        // `glMapBufferOES` to a libEGL stub that reports "called unimplemented
+        // OpenGL ES API" and returns NULL even though the driver advertises
+        // `GL_OES_mapbuffer` (seen with Asphalt 8 1.2.0 on an Adreno 750).
+        // Fall back to the core ES 3.0 `glMapBufferRange`: mapping read+write
+        // keeps the caller's mirror seeded with the buffer's real contents.
+        let buffer_size = unsafe { query_buffer_size_native(target) };
+        if buffer_size > 0 && gles30::MapBufferRange::is_loaded() {
+            let mapped = gles30::MapBufferRange(
+                target,
+                0,
+                buffer_size as GLsizeiptr,
+                gles30::MAP_READ_BIT | gles30::MAP_WRITE_BIT,
+            );
+            if !mapped.is_null() {
+                register_fallback_mapping(target, mapped, buffer_size, FallbackMapKind::Range);
+                return mapped;
+            }
+        }
+        if buffer_size == 0 {
+            // A zero-size (or unqueryable) buffer has nothing to hand out.
+            return std::ptr::null_mut();
+        }
+        // Last resort: a CPU-side mirror. It is seeded with zeros (ES 3.0
+        // has no read-back entry point for buffer data) and uploaded via
+        // `glBufferSubData` on unmap, preserving write-only map semantics.
+        let mirror = alloc_mirror(buffer_size);
+        register_fallback_mapping(target, mirror.cast(), buffer_size, FallbackMapKind::Mirror);
+        log!(
+            "Warning: glMapBufferOES unavailable on this driver; serving a CPU-side mirror \
+             buffer for target {:#x}",
+            target
+        );
+        mirror.cast()
     }
     unsafe fn UnmapBufferOES(&mut self, target: GLenum) -> GLboolean {
+        if let Some(mapping) = take_fallback_mapping(target) {
+            match mapping.kind {
+                FallbackMapKind::Range => return gles30::UnmapBuffer(target),
+                FallbackMapKind::Mirror => {
+                    gles30::BufferSubData(
+                        target,
+                        0,
+                        mapping.size as GLsizeiptr,
+                        mapping.ptr.cast(),
+                    );
+                    free_mirror(mapping.ptr, mapping.size);
+                    return gles30::TRUE;
+                }
+            }
+        }
         if gles30::UnmapBufferOES::is_loaded() {
             gles30::UnmapBufferOES(target)
         } else {
