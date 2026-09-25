@@ -211,7 +211,14 @@ private:
   std::uint64_t GetTicksRemaining() override { return ticks_remaining; }
 };
 
-class ArmDynarmicCP15 : public Dynarmic::A32::Coprocessor {
+// Implements the Dynarmic A32 coprocessor interface by ignoring every
+// operation (reads return 0, writes are discarded). Registered for all 16
+// coprocessor numbers: any MRC/MCR/LDC/STC the decoders route to a
+// coprocessor must get an answer. Without a registration, the AArch64
+// emitter hits its `ASSERT_FALSE("Should raise coproc exception here")`
+// during block compilation and terminates the whole host process
+// (SIGABRT seen in Asphalt 8 1.2.0 on a Samsung Galaxy S25).
+class ArmDynarmicIgnoredCoprocessor : public Dynarmic::A32::Coprocessor {
   static std::uint64_t Ignore(void *, std::uint32_t, std::uint32_t) {
     return 0;
   }
@@ -272,7 +279,10 @@ public:
     user_config.optimizations = Dynarmic::all_safe_optimizations;
     user_config.code_cache_size = 128 * 1024 * 1024;
     user_config.callbacks = &env;
-    user_config.coprocessors[15] = std::make_shared<ArmDynarmicCP15>();
+    for (size_t cp = 0; cp < 16; ++cp) {
+      user_config.coprocessors[cp] =
+          std::make_shared<ArmDynarmicIgnoredCoprocessor>();
+    }
     mon = std::make_unique<Dynarmic::ExclusiveMonitor>(1);
     user_config.global_monitor = mon.get();
 #ifndef NDEBUG

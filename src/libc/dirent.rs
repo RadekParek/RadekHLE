@@ -66,7 +66,12 @@ pub(super) fn opendir(env: &mut Environment, filename: ConstPtr<u8>) -> MutPtr<D
     };
     let path_string = path_string.to_owned();
     log_dbg!("opendir: filename {}", path_string);
-    let guest_path = GuestPath::new(&path_string);
+    let Some(resolved_path) = crate::libc::posix_io::resolve_existing_guest_path(env, &path_string)
+    else {
+        set_errno(env, ENOENT);
+        return Ptr::null();
+    };
+    let guest_path = GuestPath::new(&resolved_path);
     let is_dir = env.fs.is_dir(guest_path);
     if is_dir {
         let dir = env.mem.alloc_and_write(DIR { idx: 0 });

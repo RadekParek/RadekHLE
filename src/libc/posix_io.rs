@@ -13,7 +13,8 @@ use crate::abi::DotDotDot;
 use crate::dyld::{export_c_func, FunctionExports};
 use crate::fs::{GuestFile, GuestOpenOptions, GuestPath};
 use crate::libc::errno::{
-    set_errno, EAGAIN, EBADF, EINTR, EINVAL, EIO, EISDIR, EMFILE, EOVERFLOW, EPIPE, ESPIPE,
+    set_errno, EAGAIN, EBADF, EFAULT, EINTR, EINVAL, EIO, EISDIR, EMFILE, EOVERFLOW, EPIPE,
+    ESPIPE,
 };
 use crate::libc::sys::socket::close_socket;
 use crate::libc::unistd::pid_t;
@@ -47,6 +48,19 @@ impl State {
         self.files
             .get(fd_to_file_idx(fd))
             .is_some_and(|file_or_none| file_or_none.is_some())
+    }
+
+    /// Открытый файл как `GuestFile` — нужно для poll(2), чтобы
+    /// различать обычные файлы, pipe-концы и сокеты. None для stdio
+    /// (fd < [NORMAL_FILENO_BASE]) и закрытых/несуществующих дескрипторов.
+    pub fn guest_file(&self, fd: FileDescriptor) -> Option<&GuestFile> {
+        if fd < NORMAL_FILENO_BASE {
+            return None;
+        }
+        self.files
+            .get(fd_to_file_idx(fd))
+            .and_then(|file_or_none| file_or_none.as_ref())
+            .map(|file_obj| &file_obj.file)
     }
 }
 
@@ -104,6 +118,26 @@ pub type FileDescriptor = i32;
 pub const STDIN_FILENO: FileDescriptor = 0;
 pub const STDOUT_FILENO: FileDescriptor = 1;
 pub const STDERR_FILENO: FileDescriptor = 2;
+/// Значения `events`/`revents` для poll(2) (sys/poll.h, Darwin).
+pub(crate) const POLLIN: i16 = 0x0001;
+pub(crate) const POLLPRI: i16 = 0x0002;
+pub(crate) const POLLOUT: i16 = 0x0004;
+pub(crate) const POLLERR: i16 = 0x0008;
+pub(crate) const POLLHUP: i16 = 0x0010;
+pub(crate) const POLLNVAL: i16 = 0x0020;
+pub(crate) const POLLRDNORM: i16 = 0x0040;
+pub(crate) const POLLWRNORM: i16 = 0x0100;
+
+/// `struct pollfd { int fd; short events; short revents; }` (32-битный гость).
+#[repr(C, packed)]
+#[derive(Copy, Clone)]
+struct PollFd {
+    fd: FileDescriptor,
+    events: i16,
+    revents: i16,
+}
+unsafe impl SafeRead for PollFd {}
+
 const NORMAL_FILENO_BASE: FileDescriptor = STDERR_FILENO + 1;
 
 /// Flags bitfield for `open`.
@@ -899,6 +933,99 @@ pub fn getcwd(env: &mut Environment, buf_ptr: MutPtr<u8>, buf_size: GuestUSize) 
     buf_ptr
 }
 
+/// Return the part of an absolute path after its first `.app` component.
+///
+/// The component comparison deliberately follows the app-volume's
+/// case-insensitive semantics.  This lets a player preserve a stale bundle name
+/// (or spelling such as `GRANNY.APP`) without accidentally treating a filename
+/// like `something.app.backup` as an app bundle.
+fn path_after_app_bundle_component(path: &str) -> Option<&str> {
+    let mut component_start = 0;
+    for component in path.split('/') {
+        let component_end = component_start + component.len();
+        if component
+            .get(component.len().saturating_sub(".app".len())..)
+            .is_some_and(|suffix| suffix.eq_ignore_ascii_case(".app"))
+        {
+            return path
+                .get(component_end..)
+                .map(|relative| relative.trim_start_matches('/'));
+        }
+        // `split('/')` advances past exactly one slash between components.
+        component_start = component_end + 1;
+    }
+    None
+}
+
+/// Unreal's IPhoneTOC records cooked assets under `../UDKGame/`,
+/// while iOS mounts them at the app bundle root.
+fn strip_udk_game_bundle_prefix(path: &str) -> Option<String> {
+    let normalized = path.replace('\\', "/");
+    let path = normalized.strip_prefix("./").unwrap_or(&normalized);
+    let relative = path.strip_prefix("../")?;
+    let (root, contents) = relative.split_once('/').unwrap_or((relative, ""));
+    root.eq_ignore_ascii_case("UDKGame")
+        .then(|| contents.to_string())
+}
+
+/// Resolve an existing file path as iPhone OS would see it.
+///
+/// Bundle files live on a case-insensitive volume on the devices this emulator
+/// targets.  In addition, several Unity players use a stale absolute bundle
+/// path or omit the `Data/` prefix when probing their player archive.  Keep the
+/// compatibility search in one place so `open`, `stat`, and `access` agree
+/// about whether a resource is mounted.
+pub(crate) fn resolve_existing_guest_path(env: &Environment, path: &str) -> Option<String> {
+    let resolve = |candidate: &str| {
+        env.fs
+            .resolve_existing_path(GuestPath::new(candidate))
+            .map(Into::<String>::into)
+    };
+
+    if let Some(resolved) = resolve(path) {
+        return Some(resolved);
+    }
+
+    let bundle_root = env.bundle.bundle_path().as_str().trim_end_matches('/');
+    let relative_path = if path == bundle_root {
+        Some("")
+    } else if let Some(relative) = path
+        .strip_prefix(bundle_root)
+        .filter(|relative| relative.starts_with('/'))
+    {
+        Some(relative.trim_start_matches('/'))
+    } else if path.starts_with('/') {
+        // A few engines preserve the original `.app` directory in a saved
+        // path, even though the VFS names the mounted bundle from
+        // CFBundleName. Only remap a complete app-bundle component; never
+        // redirect arbitrary absolute filesystem paths.
+        path_after_app_bundle_component(path)
+    } else {
+        Some(path.trim_start_matches("./"))
+    }?;
+    let relative_path =
+        strip_udk_game_bundle_prefix(relative_path).unwrap_or_else(|| relative_path.to_string());
+
+    let data_relative_path = relative_path
+        .split_once('/')
+        .and_then(|(component, remainder)| {
+            component.eq_ignore_ascii_case("Data").then_some(remainder)
+        })
+        .unwrap_or(relative_path.as_str());
+    let mut candidates = vec![
+        format!("{bundle_root}/{relative_path}"),
+        format!("{bundle_root}/Data/{data_relative_path}"),
+    ];
+    // A few repackaged Unity players place the archive at the bundle root
+    // while their executable still probes Data/data.unity3d. Prefer the real
+    // Data path above, then accept that layout as a last resource-only alias.
+    if data_relative_path != relative_path {
+        candidates.push(format!("{bundle_root}/{data_relative_path}"));
+    }
+    candidates.iter().find_map(|candidate| resolve(candidate))
+}
+
+
 fn chdir(env: &mut Environment, path_ptr: ConstPtr<u8>) -> i32 {
     set_errno(env, 0);
 
@@ -912,7 +1039,8 @@ fn chdir(env: &mut Environment, path_ptr: ConstPtr<u8>) -> i32 {
         log!("Warning: chdir(\"\") rejected, returning -1 (ENOENT)");
         return -1;
     }
-    let path = GuestPath::new(&path_str);
+    let resolved_path = resolve_existing_guest_path(env, &path_str);
+    let path = GuestPath::new(resolved_path.as_deref().unwrap_or(&path_str));
     match env.fs.change_working_directory(path) {
         Ok(new) => {
             log_dbg!(
@@ -1380,6 +1508,134 @@ fn truncate(env: &mut Environment, path_ptr: ConstPtr<u8>, len: off_t) -> i32 {
     res
 }
 
+/// Оценить readiness одного fd для poll(2): возвращает `revents`.
+/// Нормальные биты (POLLIN/POLLOUT/…) отдаются только если запросили их в
+/// `events`; POLLERR/POLLHUP/POLLNVAL — всегда (POSIX).
+fn evaluate_poll_fd(env: &mut Environment, fd: FileDescriptor, events: i16) -> i16 {
+    if fd < 0 {
+        // Отрицательные fd игнорируются: revents=0, в счёт не идут.
+        return 0;
+    }
+    if fd < NORMAL_FILENO_BASE {
+        // stdin/stdout/stderr: запись всегда возможна; данных для чтения
+        // в HLE нет, поэтому POLLIN не сообщается.
+        let mut revents = 0;
+        if fd == STDOUT_FILENO || fd == STDERR_FILENO {
+            revents |= POLLOUT | POLLWRNORM;
+        }
+        return revents & events;
+    }
+    if is_socket(env, fd) {
+        return crate::libc::sys::socket::socket_poll_events(env, fd, events);
+    }
+    let Some(file_obj) = env.libc_state.posix_io.guest_file(fd) else {
+        // Файл не открыт → POLLNVAL (не ошибка, а готовый fd, как в POSIX).
+        return POLLNVAL;
+    };
+    // file_obj: &GuestFile (из guest_file).
+    match file_obj {
+        GuestFile::PipeRead(pipe) => {
+            let pipe = pipe.borrow();
+            let mut revents = 0;
+            if pipe.poll_has_data() {
+                revents |= POLLIN | POLLRDNORM;
+            }
+            if !pipe.poll_has_writers() {
+                // Писателей нет → EOF на читающем конце (HUP не зависит
+                // от events, но POLLIN сообщаем только если запросили).
+                return (revents & events) | POLLHUP;
+            }
+            revents & events
+        }
+        GuestFile::PipeWrite(pipe) => {
+            let pipe = pipe.borrow();
+            if !pipe.poll_has_readers() {
+                // Читателей нет → запись невозможна → POLLERR.
+                return POLLERR;
+            }
+            (POLLOUT | POLLWRNORM) & events
+        }
+        // Обычные файлы/каталоги/случайные числа: POSIX гарантирует —
+        // никогда не блокируются, всегда готовы и на чтение, и на запись.
+        _ => (POLLIN | POLLOUT | POLLRDNORM | POLLWRNORM) & events,
+    }
+}
+
+/// `int poll(struct pollfd *fds, nfds_t nfds, int timeout)` — полная
+/// реализация: готовность сокетов (через socket_poll_events), обычных
+/// файлов и pipe-концов; блокировка с yield'ом гостевого ранлайна
+/// (env.sleep, как в select); записи `revents` всегда по возврату.
+fn poll(env: &mut Environment, fds: MutPtr<PollFd>, nfds: u32, timeout: i32) -> i32 {
+    set_errno(env, 0);
+    if nfds > 0 && fds.is_null() {
+        set_errno(env, EFAULT);
+        return -1;
+    }
+    // POSIX: EINVAL, если nfds больше {OPEN_MAX} (на iOS = 10240).
+    if nfds > 10240 {
+        set_errno(env, EINVAL);
+        return -1;
+    }
+
+    // timeout < 0 — ждать бессрочно; 0 — ровно один опрос.
+    let deadline = if timeout < 0 {
+        None
+    } else {
+        Some(
+            std::time::Instant::now() + std::time::Duration::from_millis(timeout as u64),
+        )
+    };
+    const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+
+    let mut revents = vec![0i16; nfds as usize];
+    // count читается после цикла — инициализируем сразу, т.к. присваиваем
+    // на каждой итерации (mut-переменная, ей же и управляется break).
+    let mut count = 0i32;
+    loop {
+        let mut ready = 0i32;
+        for i in 0..nfds {
+            let pfd: PollFd = env.mem.read(fds + i);
+            let re = evaluate_poll_fd(env, pfd.fd, pfd.events);
+            revents[i as usize] = re;
+            if re != 0 {
+                ready += 1;
+            }
+        }
+        count = ready;
+        if ready > 0 || timeout == 0 {
+            break;
+        }
+        // env.sleep() уступает гостевому ранлайну — остальные потоки идут.
+        match deadline {
+            Some(deadline) => {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    break;
+                }
+                env.sleep(POLL_INTERVAL.min(deadline - now));
+            }
+            None => env.sleep(POLL_INTERVAL),
+        }
+    }
+
+    // revents пишутся всегда (в том числе по таймауту — там нули).
+    for i in 0..nfds {
+        let p = fds + i;
+        let pfd: PollFd = env.mem.read(p);
+        // Собираем структуру заново: запись в поля упакованного struct
+        // через place-выражение здесь не используется нарочно.
+        env.mem.write(
+            p,
+            PollFd {
+                fd: pfd.fd,
+                events: pfd.events,
+                revents: revents[i as usize],
+            },
+        );
+    }
+    count
+}
+
 pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(open(_, _, _)),
     export_c_func!(creat(_, _)),
@@ -1394,6 +1650,7 @@ pub const FUNCTIONS: FunctionExports = &[
     export_c_func!(getcwd(_, _)),
     export_c_func!(chdir(_)),
     export_c_func!(fcntl(_, _, _)),
+    export_c_func!(poll(_, _, _)),
     export_c_func!(flock(_, _)),
     export_c_func!(fsync(_)),
     export_c_func!(ftruncate(_, _)),
@@ -1574,4 +1831,45 @@ fn release_range_from_locks(locks: &mut Vec<LockRange>, release: &LockRange) {
         }
     }
     *locks = new_locks;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{path_after_app_bundle_component, strip_udk_game_bundle_prefix};
+
+    #[test]
+    fn finds_case_insensitive_complete_app_bundle_components() {
+        assert_eq!(
+            path_after_app_bundle_component(
+                "/var/mobile/Applications/old-id/GRANNY.APP/Data/data.unity3d"
+            ),
+            Some("Data/data.unity3d")
+        );
+        assert_eq!(
+            path_after_app_bundle_component("/var/mobile/Applications/old-id/Granny.app"),
+            Some("")
+        );
+        assert_eq!(
+            path_after_app_bundle_component(
+                "/var/mobile/Applications/old-id/Granny.app.backup/Data/data.unity3d"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn maps_unreal_cooked_paths_from_project_root_to_bundle_root() {
+        assert_eq!(
+            strip_udk_game_bundle_prefix("../UDKGame/CookedIPhone/Core.xxx").as_deref(),
+            Some("CookedIPhone/Core.xxx")
+        );
+        assert_eq!(
+            strip_udk_game_bundle_prefix(r"..\udkgame\CookedIPhone\Core.xxx").as_deref(),
+            Some("CookedIPhone/Core.xxx")
+        );
+        assert_eq!(
+            strip_udk_game_bundle_prefix("../OtherGame/CookedIPhone/Core.xxx"),
+            None
+        );
+    }
 }

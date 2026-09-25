@@ -480,6 +480,27 @@ impl Environment {
         log!("{:?} device family is chosen.", device_family);
         options.device_family = Some(device_family);
 
+        // Read the executable before the window exists: which OpenGL ES API
+        // generation the app can use decides which host GL driver the window
+        // should load on Android (see `Window::new`). The same bytes are
+        // parsed into guest memory further down, so the file is read once.
+        let executable_path = bundle.executable_path();
+        let executable_name = executable_path.file_name().unwrap().to_string();
+        let executable_bytes = fs
+            .read(executable_path)
+            .map_err(|_| "Could not load executable: Could not read executable file".to_string())?;
+        let gles_api_usage = mach_o::scan_gles_api_usage(&executable_bytes);
+        log!(
+            "Executable imports OpenGL ES entry points: ES 1.1 fixed-function: {}, ES 2.0 shaders: {}{}",
+            if gles_api_usage.uses_es1 { "yes" } else { "no" },
+            if gles_api_usage.uses_es2 { "yes" } else { "no" },
+            if gles_api_usage.is_es2_only() {
+                " (OpenGL ES 2.0-only app)"
+            } else {
+                ""
+            }
+        );
+
         let window = if options.headless {
             None
         } else {
@@ -527,6 +548,7 @@ impl Environment {
                 icon.ok(),
                 launch_image.map(|image| (image, false)),
                 &options,
+                Some(gles_api_usage),
             )))
         };
 
@@ -549,13 +571,14 @@ impl Environment {
             // the game crashes with a null page access error.
             log!("Applying game-specific hack for Critter Crunch: zeroing memory on alloc instead of free.");
         }
-        let executable = mach_o::MachO::load_from_file(
-            bundle.executable_path(),
-            &fs,
+        let executable = mach_o::MachO::load_from_bytes(
+            &executable_bytes,
             &mut mem,
+            executable_name,
             /* slide: */ 0,
         )
         .map_err(|e| format!("Could not load executable: {e}"))?;
+        drop(executable_bytes);
 
         let mut dylibs = Vec::new();
         for dylib in &executable.dynamic_libraries {
@@ -947,6 +970,7 @@ impl Environment {
             Some(icon),
             launch_image,
             &options,
+            None,
         )));
 
         let mut mem = mem::Mem::new();

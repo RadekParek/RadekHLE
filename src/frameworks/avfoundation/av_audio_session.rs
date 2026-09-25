@@ -449,14 +449,6 @@ pub const CLASSES: ClassExports = objc_classes! {
     media_capture::microphone_available()
 }
 
-- (NSInteger)inputNumberOfChannels {
-    if media_capture::microphone_available() { 1 } else { 0 }
-}
-
-- (NSInteger)outputNumberOfChannels {
-    2
-}
-
 - (f64)sampleRate {
     env.objc.borrow::<AVAudioSessionHostObject>(this).preferred_sample_rate
 }
@@ -500,6 +492,20 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 - (NSInteger)currentHardwareOutputNumberOfChannels {
     msg![env; this maximumOutputNumberOfChannels]
+}
+
+- (NSInteger)outputNumberOfChannels {
+    // Current channel count on the active output route (stereo for the
+    // built-in route). Geometry Dash queries this selector; without a host
+    // implementation it fell through to the missing-selector soft-fail
+    // (logged a warning and returned 0).
+    msg![env; this currentHardwareOutputNumberOfChannels]
+}
+
+- (NSInteger)inputNumberOfChannels {
+    // Mirror of outputNumberOfChannels for the input side: one built-in mic
+    // channel when the host hardware has one.
+    msg![env; this currentHardwareInputNumberOfChannels]
 }
 
 - (f64)outputLatency {

@@ -108,6 +108,7 @@ pub const DYLIB: crate::dyld::HostDylib = crate::dyld::HostDylib {
         libkern::os_atomic::FUNCTIONS,
         mach::arm::task::FUNCTIONS,
         mach::arm::thread_act::FUNCTIONS,
+        mach::error::FUNCTIONS,
         libkern::task::FUNCTIONS,
         mach::host::FUNCTIONS,
         mach::init::FUNCTIONS,
@@ -183,5 +184,6 @@ pub struct State {
     clocale: clocale::State,
     mach_o: mach_o::State,
     mach_vm: mach::vm_map::State,
+    mach_error: mach::error::State,
     mmap: mmap::State,
 }

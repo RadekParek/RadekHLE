@@ -7,6 +7,7 @@
 
 use super::NSTimeInterval;
 use crate::dyld::HostFunction;
+use crate::environment::ThreadId;
 use crate::frameworks::core_foundation::CFTypeRef;
 use crate::frameworks::foundation::ns_string;
 use crate::frameworks::foundation::{ns_time_interval_to_duration, NSUInteger};
@@ -32,6 +33,32 @@ impl State {
     fn get(env: &mut Environment) -> &mut Self {
         &mut env.framework_state.foundation.ns_thread
     }
+}
+
+pub fn thread_id_for_ns_thread(env: &mut Environment, thread: id) -> Option<ThreadId> {
+    if thread == nil {
+        return None;
+    }
+
+    let class: Class = msg![env; thread class];
+    let nsthread_class = env.objc.get_known_class("NSThread", &mut env.mem);
+    if !env.objc.class_is_subclass_of(class, nsthread_class) {
+        return None;
+    }
+
+    if env.objc.borrow::<NSThreadHostObject>(thread).is_main_thread {
+        return Some(0);
+    }
+
+    let pthread = State::get(env)
+        .ns_threads
+        .iter()
+        .find_map(|(&pthread, &thread_obj)| (thread_obj == thread).then_some(pthread))?;
+    let thread_id = crate::libc::pthread::thread::thread_id_for_pthread(env, pthread)?;
+    env.threads
+        .get(thread_id)
+        .is_some_and(|thread| thread.active)
+        .then_some(thread_id)
 }
 
 #[derive(Default)]

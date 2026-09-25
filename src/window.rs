@@ -1324,6 +1324,7 @@ pub struct Window {
     virtual_cursor_last_unsticky: Option<(f32, f32, Instant)>,
     virtual_accelerometer_last: Option<(f32, f32, bool)>,
     // FPS counter state
+    perf_hints: crate::perf_hints::PerfHints,
     show_fps_counter: Cell<bool>,
     fps_frame_count: Cell<u32>,
     fps_last_log: RefCell<Instant>,
@@ -1376,7 +1377,16 @@ impl Window {
         icon: Option<Image>,
         launch_image: Option<(Image, bool)>,
         options: &Options,
+        app_gles_usage: Option<crate::mach_o::GlesApiUsage>,
     ) -> Window {
+        if let Some(usage) = app_gles_usage {
+            log!(
+                "App OpenGL ES API usage: ES 1.1 fixed-function: {}, ES 2.0 shaders: {}{}",
+                if usage.uses_es1 { "yes" } else { "no" },
+                if usage.uses_es2 { "yes" } else { "no" },
+                if usage.is_es2_only() { " (ES 2.0-only app)" } else { "" }
+            );
+        }
         crate::gles::configure_quality_options(
             options.texture_upscaler,
             options.anti_aliasing,
@@ -1641,6 +1651,13 @@ impl Window {
             virtual_accelerometer_last: None,
 
             // NEW FPS fields:
+            perf_hints: crate::perf_hints::PerfHints::new(
+                options.perf_hints,
+                options
+                    .fps_limit
+                    .map(|fps| std::time::Duration::from_secs_f64(1.0 / fps))
+                    .unwrap_or(std::time::Duration::from_micros(16_667)),
+            ),
             show_fps_counter: Cell::new(false),
             fps_frame_count: Cell::new(0),
             fps_last_log: RefCell::new(Instant::now()),
@@ -3173,6 +3190,7 @@ impl Window {
         if !self.software_presentation {
             self.window.gl_swap_window();
         }
+        self.perf_hints.frame_presented();
 
         // FPS logging / UI: count frames and print once per second if enabled.
         if self.show_fps_counter.get() {

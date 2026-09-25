@@ -15,6 +15,7 @@ const kCCParamError: i32 = -4300;
 const kCCBufferTooSmall: i32 = -4301;
 const kCCAlignmentError: i32 = -4303;
 const kCCDecodeError: i32 = -4304;
+const kCCUnimplemented: i32 = -4306;
 
 // Вспомогательные функции для чтения и записи u32 (Little Endian)
 fn read_u32_le(buf: &[u8], offset: usize) -> u32 {
@@ -761,6 +762,9 @@ fn CCCrypt(
 
     // RC4 stream cipher (alg == 4)
     if alg == 4 {
+        if key.is_null() || key_length == 0 {
+            return kCCParamError;
+        }
         if data_out_available < data_in_length {
             return kCCBufferTooSmall;
         }
@@ -797,16 +801,8 @@ fn CCCrypt(
         2 => 8,  // kCCAlgorithm3DES
         3 => 8,  // kCCAlgorithmCAST
         _ => {
-            log!("CCCrypt: alg={} not supported, data copied as-is", alg);
-            if data_out_available < data_in_length {
-                return kCCBufferTooSmall;
-            }
-            let input = env.mem.bytes_at(data_in.cast(), data_in_length).to_vec();
-            env.mem
-                .bytes_at_mut(data_out.cast(), data_in_length)
-                .copy_from_slice(&input);
-            env.mem.write(data_out_moved, data_in_length);
-            return kCCSuccess;
+            log!("CCCrypt: alg={} is not implemented", alg);
+            return kCCUnimplemented;
         }
     };
 
@@ -970,16 +966,8 @@ fn CCCrypt(
             Err(code) => code,
         };
     }
-    if data_out_available < data_in_length {
-        return kCCBufferTooSmall;
-    }
-    let input = env.mem.bytes_at(data_in.cast(), data_in_length).to_vec();
-    env.mem
-        .bytes_at_mut(data_out.cast(), data_in_length)
-        .copy_from_slice(&input);
-    env.mem.write(data_out_moved, data_in_length);
-    log!("CCCrypt: alg={} not implemented, data copied as-is", alg);
-    kCCSuccess
+    log!("CCCrypt: alg={} is not implemented", alg);
+    kCCUnimplemented
 }
 
 #[allow(non_snake_case)]
@@ -1839,7 +1827,7 @@ fn CCCryptorCreate(
         }
         _ => {
             log!("CCCryptorCreate: unsupported alg={}", alg);
-            return kCCParamError;
+            return kCCUnimplemented;
         }
     };
 

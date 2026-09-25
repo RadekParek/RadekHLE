@@ -453,6 +453,12 @@ pub struct Options {
     pub fps_limit: Option<f64>,
     pub frame_pacing: bool,
     pub vsync: bool,
+    /// Android: give the emulator thread a higher scheduling priority and
+    /// report its per-frame CPU time to the OS performance hint manager
+    /// (ADPF), so the CPU governor keeps the core clocked for the emulated
+    /// workload instead of reacting to the idle time between frames. Can be
+    /// disabled with `--no-perf-hints` or `TOUCHHLE_PERF_HINTS=0`.
+    pub perf_hints: bool,
     pub battery_saver: bool,
     pub ultra_battery_saver: bool,
     /// Generate presentation frames up to the host display refresh rate. Disabled by default.
@@ -578,6 +584,7 @@ impl Default for Options {
             fps_limit: None, // Follow the host display; legacy apps can still opt into a fixed cap.
             frame_pacing: true,
             vsync: false,
+            perf_hints: true,
             battery_saver: false,
             ultra_battery_saver: false,
             frame_generation: false,
@@ -984,6 +991,10 @@ impl Options {
             self.arm64_backend = Arm64Backend::parse(value)?;
         } else if let Some(value) = arg.strip_prefix("--arm64-fallback=") {
             self.arm64_fallback = Arm64Fallback::parse(value)?;
+        } else if arg == "--perf-hints" {
+            self.perf_hints = true;
+        } else if arg == "--no-perf-hints" {
+            self.perf_hints = false;
         } else if arg == "--llvmpipe-fallback" {
             self.llvmpipe_fallback = true;
         } else if arg == "--disable-llvmpipe-fallback" {
@@ -992,7 +1003,6 @@ impl Options {
             self.metal_translator = true;
         } else if arg == "--disable-metal-translator" {
             self.metal_translator = false;
-        } else if arg == "--prefer-gles2-context" {
             self.prefer_gles2_context = true;
         } else if arg == "--force-gles1-context" {
             self.force_gles1_context = true;

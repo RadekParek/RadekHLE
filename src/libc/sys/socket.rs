@@ -27,7 +27,10 @@ use crate::libc::errno::{
     set_errno, EACCES, EADDRINUSE, EADDRNOTAVAIL, EAGAIN, EBADF, ECONNREFUSED, ECONNRESET, EINVAL,
     EIO, EISCONN, ENETUNREACH, ENOTCONN, EPROTONOSUPPORT, ESOCKTNOSUPPORT, ETIMEDOUT,
 };
-use crate::libc::posix_io::{close, find_or_create_socket, is_socket, FileDescriptor};
+use crate::libc::posix_io::{
+    close, find_or_create_socket, is_socket, FileDescriptor, POLLERR, POLLHUP, POLLIN, POLLPRI,
+    POLLOUT, POLLRDNORM, POLLWRNORM,
+};
 use crate::libc::time::timeval;
 use crate::mem::{
     guest_size_of, ConstPtr, ConstVoidPtr, GuestUSize, MutPtr, MutVoidPtr, Ptr, SafeRead,
@@ -1493,6 +1496,150 @@ fn getpeername(
         }
     }
     0
+}
+
+/// Readiness одного сокета для poll(2): логика зеркальна select(), включая
+/// неблокирующий accept-пробник для слушателя (готовое соединение
+/// откладывается в `pending_tcp_stream` до гостевого `accept()`).
+/// Возвращает `revents`: нормальные биты отфильтрованы по `events`,
+/// POLLERR/POLLHUP — безусловно (POSIX).
+pub(crate) fn socket_poll_events(
+    env: &mut Environment,
+    fd: FileDescriptor,
+    events: i16,
+) -> i16 {
+    let want_read = events & (POLLIN | POLLPRI) != 0;
+    let want_write = events & POLLOUT != 0;
+
+    // Фаза 0: копии флагов — чтобы не держать заимствование state,
+    // пока в фазах 1–2 делаются новые обращения к env.
+    let (type_, has_stream, has_listener, has_udp) = {
+        let Some(sock) = State::get(env).sockets.get(&fd) else {
+            // Записи в сокет-таблице нет — как в select(): не готов.
+            return 0;
+        };
+        (
+            sock.type_,
+            sock.tcp_stream.is_some(),
+            sock.tcp_listener.is_some(),
+            sock.udp_socket.is_some(),
+        )
+    };
+
+    let mut ready = 0i16;
+    let mut hangup = false;
+
+    // Фаза 1: опрос ошибок TCP (POLLERR безусловный).
+    if type_ == SOCK_STREAM && has_stream {
+        if let Some(sock) = State::get(env).sockets.get(&fd) {
+            if let Some(stream) = sock.tcp_stream.as_ref() {
+                match stream.take_error() {
+                    Ok(Some(_)) => ready |= POLLERR,
+                    Ok(None) => {}
+                    Err(e) => log_dbg!("poll: take_error for socket {} failed: {}", fd, e),
+                }
+            }
+        }
+    }
+
+    // Фаза 2: чтение.
+    if want_read {
+        if type_ == SOCK_STREAM && has_stream {
+            if let Some(sock) = State::get(env).sockets.get(&fd) {
+                if let Some(stream) = sock.tcp_stream.as_ref() {
+                    let mut buf = [0u8; 1];
+                    match stream.peek(&mut buf) {
+                        // EOF: remote закрыл соединение → читаемо + HUP.
+                        Ok(0) => {
+                            ready |= POLLIN | POLLRDNORM;
+                            hangup = true;
+                        }
+                        Ok(_) => ready |= POLLIN | POLLRDNORM,
+                        // On Windows, if we receive more bytes than we peek,
+                        // it will error, but it means that there is some data.
+                        Err(ref e)
+                            if cfg!(target_os = "windows")
+                                && e.raw_os_error() == Some(10040) =>
+                        {
+                            ready |= POLLIN | POLLRDNORM;
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(e) => log_dbg!("poll: peek for socket {} failed: {}", fd, e),
+                    }
+                }
+            }
+        } else if type_ == SOCK_STREAM && has_listener {
+            // Пробник accept() — только по POLLIN (побочный эффект: новое
+            // соединение сразу принимается на хосте, как в select()).
+            let accepted = if let Some(sock) = State::get(env).sockets.get(&fd) {
+                match sock.tcp_listener.as_ref() {
+                    Some(listener) => match listener.accept() {
+                        Ok((stream, addr)) => {
+                            log!("poll: New client: {}", addr);
+                            if let Err(e) = stream.set_nonblocking(true) {
+                                log!("poll: set_nonblocking failed: {}", e);
+                                None
+                            } else {
+                                Some(stream)
+                            }
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => None,
+                        Err(e) => {
+                            log!("poll: accept for socket {} failed: {}", fd, e);
+                            None
+                        }
+                    },
+                    None => None,
+                }
+            } else {
+                None
+            };
+            if let Some(stream) = accepted {
+                if let Some(sock) = State::get_mut(env).sockets.get_mut(&fd) {
+                    if sock.pending_tcp_stream.is_some() {
+                        log!(
+                            "poll: socket {} already has a pending stream; dropping new one",
+                            fd
+                        );
+                    } else {
+                        sock.pending_tcp_stream = Some(stream);
+                    }
+                }
+                ready |= POLLIN | POLLRDNORM;
+            }
+        } else if type_ == SOCK_DGRAM && has_udp {
+            if let Some(sock) = State::get(env).sockets.get(&fd) {
+                if let Some(udp) = sock.udp_socket.as_ref() {
+                    let mut buf = [0u8; 1];
+                    match udp.peek(&mut buf) {
+                        Ok(_) => ready |= POLLIN | POLLRDNORM,
+                        Err(ref e)
+                            if cfg!(target_os = "windows")
+                                && e.raw_os_error() == Some(10040) =>
+                        {
+                            ready |= POLLIN | POLLRDNORM;
+                        }
+                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(e) => log_dbg!("poll: peek for UDP socket {} failed: {}", fd, e),
+                    }
+                }
+            }
+        }
+    }
+
+    // Фаза 3: запись (по флагам, без заимствований).
+    if want_write {
+        if type_ == SOCK_STREAM && (has_stream || has_listener) {
+            ready |= POLLOUT | POLLWRNORM;
+        } else if type_ == SOCK_DGRAM && has_udp {
+            ready |= POLLOUT | POLLWRNORM;
+        }
+    }
+
+    if hangup {
+        ready |= POLLHUP;
+    }
+    ready
 }
 
 pub const FUNCTIONS: FunctionExports = &[

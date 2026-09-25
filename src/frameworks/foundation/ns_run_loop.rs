@@ -503,7 +503,7 @@ pub fn run_run_loop(
 }
 
 /// Helper method for `mainRunLoop` and `currentRunLoop` NSThread class methods
-fn run_loop_for_thread(env: &mut Environment, this: Class, thread_id: ThreadId) -> id {
+pub(crate) fn run_loop_for_thread(env: &mut Environment, this: Class, thread_id: ThreadId) -> id {
     if env.threads[thread_id]
         .thread_local_framework_state
         .foundation

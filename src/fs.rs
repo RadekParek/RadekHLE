@@ -451,6 +451,23 @@ impl PipeBuffer {
             write_handles: 1,
         }
     }
+
+    /// Есть ли непрочитанные байты (для poll(2): POLLIN на читающем конце).
+    pub(crate) fn poll_has_data(&self) -> bool {
+        !self.bytes.is_empty()
+    }
+
+    /// Открыт ли хоть один читающий конец (для poll(2): POLLOUT/POLLERR
+    /// на пишущем конце).
+    pub(crate) fn poll_has_readers(&self) -> bool {
+        self.read_handles > 0
+    }
+
+    /// Открыт ли хоть один пишущий конец (для poll(2): POLLHUP на читающем
+    /// конце — writer закрыт, данные кончились).
+    pub(crate) fn poll_has_writers(&self) -> bool {
+        self.write_handles > 0
+    }
 }
 
 /// Backing for the guest's `/dev/random` and `/dev/urandom` character devices.
