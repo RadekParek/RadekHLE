@@ -184,66 +184,111 @@ pub const CLASSES: ClassExports = objc_classes! {
 // MARK: - find_fullscreen_eagl_layer
 // =========================================================================
 
-/// If there is an opaque `CAEAGLLayer` that covers the entire screen, this
-/// returns a pointer to it. Otherwise, it returns [nil].
+/// Finds the largest visible, opaque `CAEAGLLayer` that exactly covers the screen.
+/// Otherwise, returns [nil] so the compositor can use its general path.
 pub fn find_fullscreen_eagl_layer(env: &mut Environment) -> id {
+    fn find_in_subtree(
+        env: &mut Environment,
+        layer: id,
+        ca_eagl_layer_class: Class,
+        screen_bounds: CGRect,
+        depth: usize,
+    ) -> Option<(id, CGFloat)> {
+        const MAX_LAYER_DEPTH: usize = 128;
+        if layer == nil || depth >= MAX_LAYER_DEPTH {
+            return None;
+        }
+
+        let (
+            hidden,
+            opacity,
+            transform_is_identity,
+            opaque,
+            bounds,
+            anchor_point,
+            position,
+            sublayer_count,
+        ) = {
+            let host = env.objc.borrow::<CALayerHostObject>(layer);
+            (
+                host.hidden,
+                host.opacity,
+                host.affine_transform.is_identity(),
+                host.opaque,
+                host.bounds,
+                host.anchor_point,
+                host.position,
+                host.sublayers.len(),
+            )
+        };
+        if hidden || opacity <= 0.0 {
+            return None;
+        }
+
+        let geometry_matches_screen = bounds.size == screen_bounds.size
+            && bounds.origin == (CGPoint { x: 0.0, y: 0.0 })
+            && anchor_point == (CGPoint { x: 0.5, y: 0.5 })
+            && position
+                == (CGPoint {
+                    x: screen_bounds.size.width / 2.0,
+                    y: screen_bounds.size.height / 2.0,
+                })
+            && bounds.size.width.is_finite()
+            && bounds.size.height.is_finite();
+        if opacity != 1.0 || !transform_is_identity || !geometry_matches_screen {
+            return None;
+        }
+
+        let mut best = None;
+        for index in (0..sublayer_count).rev() {
+            let sublayer = env.objc.borrow::<CALayerHostObject>(layer).sublayers[index];
+            if let Some(candidate) =
+                find_in_subtree(env, sublayer, ca_eagl_layer_class, screen_bounds, depth + 1)
+            {
+                if best.map_or(true, |(_, best_area)| candidate.1 > best_area) {
+                    best = Some(candidate);
+                }
+            }
+        }
+
+        if opaque && msg![env; layer isKindOfClass:ca_eagl_layer_class] {
+            let area = bounds.size.width * bounds.size.height;
+            if best.map_or(true, |(_, best_area)| area > best_area) {
+                best = Some((layer, area));
+            }
+        }
+        best
+    }
+
     if env.options.force_composition {
         return nil;
     }
 
-    let windows = env.framework_state.uikit.ui_view.ui_window.windows.clone();
-    let Some(top_window) = windows
-        .into_iter()
-        .rev()
-        .find(|&window| !msg![env; window isHidden])
-    else {
+    let window_count = env.framework_state.uikit.ui_view.ui_window.windows.len();
+    let mut top_window = nil;
+    for index in (0..window_count).rev() {
+        let window = env.framework_state.uikit.ui_view.ui_window.windows[index];
+        if !msg![env; window isHidden] {
+            top_window = window;
+            break;
+        }
+    }
+    if top_window == nil {
         return nil;
-    };
+    }
+
+    let root_layer: id = msg![env; top_window layer];
+    if root_layer == nil {
+        return nil;
+    }
 
     let screen_bounds: CGRect = {
         let screen: id = msg_class![env; UIScreen mainScreen];
         msg![env; screen bounds]
     };
-
-    let mut layer: id = msg![env; top_window layer];
-
-    loop {
-        // assert!(layer != nil);
-
-        let layer_host_obj: &CALayerHostObject = env.objc.borrow(layer);
-
-        if layer_host_obj.bounds.size != screen_bounds.size
-            || layer_host_obj.bounds.origin != (CGPoint { x: 0.0, y: 0.0 })
-            || layer_host_obj.anchor_point != (CGPoint { x: 0.5, y: 0.5 })
-            || layer_host_obj.position
-                != (CGPoint {
-                    x: screen_bounds.size.width / 2.0,
-                    y: screen_bounds.size.height / 2.0,
-                })
-            || layer_host_obj.hidden
-            || layer_host_obj.opacity != 1.0
-            || !layer_host_obj.affine_transform.is_identity()
-        {
-            return nil;
-        }
-
-        if let Some(&next) = layer_host_obj.sublayers.last() {
-            layer = next;
-        } else {
-            break;
-        }
-    }
-
-    if !env.objc.borrow::<CALayerHostObject>(layer).opaque {
-        return nil;
-    }
-
     let ca_eagl_layer_class: Class = msg_class![env; CAEAGLLayer class];
-    if !msg![env; layer isKindOfClass:ca_eagl_layer_class] {
-        return nil;
-    }
-
-    layer
+    find_in_subtree(env, root_layer, ca_eagl_layer_class, screen_bounds, 0)
+        .map_or(nil, |(layer, _)| layer)
 }
 
 // =========================================================================

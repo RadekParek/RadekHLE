@@ -27,7 +27,7 @@ use crate::objc::{
 use crate::options::{GraphicsApi, Options};
 use crate::Environment;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -141,6 +141,7 @@ pub(super) struct EAGLContextHostObject {
     /// Mapping of OpenGL ES renderbuffer names to `EAGLDrawable` instances
     /// (always `CAEAGLLayer*`). Retains the instance so it won't dangle.
     renderbuffer_drawable_bindings: Rc<RefCell<HashMap<GLuint, id>>>,
+    pub(super) guest_bound_attribs: Rc<RefCell<HashSet<GLuint>>>,
     fps_counter: Option<FpsCounter>,
     next_frame_due: Option<Instant>,
     pub mapped_buffers: HashMap<GLuint, (MutPtr<GLvoid>, *mut GLvoid)>,
@@ -158,6 +159,7 @@ pub const CLASSES: ClassExports = objc_classes! {
         gles_ctx: None,
         api: kEAGLRenderingAPIOpenGLES1,
         renderbuffer_drawable_bindings: Rc::new(RefCell::new(HashMap::new())),
+        guest_bound_attribs: Rc::new(RefCell::new(HashSet::new())),
         fps_counter: None,
         next_frame_due: None,
         mapped_buffers: HashMap::new(),
@@ -245,6 +247,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     env.window.as_mut().unwrap().set_share_with_current_context(false);
 
     env.objc.borrow_mut::<EAGLContextHostObject>(this).renderbuffer_drawable_bindings = env.objc.borrow::<EAGLContextHostObject>(group).renderbuffer_drawable_bindings.clone();
+    env.objc.borrow_mut::<EAGLContextHostObject>(this).guest_bound_attribs = env.objc.borrow::<EAGLContextHostObject>(group).guest_bound_attribs.clone();
     this
 }
 
@@ -807,29 +810,19 @@ pub const CLASSES: ClassExports = objc_classes! {
         }
     } else {
         if fullscreen_layer != nil {
-            // If there's a single layer that covers the screen, and this isn't
-            // it, there's no point in presenting the output because it won't be
-            // seen. Using a noisy log because it's a weird scenario and might
-            // indicate a bug.
-            log!(
-                "Layer {:?} is not the fullscreen layer {:?}, skipping presentation of renderbuffer {:?}!",
+            log_once_fmt!(
+                "EAGL presenter: drawable {:?} is not the selected fullscreen layer {:?}; preserving its own contents through readback/composition.",
                 drawable,
                 fullscreen_layer,
-                renderbuffer,
             );
-            if let Some(sleep_for) = sleep_for {
-                env.sleep(sleep_for);
-            }
-            return true;
         }
 
-        // The very slow and inefficient path: not only does glReadPixels()
-        // block the thread until rendering finishes, but the result has to be
-        // copied back to system RAM, and then will have to be copied to VRAM
-        // again during composition. find_fullscreen_eagl_layer() exists to
-        // avoid this.
+        // Keep each EAGL drawable's own contents current. Apps may have more
+        // than one fullscreen EAGL layer, so skipping a non-selected layer can
+        // leave the game showing a stale loading or black frame. Single-layer
+        // apps continue to use the direct GPU path above.
         log_dbg!(
-            "There is no fullscreen layer, presenting renderbuffer {:?} to layer {:?} by copying to RAM (slow path).",
+            "EAGL drawable {:?} on layer {:?} is using RAM readback for correct layer composition (slow path).",
             renderbuffer,
             drawable,
         );

@@ -3413,6 +3413,18 @@ fn glBindAttribLocation(
     index: GLuint,
     name: ConstPtr<GLubyte>,
 ) {
+    let current_context = env
+        .framework_state
+        .opengles
+        .current_ctx_for_thread(env.current_thread)
+        .unwrap_or(nil);
+    if current_context != nil {
+        env.objc
+            .borrow::<EAGLContextHostObject>(current_context)
+            .guest_bound_attribs
+            .borrow_mut()
+            .insert(program);
+    }
     with_ctx_and_mem(env, |gles, mem| unsafe {
         let cstr = read_guest_cstring(mem, name);
         gles.BindAttribLocation(program, index, cstr.as_ptr());
@@ -3480,6 +3492,18 @@ fn glUseProgram(env: &mut Environment, program: GLuint) {
     });
 }
 fn glDeleteProgram(env: &mut Environment, program: GLuint) {
+    let current_context = env
+        .framework_state
+        .opengles
+        .current_ctx_for_thread(env.current_thread)
+        .unwrap_or(nil);
+    if current_context != nil {
+        env.objc
+            .borrow::<EAGLContextHostObject>(current_context)
+            .guest_bound_attribs
+            .borrow_mut()
+            .remove(&program);
+    }
     with_ctx_and_mem(env, |gles, _mem| unsafe { gles.DeleteProgram(program) });
 }
 fn glDeleteShader(env: &mut Environment, shader: GLuint) {
@@ -3548,8 +3572,33 @@ fn glDetachShader(env: &mut Environment, program: GLuint, shader: GLuint) {
         gles.DetachShader(program, shader)
     });
 }
+const GEOMETRY_DASH_ES2_ATTRIBUTE_BINDINGS: &[(GLuint, &[u8])] = &[
+    (0, b"a_position\0"),
+    (1, b"a_color\0"),
+    (2, b"a_texCoord\0"),
+];
+
 fn glLinkProgram(env: &mut Environment, program: GLuint) {
+    let is_geometry_dash =
+        cfg!(target_os = "android") && env.bundle.bundle_identifier() == "com.robtop.geometryjump";
+    let current_context = env
+        .framework_state
+        .opengles
+        .current_ctx_for_thread(env.current_thread)
+        .unwrap_or(nil);
+    let guest_bound = current_context != nil
+        && env
+            .objc
+            .borrow::<EAGLContextHostObject>(current_context)
+            .guest_bound_attribs
+            .borrow()
+            .contains(&program);
     with_ctx_and_mem(env, |gles, _mem| unsafe {
+        if gles.is_es2() && is_geometry_dash && !guest_bound {
+            for &(index, name) in GEOMETRY_DASH_ES2_ATTRIBUTE_BINDINGS {
+                gles.BindAttribLocation(program, index, name.as_ptr() as *const _);
+            }
+        }
         log_gl_call(
             "glLinkProgram",
             gl_call_parameters(&[("program", program.to_string())]),
