@@ -282,6 +282,30 @@ impl super::ObjC {
         }
 
         let key = (object, TypeId::of::<T>());
+
+        // Self-heal: an object without any host object (e.g. allocated through
+        // a path that skipped host-object attachment) previously got a
+        // forever-isolated phantom, so mutations never became visible to other
+        // lookups of the same object. Attach a real host object instead so all
+        // subsequent borrows share one coherent state.
+        if !object.is_null() && self.objects.get(&object).is_none() {
+            let host_object = Box::new(T::default());
+            self.objects.insert(
+                object,
+                HostObjectEntry {
+                    host_object,
+                    refcount: Some(NonZeroU32::new(1).unwrap()),
+                },
+            );
+            self.missing_objects.borrow_mut().remove(&key);
+            let entry = self.objects.get_mut(&object).unwrap();
+            let aho: &mut (dyn AnyHostObject + 'static) = &mut *entry.host_object;
+            return aho
+                .as_any_mut()
+                .downcast_mut::<T>()
+                .expect("self-healed host object type mismatch");
+        }
+
         let host_object = self
             .missing_objects
             .get_mut()

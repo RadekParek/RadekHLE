@@ -224,7 +224,7 @@ pub enum MemoryManagement {
 
 impl Default for MemoryManagement {
     fn default() -> Self {
-        Self::Balanced
+        Self::Aggressive
     }
 }
 
@@ -315,7 +315,7 @@ pub enum AudioBackend {
 
 impl Default for AudioBackend {
     fn default() -> Self {
-        Self::Default
+        Self::CoreAudio
     }
 }
 

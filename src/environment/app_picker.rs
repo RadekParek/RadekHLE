@@ -801,7 +801,7 @@ const CLASSES: ClassExports = objc_classes! {
     let value = MEMORY_MANAGEMENT_ENTRIES
         .get(tag as usize)
         .map(|(_, value)| *value)
-        .unwrap_or(crate::options::MemoryManagement::Balanced);
+        .unwrap_or(crate::options::MemoryManagement::Aggressive);
     env.objc.borrow_mut::<AppPickerDelegateHostObject>(this).memory_management = Some(value);
 }
 - (())glesOverrideToggle {
@@ -1177,13 +1177,13 @@ fn app_picker_inner(
     let mut quick_options_device_model_open = false;
     let mut quick_options_device_model_scroll: isize = 0;
     let mut quick_options_ios_version: Option<(i32, i32, i32)> = None;
-    let mut quick_options_core_audio = false;
+    let mut quick_options_core_audio = true;
     let mut quick_options_low_audio_quality = false;
     let mut quick_options_graphics_api = crate::options::GraphicsApi::Default;
-    let mut quick_options_audio_backend = crate::options::AudioBackend::Default;
+    let mut quick_options_audio_backend = crate::options::AudioBackend::CoreAudio;
     let mut quick_options_texture_filtering = crate::options::TextureFiltering::Default;
     let mut quick_options_pvrtc_decoding = crate::options::PvrtcDecoding::Software;
-    let mut quick_options_memory_management = crate::options::MemoryManagement::Balanced;
+    let mut quick_options_memory_management = crate::options::MemoryManagement::Aggressive;
     let mut quick_options_gles_override = crate::options::GlesOverrideVersion::Default;
     let mut quick_options_arm64_backend = crate::options::Arm64Backend::Interpreter;
     let mut quick_options_arm64_fallback = crate::options::Arm64Fallback::Interpreter;
