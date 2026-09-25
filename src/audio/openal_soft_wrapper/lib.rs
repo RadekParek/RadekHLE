@@ -149,6 +149,8 @@ pub mod al_defines {
     pub const AL_BUFFERS_QUEUED: ALenum = 0x1015;
     pub const AL_BUFFERS_PROCESSED: ALenum = 0x1016;
 
+    pub const AL_PITCH: ALenum = 0x4003;
+
     pub const AL_FORMAT_MONO8: ALenum = 0x1100;
     pub const AL_FORMAT_MONO16: ALenum = 0x1101;
     pub const AL_FORMAT_STEREO8: ALenum = 0x1102;
