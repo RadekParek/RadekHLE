@@ -57,6 +57,17 @@ pub fn detect_architecture(
     let cputype = match file {
         OFile::MachFile { header, .. } => header.cputype,
         OFile::FatFile { files, .. } => {
+            let has_arm32 = files
+                .iter()
+                .any(|(arch, _)| arch.cputype == mach_object::CPU_TYPE_ARM);
+            let has_arm64 = files
+                .iter()
+                .any(|(arch, _)| arch.cputype == mach_object::CPU_TYPE_ARM64);
+            if has_arm32 && has_arm64 {
+                log!(
+                    "Fat binary contains both ARM32 and ARM64 slices; preferring ARM32 (the mature JIT path). Use --force-64-bit to run the ARM64 slice instead."
+                );
+            }
             let mut architectures = files.iter().map(|(arch, _)| arch.cputype);
             if prefer_arm64 {
                 architectures
@@ -69,10 +80,12 @@ pub fn detect_architecture(
                     .find(|&cpu| cpu == mach_object::CPU_TYPE_ARM)
                     .or_else(|| architectures.find(|&cpu| cpu == mach_object::CPU_TYPE_ARM64))
             } else {
+                // Auto: ARM32 first. The ARM32 Dynarmic JIT is the mature,
+                // high-performance path; ARM64 is still experimental.
                 architectures
                     .clone()
-                    .find(|&cpu| cpu == mach_object::CPU_TYPE_ARM64)
-                    .or_else(|| architectures.find(|&cpu| cpu == mach_object::CPU_TYPE_ARM))
+                    .find(|&cpu| cpu == mach_object::CPU_TYPE_ARM)
+                    .or_else(|| architectures.find(|&cpu| cpu == mach_object::CPU_TYPE_ARM64))
             }
             .ok_or("No ARM architecture in the fat binary")?
         }

@@ -905,36 +905,6 @@ unsafe fn present_renderbuffer_readback(
             None => None,
         }
     };
-    {
-        let (w, h) = read_result.as_ref().map(|r| (r.1 as usize, r.2 as usize)).unwrap_or((0, 0));
-        if w > 0 && h > 0 {
-            let px = &read_result.as_ref().unwrap().0;
-            if !px.is_empty() {
-                let samples: Vec<(usize, usize)> = vec![
-                    (w / 2, h / 2),
-                    (w / 4, h / 4),
-                    ((3 * w) / 4, (3 * h) / 4),
-                    (w / 2, h / 8),
-                    (w / 2, (7 * h) / 8),
-                ];
-                let mut parts = Vec::new();
-                let mut maxlum: u32 = 0;
-                for (x, y) in samples {
-                    let idx = (y * w + x) * 4;
-                    if idx + 3 < px.len() {
-                        let lum = (px[idx] as u32 + px[idx + 1] as u32 + px[idx + 2] as u32) / 3;
-                        maxlum = maxlum.max(lum);
-                        parts.push(format!("({},{}):{}", x, y, lum));
-                    }
-                }
-                log!("[DS-PROBE] readback {}x{} len={} samples=[{}] maxlum={}", w, h, px.len(), parts.join(" "), maxlum);
-            } else {
-                log!("[DS-PROBE] readback empty pixel buffer for {}x{}", w, h);
-            }
-        } else {
-            log!("[DS-PROBE] readback invalid size {}x{}", w, h);
-        }
-    }
     let Some((pixels, width, height)) = read_result else {
         log!("GPU framebuffer readback skipped because the GL context disappeared.");
         return;
@@ -1104,6 +1074,48 @@ unsafe fn read_renderbuffer(
     }
 
     let old_framebuffer: GLuint = get_int(gles, gles11::FRAMEBUFFER_BINDING_OES) as _;
+    let size = (width_u32 as usize)
+        .checked_mul(height_u32 as usize)
+        .and_then(|size| size.checked_mul(4))
+        .unwrap_or(0);
+    let old_pack_alignment = get_int(gles, gles11::PACK_ALIGNMENT);
+
+    // Read straight out of the app's currently-bound framebuffer when one is
+    // bound. Rebinding a fresh FBO here (the old approach) unbinds the app's
+    // FBO first, which on tile-based mobile GPUs (Mali, Adreno) can discard
+    // unresolved tile contents and yield an all-black readback. Reading from
+    // the already-bound FBO keeps the tile cache valid and matches what the
+    // app actually rendered for this frame.
+    let direct_read = old_framebuffer != 0;
+    if direct_read {
+        pixel_buffer.clear();
+        pixel_buffer.reserve_exact(size);
+        gles.PixelStorei(gles11::PACK_ALIGNMENT, 1);
+        gles.Finish();
+        gles.ReadPixels(
+            0,
+            0,
+            width,
+            height,
+            gles11::RGBA,
+            gles11::UNSIGNED_BYTE,
+            pixel_buffer.as_mut_ptr() as *mut _,
+        );
+        gles.PixelStorei(gles11::PACK_ALIGNMENT, old_pack_alignment);
+        pixel_buffer.set_len(size);
+        let any_nonzero = pixel_buffer.iter().any(|&b| b != 0);
+        if any_nonzero {
+            if renderbuffer != current_renderbuffer {
+                gles.BindRenderbufferOES(gles11::RENDERBUFFER_OES, current_renderbuffer);
+            }
+            return (pixel_buffer, width_u32, height_u32);
+        }
+        // The bound FBO read back as all-zero. It may not have this
+        // renderbuffer attached (the app might still be rendering into a
+        // texture FBO); fall through to the explicit re-attach path.
+        pixel_buffer.clear();
+    }
+
     let mut src_framebuffer = 0;
     gles.GenFramebuffersOES(1, &mut src_framebuffer);
     gles.BindFramebufferOES(gles11::FRAMEBUFFER_OES, src_framebuffer);
@@ -1122,14 +1134,8 @@ unsafe fn read_renderbuffer(
         );
     }
 
-    let size = (width_u32 as usize)
-        .checked_mul(height_u32 as usize)
-        .and_then(|size| size.checked_mul(4))
-        .unwrap_or(0);
     pixel_buffer.clear();
     pixel_buffer.reserve_exact(size);
-    let before = Instant::now();
-    let old_pack_alignment = get_int(gles, gles11::PACK_ALIGNMENT);
     gles.PixelStorei(gles11::PACK_ALIGNMENT, 1);
     gles.Finish();
     gles.ReadPixels(
@@ -1143,19 +1149,6 @@ unsafe fn read_renderbuffer(
     );
     gles.PixelStorei(gles11::PACK_ALIGNMENT, old_pack_alignment);
     pixel_buffer.set_len(size);
-    let elapsed = Instant::now().saturating_duration_since(before);
-    if crate::gles::translator_tracing_enabled() || crate::gles::verbose_logging_enabled() {
-        log!(
-            "[EAGL READBACK] framebuffer={} renderbuffer={} size={}x{} status=0x{:x} read={} bytes took {:?}",
-            src_framebuffer,
-            renderbuffer,
-            width_u32,
-            height_u32,
-            status,
-            size,
-            elapsed
-        );
-    }
 
     gles.DeleteFramebuffersOES(1, &src_framebuffer);
     gles.BindFramebufferOES(gles11::FRAMEBUFFER_OES, old_framebuffer);
