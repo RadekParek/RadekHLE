@@ -905,6 +905,36 @@ unsafe fn present_renderbuffer_readback(
             None => None,
         }
     };
+    {
+        let (w, h) = read_result.as_ref().map(|r| (r.1 as usize, r.2 as usize)).unwrap_or((0, 0));
+        if w > 0 && h > 0 {
+            let px = &read_result.as_ref().unwrap().0;
+            if !px.is_empty() {
+                let samples: Vec<(usize, usize)> = vec![
+                    (w / 2, h / 2),
+                    (w / 4, h / 4),
+                    ((3 * w) / 4, (3 * h) / 4),
+                    (w / 2, h / 8),
+                    (w / 2, (7 * h) / 8),
+                ];
+                let mut parts = Vec::new();
+                let mut maxlum: u32 = 0;
+                for (x, y) in samples {
+                    let idx = (y * w + x) * 4;
+                    if idx + 3 < px.len() {
+                        let lum = (px[idx] as u32 + px[idx + 1] as u32 + px[idx + 2] as u32) / 3;
+                        maxlum = maxlum.max(lum);
+                        parts.push(format!("({},{}):{}", x, y, lum));
+                    }
+                }
+                log!("[DS-PROBE] readback {}x{} len={} samples=[{}] maxlum={}", w, h, px.len(), parts.join(" "), maxlum);
+            } else {
+                log!("[DS-PROBE] readback empty pixel buffer for {}x{}", w, h);
+            }
+        } else {
+            log!("[DS-PROBE] readback invalid size {}x{}", w, h);
+        }
+    }
     let Some((pixels, width, height)) = read_result else {
         log!("GPU framebuffer readback skipped because the GL context disappeared.");
         return;
@@ -1207,6 +1237,7 @@ unsafe fn present_renderbuffer_es2_translator(
     gles.ActiveTexture(gles2::TEXTURE0);
     gles.BindTexture(gles2::TEXTURE_2D, present_objects.texture);
     gles.CopyTexImage2D(gles2::TEXTURE_2D, 0, gles2::RGBA, 0, 0, width, height, 0);
+    probe_present_pixels(gles, "es2-translator", width, height);
 
     gles.BindFramebuffer(gles2::FRAMEBUFFER, 0);
     gles.Viewport(
@@ -1291,6 +1322,71 @@ unsafe fn present_renderbuffer_es2_translator(
 /// minimum amount of ES 2.0 state, draw the textured quad with a small
 /// dedicated shader program, and restore. The app's matrices, vertex pointers
 /// etc. are not part of ES 2.0 state and thus need no save/restore.
+/// Milestone framebuffer sampler: at a handful of frame indices (plus
+/// periodically afterwards), reads five pixels (four corners + centre) from
+/// the currently bound framebuffer and logs them. This is the ground truth
+/// that distinguishes "the guest never rendered anything" (all probes black
+/// from frame 0) from "rendering works but presentation drops it" (early
+/// probes bright, later black, or bright at all times). The cost is five
+/// `glReadPixels` calls at logarithmic intervals — negligible.
+unsafe fn probe_present_pixels(
+    gles: &mut dyn GLES,
+    label: &str,
+    width: GLint,
+    height: GLint,
+) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static PROBE_COUNT: AtomicUsize = AtomicUsize::new(0);
+    let count = PROBE_COUNT.fetch_add(1, Ordering::Relaxed);
+    let should_log =
+        matches!(count, 0 | 1 | 5 | 30 | 120 | 600) || count.is_multiple_of(600);
+    if !should_log {
+        return;
+    }
+    if width <= 0 || height <= 0 {
+        log_once_fmt!("EAGL-PROBE [{}]: invalid framebuffer size {}x{}", label, width, height);
+        return;
+    }
+    let xmax = width.saturating_sub(1);
+    let ymax = height.saturating_sub(1);
+    let xmid = width / 2;
+    let ymid = height / 2;
+    let mut samples: Vec<(u32, u32, [u8; 4])> = Vec::with_capacity(5);
+    for (x, y) in [
+        (0u32, 0u32),
+        (xmax as u32, 0),
+        (0, ymax as u32),
+        (xmax as u32, ymax as u32),
+        (xmid as u32, ymid as u32),
+    ] {
+        let mut px = [0u8; 4];
+        gles.ReadPixels(
+            x as GLint,
+            y as GLint,
+            1,
+            1,
+            crate::gles::gles2_raw::RGBA as _,
+            crate::gles::gles2_raw::UNSIGNED_BYTE as _,
+            px.as_mut_ptr() as *mut _,
+        );
+        samples.push((x, y, px));
+    }
+    let brightness: u32 = samples.iter().map(|s| s.2.iter().take(3).map(|&v| v as u32).sum::<u32>()).sum();
+    log!(
+        "EAGL-PROBE [{}] frame-sample #{} size {}x{}: {} (mean rgb/3 = {})",
+        label,
+        count,
+        width,
+        height,
+        samples
+            .iter()
+            .map(|(x, y, px)| format!("({x},{y})=#{:02x}{:02x}{:02x}", px[0], px[1], px[2]))
+            .collect::<Vec<_>>()
+            .join(" "),
+        brightness / (samples.len() as u32 * 3)
+    );
+}
+
 unsafe fn present_renderbuffer_es2(
     gles: &mut dyn GLES,
     viewport: (u32, u32, u32, u32),
@@ -1344,14 +1440,49 @@ unsafe fn present_renderbuffer_es2(
         (w, h)
     };
 
+    // Tile-based GPUs (Adreno, Mali) keep the app's draws in tile-local
+    // memory until a resolve point (FBO unbind, glReadPixels, glFinish).
+    // Copying the renderbuffer through a *different* FBO than the one the app
+    // rendered into makes some drivers discard the tiles instead of resolving
+    // them, which presents an all-black frame. Two safeguards, mirroring the
+    // proven logic in `present_renderbuffer_es2_translator`:
+    // 1. When the app still has an FBO bound (the standard EAGL pattern), copy
+    //    directly from that FBO instead of rebinding a cached one.
+    // 2. Force completion with glFinish() before CopyTexImage2D so tile data
+    //    is resolved to main memory even when the app unbound its FBO first.
     let present_objects = ensure_present_objects(gles);
-    gles.BindFramebuffer(gles2::FRAMEBUFFER, present_objects.framebuffer);
-    gles.FramebufferRenderbuffer(
-        gles2::FRAMEBUFFER,
-        gles2::COLOR_ATTACHMENT0,
-        gles2::RENDERBUFFER,
-        renderbuffer as GLuint,
-    );
+    let mut copied_from_app_fbo = false;
+    if old_framebuffer != 0 {
+        gles.BindFramebuffer(gles2::FRAMEBUFFER, old_framebuffer as GLuint);
+        let status = gles.CheckFramebufferStatus(gles2::FRAMEBUFFER);
+        if status == gles2::FRAMEBUFFER_COMPLETE {
+            copied_from_app_fbo = true;
+        } else {
+            log_once_fmt!(
+                "present_renderbuffer_es2: app framebuffer {} incomplete ({:#x}); falling back to the presentation framebuffer.",
+                old_framebuffer,
+                status
+            );
+        }
+    }
+    if !copied_from_app_fbo {
+        gles.BindFramebuffer(gles2::FRAMEBUFFER, present_objects.framebuffer);
+        gles.FramebufferRenderbuffer(
+            gles2::FRAMEBUFFER,
+            gles2::COLOR_ATTACHMENT0,
+            gles2::RENDERBUFFER,
+            renderbuffer as GLuint,
+        );
+        let status = gles.CheckFramebufferStatus(gles2::FRAMEBUFFER);
+        if status != gles2::FRAMEBUFFER_COMPLETE {
+            log_once_fmt!(
+                "present_renderbuffer_es2: presentation framebuffer incomplete ({:#x}) for renderbuffer {}; skipping frame.",
+                status,
+                renderbuffer
+            );
+            return;
+        }
+    }
 
     gles.ActiveTexture(gles2::TEXTURE0);
     gles.BindTexture(gles2::TEXTURE_2D, present_objects.texture);
@@ -1373,7 +1504,25 @@ unsafe fn present_renderbuffer_es2(
         gles2::STREAM_DRAW,
     );
     gles.Disable(gles2::SCISSOR_TEST);
-    gles.CopyTexImage2D(gles2::TEXTURE_2D, 0, gles2::RGB, 0, 0, width, height, 0);
+    gles.Finish();
+    gles.CopyTexImage2D(gles2::TEXTURE_2D, 0, gles2::RGBA, 0, 0, width, height, 0);
+    {
+        let err = gles.GetError();
+        if err != 0 {
+            log_once_fmt!(
+                "present_renderbuffer_es2: glCopyTexImage2D failed after the copy (error {:#x}, renderbuffer {}, size {}x{}, source {}).",
+                err,
+                renderbuffer,
+                width,
+                height,
+                if copied_from_app_fbo { "app framebuffer" } else { "presentation framebuffer" }
+            );
+            // Drain any additional queued errors so they don't leak into the
+            // app's next frame.
+            while gles.GetError() != 0 {}
+        }
+    }
+    probe_present_pixels(gles, "es2", width, height);
 
     gles.BindFramebuffer(gles2::FRAMEBUFFER, 0);
 
