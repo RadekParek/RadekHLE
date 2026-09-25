@@ -449,14 +449,6 @@ pub const CLASSES: ClassExports = objc_classes! {
     media_capture::microphone_available()
 }
 
-- (NSInteger)inputNumberOfChannels {
-    if media_capture::microphone_available() { 1 } else { 0 }
-}
-
-- (NSInteger)outputNumberOfChannels {
-    2
-}
-
 - (f64)sampleRate {
     env.objc.borrow::<AVAudioSessionHostObject>(this).preferred_sample_rate
 }
