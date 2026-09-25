@@ -27,6 +27,7 @@
 #[macro_use]
 mod log;
 mod a64_abi;
+mod android_media;
 mod env_flags;
 mod abi;
 mod arm64_runtime;

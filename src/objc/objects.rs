@@ -134,6 +134,22 @@ impl super::ObjC {
         )
     }
 
+    pub fn alloc_object_sized(
+        &mut self,
+        isa: Class,
+        instance_size: GuestUSize,
+        host_object: Box<dyn AnyHostObject>,
+        mem: &mut Mem,
+    ) -> id {
+        self.alloc_object_inner(
+            isa,
+            instance_size,
+            host_object,
+            mem,
+            Some(NonZeroU32::new(1).unwrap()),
+        )
+    }
+
     pub fn alloc_static_object(
         &mut self,
         isa: Class,
