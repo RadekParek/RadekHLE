@@ -112,4 +112,5 @@ gl_generator = { workspace = true }
 [profile.release]
 opt-level = 3
 codegen-units = 1
-lto = "thin"
+lto = "fat"
+strip = "debuginfo"
