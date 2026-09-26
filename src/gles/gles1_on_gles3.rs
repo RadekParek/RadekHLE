@@ -319,7 +319,7 @@ impl GLESContext for GLES1OnGLES3Context {
         &'gl_ctx mut self,
         window: &'win mut Window,
     ) -> Box<dyn GLES + 'gl_ctx> {
-        if !self.gl_ctx.is_current() || !self.is_loaded {
+        if !self.gl_ctx.is_current() || !self.is_loaded || !Window::gl_ctx_bound_on_this_thread() {
             unsafe { window.make_gl_context_current(&self.gl_ctx) };
             gl::load_with(|s| window.gl_get_proc_address(s));
             es1::load_with(|s| window.gl_get_proc_address(s));
@@ -336,7 +336,7 @@ impl GLESContext for GLES1OnGLES3Context {
         make_current_fn: &mut dyn FnMut(&GLContext),
         loader_fn: &mut dyn FnMut(&'static str) -> *const std::ffi::c_void,
     ) -> Box<dyn GLES + 'gl_ctx> {
-        if !self.gl_ctx.is_current() || !self.is_loaded {
+        if !self.gl_ctx.is_current() || !self.is_loaded || !Window::gl_ctx_bound_on_this_thread() {
             make_current_fn(&self.gl_ctx);
             gl::load_with(&mut *loader_fn);
             es1::load_with(&mut *loader_fn);

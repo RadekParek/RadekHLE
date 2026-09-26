@@ -1015,6 +1015,27 @@ impl GLContext {
     }
 }
 
+/// Host-thread token of the thread the host GL context was last bound on
+/// (0 = never bound anywhere). See [Window::gl_ctx_bound_on_this_thread].
+static LAST_GL_BIND_THREAD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn current_thread_token() -> u64 {
+    thread_local! {
+        static THREAD_TOKEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+        static NEXT_TOKEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    }
+    THREAD_TOKEN.with(|t| {
+        let current = t.get();
+        if current == 0 {
+            let fresh = NEXT_TOKEN.with(|n| n.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+            t.set(fresh);
+            fresh
+        } else {
+            current
+        }
+    })
+}
+
 fn surface_from_image(image: &Image) -> Surface<'_> {
     let src_pixels = image.pixels();
     let (width, height) = image.dimensions();
@@ -2735,12 +2756,37 @@ impl Window {
     }
 
     pub unsafe fn make_gl_context_current(&self, gl_ctx: &GLContext) {
-        if let Err(error) = self.window.gl_make_current(&gl_ctx.0) {
-            log_once_fmt!(
-                "Unable to make the EGL context current ({}); keeping the existing context instead of panicking",
-                error
-            );
+        match self.window.gl_make_current(&gl_ctx.0) {
+            Ok(()) => Self::mark_gl_bound_on_this_thread(),
+            Err(error) => {
+                log_once_fmt!(
+                    "Unable to make the EGL context current ({}); keeping the existing context instead of panicking",
+                    error
+                );
+            }
         }
+    }
+
+    /// Record that the calling thread is the one the host GL context is now
+    /// bound to. See [Self::gl_ctx_bound_on_this_thread].
+    pub fn mark_gl_bound_on_this_thread() {
+        LAST_GL_BIND_THREAD.store(current_thread_token(), std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// True when the last successful host GL `MakeCurrent` happened on the
+    /// calling thread.
+    ///
+    /// SDL's Android EGL backend records the current GL context in a single
+    /// global rather than thread-local storage, so `GLContext::is_current()`
+    /// reports "current" on every thread once any thread has bound it. GL
+    /// backends must therefore skip re-binding only when the binding is both
+    /// up-to-date AND local to this thread; otherwise a guest worker thread
+    /// stealing the binding between frames leaves the main thread issuing
+    /// driver calls with no current context, and Adreno-style drivers return
+    /// `GL_INVALID_VALUE` from `glGetError()` itself.
+    pub fn gl_ctx_bound_on_this_thread() -> bool {
+        let last = LAST_GL_BIND_THREAD.load(std::sync::atomic::Ordering::Relaxed);
+        last != 0 && last == current_thread_token()
     }
 
     /// Make the internal OpenGL ES context (for splash screen and UI rendering)
