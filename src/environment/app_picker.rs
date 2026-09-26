@@ -1005,7 +1005,7 @@ fn app_picker_inner(
         break;
     }
     if !found_wallpaper {
-        if let Ok(mut resource) = paths::ResourceFile::open("RadekHLE_v7_wallpaper.png") {
+        if let Ok(mut resource) = paths::ResourceFile::open("MetalHLE_v7_wallpaper.png") {
             let mut bytes = Vec::new();
             if resource.get().read_to_end(&mut bytes).is_ok() {
                 if let Ok(image) = Image::from_bytes(&bytes) {
@@ -1052,7 +1052,7 @@ fn app_picker_inner(
         let text = ns_string::from_rust_string(
             env,
             format!(
-                "RadekHLE 9.2 {}{}{}",
+                "MetalHLE 0.1 {}{}{}",
                 crate::branding(),
                 if crate::branding().is_empty() {
                     ""

@@ -8,7 +8,7 @@
  */
 
 //package emu.skyline.provider
-package org.radekhle.android;
+package org.metalhle.android;
 
 import android.database.Cursor
 import android.database.MatrixCursor

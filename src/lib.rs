@@ -98,15 +98,15 @@ pub extern "C" fn SDL_main(
     }));
     // Empty args: brings up app picker.
     match main([String::new()].into_iter()) {
-        Ok(_) => echo!("RadekHLE 9.2 finished"),
-        Err(e) => echo!("RadekHLE 9.2 errored: {e:?}"),
+        Ok(_) => echo!("MetalHLE 0.1 finished"),
+        Err(e) => echo!("MetalHLE 0.1 errored: {e:?}"),
     }
     0
 }
 
 const USAGE: &str = "\
 Usage:
-    radekhle [PATH] [OPTIONS]
+    metalhle [PATH] [OPTIONS]
 
 PATH should be a path to a .app bundle or .ipa file.
 
@@ -193,7 +193,7 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
     crate::perf::configure_from_environment();
     crate::perf::reset();
     echo!(
-        "RadekHLE 9.2 {}{}{} git_sha={}",
+        "MetalHLE 0.1 {}{}{} git_sha={}",
         branding(),
         if branding().is_empty() { "" } else { " " },
         VERSION,
@@ -213,7 +213,7 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
 
     {
         let base_path = paths::user_data_base_path();
-        log!("Base path for RadekHLE 9.2 files: {}", base_path.display());
+        log!("Base path for MetalHLE 0.1 files: {}", base_path.display());
         paths::prepopulate_user_data_dir();
     }
 
@@ -448,7 +448,7 @@ pub fn main<T: Iterator<Item = String>>(mut args: T) -> Result<(), String> {
 
     if required_device_capabilities.contains(&"opengles-3") {
         echo!(
-            "Warning: app requires OpenGL ES 3.0+ support. RadekHLE 9.2 now routes EAGL OpenGL ES 3 contexts to its GLES 3 backend."
+            "Warning: app requires OpenGL ES 3.0+ support. MetalHLE 0.1 now routes EAGL OpenGL ES 3 contexts to its GLES 3 backend."
         );
     }
 

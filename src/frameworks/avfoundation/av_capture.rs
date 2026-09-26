@@ -924,7 +924,7 @@ fn make_default_video_device(env: &mut crate::Environment) -> id {
     let media_type = ns_string::get_static_str(env, AVMediaTypeVideo);
     retain(env, media_type);
     let name = ns_string::from_rust_string(env, "Android Native Camera".to_string());
-    let uid = ns_string::from_rust_string(env, "com.radekhle.android.camera".to_string());
+    let uid = ns_string::from_rust_string(env, "com.metalhle.android.camera".to_string());
     {
         let host = env.objc.borrow_mut::<AVCaptureDeviceHostObject>(init);
         host.media_type = media_type;

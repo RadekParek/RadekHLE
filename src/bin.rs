@@ -6,5 +6,5 @@
 #![allow(non_snake_case)]
 
 fn main() -> Result<(), String> {
-    radekhle::main(std::env::args())
+    metalhle::main(std::env::args())
 }

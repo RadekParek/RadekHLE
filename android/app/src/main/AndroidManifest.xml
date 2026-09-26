@@ -84,7 +84,7 @@
          -->
 
         <activity
-            android:name="org.radekhle.android.MainActivity"
+            android:name="org.metalhle.android.MainActivity"
             android:alwaysRetainTaskState="true"
             android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
             android:exported="true"
@@ -109,7 +109,7 @@
         </activity>
 
         <provider
-            android:name="org.radekhle.android.DocumentsProvider"
+            android:name="org.metalhle.android.DocumentsProvider"
             android:authorities="${applicationId}.provider"
             android:exported="true"
             android:grantUriPermissions="true"

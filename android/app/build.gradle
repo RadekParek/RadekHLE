@@ -37,10 +37,10 @@ android {
     compileSdkVersion 35
     defaultConfig {
         def branding = getTouchHLEBranding()
-        applicationId 'org.radekhle.android'
+        applicationId 'org.metalhle.android'
         applicationIdSuffix(branding.isEmpty() ? null : branding.toLowerCase())
-        resValue 'string', 'app_name', 'RadekHLE 9.2'
-        buildConfigField 'String', 'APP_NAME', '"RadekHLE 9.2"'
+        resValue 'string', 'app_name', 'MetalHLE 0.1'
+        buildConfigField 'String', 'APP_NAME', '"MetalHLE 0.1"'
         manifestPlaceholders = [
                 icon: join('@drawable/icon', '_', branding.toLowerCase())
         ]
@@ -106,14 +106,14 @@ android {
     lintOptions {
         abortOnError false
     }
-    namespace 'org.radekhle.android'
+    namespace 'org.metalhle.android'
 }
 
 cargoNdk {
     // Make sure this matches the android abiFilters above.
     targets = ["arm64"]
     module = ".."
-    librariesNames = ["libradekhle.so", "libSDL2.so", "libc++_shared.so"]
+    librariesNames = ["libmetalhle.so", "libSDL2.so", "libc++_shared.so"]
     extraCargoEnv = ["ANDROID_NDK": android.ndkDirectory, "ANDROID_NDK_HOME": android.ndkDirectory]
     if (DefaultNativePlatform.host().operatingSystem.isWindows()) {
         def binPath = android.ndkDirectory.toPath().resolve("toolchains/llvm/prebuilt/windows-x86_64/bin")

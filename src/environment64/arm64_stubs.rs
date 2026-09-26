@@ -653,7 +653,7 @@ pub(super) fn dispatch(
             super::return_value(context, format.len() as u64);
         }
         StubKind::GetProgname => {
-            let value = b"RadekHLE";
+            let value = b"MetalHLE";
             let pointer = mem
                 .alloc_zeroed(value.len() as u64 + 1)
                 .map_err(str::to_owned)?;

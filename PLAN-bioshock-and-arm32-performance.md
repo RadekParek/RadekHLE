@@ -24,6 +24,6 @@ Fix the saved/app-picker `--device-family=iphone5` launch failure so device fami
 ## Validation
 
 - `cargo test --lib device_family -- --nocapture`: 2 passed.
-- `cargo build --bin radekhle`: passed with `RUSTFLAGS="-C link-arg=-latomic -C debuginfo=0"`.
+- `cargo build --bin metalhle`: passed with `RUSTFLAGS="-C link-arg=-latomic -C debuginfo=0"`.
 - `--headless --device-family=iphone5`: accepted the legacy alias and reached the expected no-app error.
 - Full BioShock launch validation remains blocked because the referenced IPA is not present in `/home/.z/chat-uploads`.

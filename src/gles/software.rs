@@ -72,7 +72,7 @@ fn native_library_path(names: &[&str]) -> Option<std::path::PathBuf> {
             base.join("mesa"),
             base.join("llvmpipe"),
             base.join("drivers/mesa"),
-            std::path::PathBuf::from("/data/local/tmp/radekhle/mesa"),
+            std::path::PathBuf::from("/data/local/tmp/metalhle/mesa"),
             std::path::PathBuf::from("/data/local/tmp/mesa"),
         ]);
         for root in roots.iter() {
@@ -149,13 +149,13 @@ pub fn configure(enabled: bool) -> bool {
         });
     let (Some(egl), Some(gles)) = (egl, gles) else {
         log_once!(
-            "Native Android CPU rasterizer libraries were not found; using RadekHLE 9.2's built-in CPU rasterizer"
+            "Native Android CPU rasterizer libraries were not found; using MetalHLE 0.1's built-in CPU rasterizer"
         );
         return false;
     };
     if !library_spec_is_loadable(&egl) || !library_spec_is_loadable(&gles) {
         log_once!(
-            "Configured native CPU rasterizer libraries were not found; using RadekHLE 9.2's built-in CPU rasterizer"
+            "Configured native CPU rasterizer libraries were not found; using MetalHLE 0.1's built-in CPU rasterizer"
         );
         return false;
     }
@@ -297,14 +297,14 @@ impl SoftwareState {
         let width = width.max(1) as usize;
         let height = height.max(1) as usize;
         let mut strings = HashMap::new();
-        strings.insert(gl::VENDOR, CString::new("RadekHLE 9.2").unwrap());
+        strings.insert(gl::VENDOR, CString::new("MetalHLE 0.1").unwrap());
         strings.insert(
             gl::RENDERER,
-            CString::new("RadekHLE 9.2 CPU rasterizer").unwrap(),
+            CString::new("MetalHLE 0.1 CPU rasterizer").unwrap(),
         );
         strings.insert(
             gl::VERSION,
-            CString::new("OpenGL ES 3.0 RadekHLE 9.2 CPU rasterizer").unwrap(),
+            CString::new("OpenGL ES 3.0 MetalHLE 0.1 CPU rasterizer").unwrap(),
         );
         strings.insert(
             gl::EXTENSIONS,
@@ -806,7 +806,7 @@ impl GLES for SoftwareGLES<'_> {
     }
 
     unsafe fn driver_description(&self) -> String {
-        "OpenGL ES 3.0 / RadekHLE 9.2 / CPU rasterizer".to_owned()
+        "OpenGL ES 3.0 / MetalHLE 0.1 / CPU rasterizer".to_owned()
     }
     unsafe fn GetError(&mut self) -> GLenum {
         let value = self.state.error;

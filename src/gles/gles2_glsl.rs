@@ -105,7 +105,7 @@ fn translate_glsl_es_with_version(source: &str, version_directive: &'static str)
         out.push('\n');
     }
     if uses_frag_data && version_directive.contains("330") {
-        out.push_str("out vec4 radekhle_FragColor;\n");
+        out.push_str("out vec4 metalhle_FragColor;\n");
     }
 
     // Emit body.
@@ -133,7 +133,7 @@ fn translate_frag_data(source: &str, glsl_330: bool) -> String {
         return source.to_string();
     }
     let replacement = if glsl_330 {
-        "radekhle_FragColor"
+        "metalhle_FragColor"
     } else {
         "gl_FragColor"
     };

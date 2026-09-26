@@ -26,11 +26,11 @@ fn capture_directory() -> PathBuf {
         let path = SDL_AndroidGetInternalStoragePath();
         if !path.is_null() {
             if let Ok(path) = std::ffi::CStr::from_ptr(path).to_str() {
-                return PathBuf::from(path).join("radekhle_capture");
+                return PathBuf::from(path).join("metalhle_capture");
             }
         }
     }
-    PathBuf::from("radekhle_capture")
+    PathBuf::from("metalhle_capture")
 }
 
 fn log_capture_once(message: &str) {

@@ -1,6 +1,6 @@
-# RadekHLE 9.2
+# MetalHLE 0.1
 
-RadekHLE 9.2 is a community fork of [touchHLE](https://github.com/touchHLE/touchHLE), an HLE emulator for early iPhone OS applications. It keeps the upstream Rust architecture and adds Android, ARM64, graphics, and compatibility work.
+MetalHLE 0.1 is a community fork of [touchHLE](https://github.com/touchHLE/touchHLE), an HLE emulator for early iPhone OS applications. It keeps the upstream Rust architecture and adds Android, ARM64, graphics, and compatibility work.
 
 The project is licensed under the Mozilla Public License 2.0. Source and dependency notices are in `LICENSE`, `touchHLE_dylibs/`, and `touchHLE_fonts/`.
 
@@ -19,7 +19,7 @@ git submodule update --init
 RUSTFLAGS="-C link-arg=-latomic" cargo build --release
 ```
 
-For a headless build check, use `cargo check`. The graphical binary needs an SDL2 display at runtime. Release bundles are created by the scripts in `dev-scripts/`; their downloaded archive names use the `RadekHLE_...` prefix.
+For a headless build check, use `cargo check`. The graphical binary needs an SDL2 display at runtime. Release bundles are created by the scripts in `dev-scripts/`; their downloaded archive names use the `MetalHLE_...` prefix.
 
 ## Usage
 
@@ -29,4 +29,4 @@ Only run software you have obtained legally.
 
 ## Credits
 
-RadekHLE 9.2 builds on touchHLE and the open-source projects listed by the upstream project, including Dynarmic, SDL, OpenAL Soft, Symphonia, rust-macho, and the Rust ecosystem. See `--copyright` and the notices in the bundled libraries for the complete licence information.
+MetalHLE 0.1 builds on touchHLE and the open-source projects listed by the upstream project, including Dynarmic, SDL, OpenAL Soft, Symphonia, rust-macho, and the Rust ecosystem. See `--copyright` and the notices in the bundled libraries for the complete licence information.

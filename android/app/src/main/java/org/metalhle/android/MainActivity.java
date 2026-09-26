@@ -1,4 +1,4 @@
-package org.radekhle.android;
+package org.metalhle.android;
 
 import android.Manifest;
 import android.content.Intent;
@@ -43,7 +43,7 @@ import java.util.Comparator;
 import java.util.List;
 
 public class MainActivity extends SDLActivity {
-    private static final String TAG = "RadekHLE 9.2";
+    private static final String TAG = "MetalHLE 0.1";
     private static final int GAME_FOLDER_REQUEST = 4711;
     private static final int CUSTOM_DRIVER_REQUEST = 4712;
     private static final int ADD_IPA_REQUEST = 4713;
@@ -123,7 +123,7 @@ public class MainActivity extends SDLActivity {
         synchronized (captureLock) {
             if (captureRunning) return;
             captureRunning = true;
-            captureDirectory = new File(getFilesDir(), "radekhle_capture");
+            captureDirectory = new File(getFilesDir(), "metalhle_capture");
             if (!captureDirectory.exists() && !captureDirectory.mkdirs()) {
                 Log.e(TAG, "Couldn't create native capture directory: " + captureDirectory);
                 captureRunning = false;
@@ -175,7 +175,7 @@ public class MainActivity extends SDLActivity {
     private void startCameraCapture() {
         if (cameraThread != null || Build.VERSION.SDK_INT < 21) return;
         lastCameraWriteNanos = 0L;
-        cameraThread = new HandlerThread("RadekHLE 9.2-camera");
+        cameraThread = new HandlerThread("MetalHLE 0.1-camera");
         cameraThread.start();
         cameraHandler = new Handler(cameraThread.getLooper());
         try {
@@ -372,7 +372,7 @@ public class MainActivity extends SDLActivity {
                 } catch (Exception ex) {
                     Log.w(TAG, "Native microphone capture stopped", ex);
                 }
-            }, "RadekHLE 9.2-microphone");
+            }, "MetalHLE 0.1-microphone");
             audioThread.start();
         } catch (Exception ex) {
             Log.w(TAG, "Couldn't start native Android microphone", ex);
@@ -385,7 +385,7 @@ public class MainActivity extends SDLActivity {
         return new String[]{
             "c++_shared",
             "SDL2",
-            "radekhle"
+            "metalhle"
         };
     }
 
@@ -512,11 +512,11 @@ public class MainActivity extends SDLActivity {
         new Thread(() -> {
             int copied = copySelectedFolder(treeUri);
 
-            Log.i(TAG, "Imported " + copied + " files from the selected game folder; restarting RadekHLE 9.2 to rescan all games.");
+            Log.i(TAG, "Imported " + copied + " files from the selected game folder; restarting MetalHLE 0.1 to rescan all games.");
             if (mSingleton != null) {
                 mSingleton.runOnUiThread(() -> mSingleton.recreate());
             }
-        }, "RadekHLE 9.2-game-import").start();
+        }, "MetalHLE 0.1-game-import").start();
     }
 
     private static int copySelectedFolder(Uri treeUri) {
@@ -587,7 +587,7 @@ public class MainActivity extends SDLActivity {
 
     private static boolean copyDocument(Uri treeUri, String documentId, File destination) {
         Uri documentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId);
-        File temporary = new File(destination.getPath() + ".radekhle-part");
+        File temporary = new File(destination.getPath() + ".metalhle-part");
         try (InputStream input = getContext().getContentResolver().openInputStream(documentUri)) {
             if (input == null) return false;
             if (temporary.exists() && !temporary.delete()) {
@@ -633,7 +633,7 @@ public class MainActivity extends SDLActivity {
             if (copyDocumentUri(uri, destination)) {
                 Log.i(TAG, "Imported game: " + name + "; keeping the native app picker alive so Rust can rescan it.");
             }
-        }, "RadekHLE 9.2-game-import").start();
+        }, "MetalHLE 0.1-game-import").start();
     }
 
     private static void importSelectedCustomDriver(Uri uri) {
@@ -655,7 +655,7 @@ public class MainActivity extends SDLActivity {
                     mSingleton.runOnUiThread(() -> mSingleton.recreate());
                 }
             }
-        }, "RadekHLE 9.2-custom-driver-import").start();
+        }, "MetalHLE 0.1-custom-driver-import").start();
     }
 
     private static String selectedDocumentName(Uri uri) {
@@ -669,7 +669,7 @@ public class MainActivity extends SDLActivity {
     }
 
     private static boolean copyDocumentUri(Uri uri, File destination) {
-        File temporary = new File(destination.getPath() + ".radekhle-part");
+        File temporary = new File(destination.getPath() + ".metalhle-part");
         try (InputStream input = getContext().getContentResolver().openInputStream(uri)) {
             if (input == null) return false;
             if (temporary.exists() && !temporary.delete()) return false;

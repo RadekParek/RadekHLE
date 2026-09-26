@@ -125,7 +125,7 @@ pub const USER_OPTIONS_FILE: &str = "touchHLE_options.txt";
 
 /// Names of files the user can put a wallpaper image (for the app picker) in.
 #[allow(unused)]
-pub const WALLPAPER_FILES: &[&str] = &["RadekHLE_v7_wallpaper.png"];
+pub const WALLPAPER_FILES: &[&str] = &["MetalHLE_v7_wallpaper.png"];
 
 /// Name of the directory where touchHLE will store sandboxed app data, e.g.
 /// the `Documents` directory.
@@ -183,7 +183,7 @@ pub fn url_for_opening_user_data_dir() -> Result<String, String> {
         // See DocumentsProvider.kt, app/build.gradle and AndroidManifest.xml
         let brand = crate::branding();
         Ok(format!(
-            "content://org.radekhle.android{}{}.provider/root/root",
+            "content://org.metalhle.android{}{}.provider/root/root",
             if brand.is_empty() { "" } else { "." },
             brand.to_lowercase()
         ))
