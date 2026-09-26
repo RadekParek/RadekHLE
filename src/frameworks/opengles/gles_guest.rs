@@ -234,73 +234,6 @@ fn gles_backend_name(gles: &dyn GLES) -> &'static str {
     }
 }
 
-fn log_gl_trace(
-    call_id: u64,
-    function_name: Option<&String>,
-    caller: &'static std::panic::Location<'static>,
-    gles: &mut dyn GLES,
-    error: GLenum,
-    no_skip: bool,
-) {
-    log!(
-        "[GLES TRACE] call_id={} function={} wrapper={}:{} backend={} result=0x{:04x} ({}) dispatch={}",
-        call_id,
-        function_name.map_or("unknown guest wrapper", String::as_str),
-        caller.file(),
-        caller.line(),
-        gles_backend_name(gles),
-        error,
-        gl_error_name(error),
-        if no_skip { "no-skip" } else { "normal" },
-    );
-    log_gpu_state(gles, "trace");
-}
-
-fn trace_gl_error(
-    trace: bool,
-    call_id: u64,
-    first_error: GLenum,
-    function_name: Option<&String>,
-    caller: &'static std::panic::Location<'static>,
-    gles: &mut dyn GLES,
-) {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    static GENERAL_ERROR_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
-    if !trace || first_error == gles11::NO_ERROR {
-        return;
-    }
-    let function_name = function_name.map_or("unknown guest wrapper", String::as_str);
-    let driver = unsafe { gles.driver_description() };
-    let mut error = first_error;
-    loop {
-        let count = GENERAL_ERROR_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-        log!(
-            "[GLES ERROR #{:05}] call_id={} code=0x{:04x} name={} function={} guest_wrapper={}:{} backend={} driver={}",
-            count + 1,
-            call_id,
-            error,
-            gl_error_name(error),
-            function_name,
-            caller.file(),
-            caller.line(),
-            if gles.is_translator() {
-                if gles.is_es2() { "gles1-on-gles2" } else { "gles1-on-gles3" }
-            } else if gles.is_native_es1() {
-                "gles1-native"
-            } else if gles.is_es2() {
-                "gles2"
-            } else {
-                "other"
-            },
-            driver
-        );
-        error = unsafe { gles.GetError() };
-        if error == gles11::NO_ERROR {
-            break;
-        }
-    }
-}
-
 #[track_caller]
 fn with_ctx_and_mem<T, U: Default>(env: &mut Environment, f: T) -> U
 where
@@ -318,7 +251,6 @@ where
         );
         return U::default();
     }
-    let trace = env.options.trace_gl_errors;
     let _perf_scope = crate::perf::gles_scope();
     let caller = std::panic::Location::caller();
     let Some(mut gles) = super::sync_context(
@@ -337,25 +269,14 @@ where
     };
     let call_id = crate::gles::next_gl_call_id();
     let res = f(gles.as_mut(), &mut env.mem);
-    let err = if trace { unsafe { gles.GetError() } } else { 0 };
-    trace_gl_error(
-        trace,
-        call_id,
-        err,
-        env.active_host_function.as_ref(),
-        caller,
-        gles.as_mut(),
-    );
-    if trace {
-        log_gl_trace(
-            call_id,
-            env.active_host_function.as_ref(),
-            caller,
-            gles.as_mut(),
-            err,
-            false,
-        );
-    } else if crate::gles::verbose_logging_enabled() {
+    // Record the call in the forensics ring WITHOUT polling glGetError.
+    // Polling here would drain the GL error flag before the guest's own
+    // glGetError call sees it (changing guest-visible behaviour), and it
+    // doubles the GL call count. Errors are observed where the guest (or
+    // host-internal GL work) observes them, and reported there with the full
+    // recent-call sequence from this ring.
+    crate::gles::forensics_state::record(env.active_host_function.as_deref(), 0);
+    if crate::gles::verbose_logging_enabled() {
         log!(
             "[GLES VERBOSE] call #{} from {}:{}",
             call_id,
@@ -378,7 +299,6 @@ fn with_ctx_and_mem_no_skip<T, U: Default>(env: &mut Environment, f: T) -> U
 where
     T: FnOnce(&mut dyn GLES, &mut Mem) -> U,
 {
-    let trace = env.options.trace_gl_errors;
     let caller = std::panic::Location::caller();
     let Some(mut gles) = super::sync_context(
         &mut env.framework_state.opengles,
@@ -398,25 +318,9 @@ where
     };
     let call_id = crate::gles::next_gl_call_id();
     let res = f(gles.as_mut(), &mut env.mem);
-    let err = if trace { unsafe { gles.GetError() } } else { 0 };
-    trace_gl_error(
-        trace,
-        call_id,
-        err,
-        env.active_host_function.as_ref(),
-        caller,
-        gles.as_mut(),
-    );
-    if trace {
-        log_gl_trace(
-            call_id,
-            env.active_host_function.as_ref(),
-            caller,
-            gles.as_mut(),
-            err,
-            true,
-        );
-    } else if crate::gles::verbose_logging_enabled() {
+    // See the comment in `with_ctx_and_mem`: record without draining.
+    crate::gles::forensics_state::record(env.active_host_function.as_deref(), 0);
+    if crate::gles::verbose_logging_enabled() {
         log!(
             "[GLES VERBOSE] no-skip call #{} from {}:{}",
             call_id,
@@ -438,19 +342,48 @@ fn glGetError(env: &mut Environment) -> GLenum {
             if ignore_gl_errors {
                 return 0;
             }
+            // Errors surfacing here were usually produced by an EARLIER call
+            // (the app's own glGetError drains the queue long after the
+            // culprit), so attach the forensic ring buffer + GL state dump:
+            // it shows which recent call and state produced the error.
+            crate::gles::forensics_state::record(function_name.as_deref(), err);
+            crate::gles::forensics_state::report(
+                gles,
+                err,
+                function_name.as_deref(),
+                std::panic::Location::caller(),
+            );
             use std::sync::atomic::{AtomicUsize, Ordering};
             static APP_ERROR_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
+            static APP_ERROR_SUPPRESSED: AtomicUsize = AtomicUsize::new(0);
             let count = APP_ERROR_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
             let function_name = function_name.as_deref().unwrap_or("unknown guest wrapper");
-            let driver = unsafe { gles.driver_description() };
-            log!(
-                "[GLES APP ERROR #{:05}] code=0x{:x} name={} function={} driver={}",
-                count + 1,
-                err,
-                gl_error_name(err),
-                function_name,
-                driver
-            );
+            // Logging every occurrence with the full driver string flooded
+            // logcat (BioShock produced 500+ lines in one session, which is
+            // real I/O cost on Android). Log the first 10 in full, then
+            // sample every 200th and keep a suppressed-error tally.
+            let log_this_one = count < 10 || (count + 1) % 200 == 0;
+            if log_this_one {
+                let driver = unsafe { gles.driver_description() };
+                log!(
+                    "[GLES APP ERROR #{:05}] code=0x{:x} name={} function={} driver={}",
+                    count + 1,
+                    err,
+                    gl_error_name(err),
+                    function_name,
+                    driver
+                );
+            } else {
+                let suppressed = APP_ERROR_SUPPRESSED.fetch_add(1, Ordering::Relaxed);
+                if (suppressed + 1) % 500 == 0 {
+                    log!(
+                        "[GLES APP ERROR] {} further errors suppressed so far (latest code=0x{:x} {})",
+                        suppressed + 1,
+                        err,
+                        gl_error_name(err)
+                    );
+                }
+            };
         }
         err
     })

@@ -74,6 +74,7 @@ pub mod gles2_on_gl3;
 pub mod gles3_native;
 pub mod gles3_on_gl3;
 mod gles_generic;
+pub mod forensics_state;
 pub mod present;
 pub mod software;
 pub mod util;

@@ -171,6 +171,23 @@ macro_rules! log_sampled {
     }};
 }
 
+/// Emit an already-formatted (possibly multi-line) message through the same
+/// channels as the `echo!` macro. Helper for code that builds its report as
+/// one `String` first (e.g. the GLES forensics dump), so a report is a single
+/// log event instead of many interleaved ones.
+pub fn echo_preformatted(msg: &str) {
+    #[cfg(target_os = "android")]
+    {
+        sdl2::log::log(msg);
+    }
+    #[cfg(not(target_os = "android"))]
+    eprintln!("{}", msg);
+
+    for line in msg.lines() {
+        append_log_line(line);
+    }
+}
+
 /// Print a message (with implicit newline). This should be used for all
 /// touchHLE output that isn't coming from the app itself.
 ///
@@ -219,3 +236,62 @@ macro_rules! echo_no_panic {
 /// Put modules to enable [log_dbg] for here, e.g. "touchHLE::mem" to see when
 /// memory is allocated and freed.
 pub const ENABLED_MODULES: &[&str] = &[];
+
+/// Suppress repetitive guest log lines (apps sometimes NSLog the same line
+/// thousands of times per second from device-check loops; each line is real
+/// I/O on Android). The first few occurrences of a distinct line are shown,
+/// then it is sampled and a running tally is attached.
+pub fn echo_guest_line_deduped(executable: &str, thread: u64, line: &str) {
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+    use std::time::Instant;
+
+    static GATE: Mutex<Option<HashMap<u64, (u32, Instant)>>> = Mutex::new(None);
+    static TOTAL_SUPPRESSED: AtomicUsize = AtomicUsize::new(0);
+
+    const SHOW_FIRST: u32 = 3;
+    const SAMPLE_EVERY: u32 = 200;
+    const RESET_AFTER: std::time::Duration = std::time::Duration::from_secs(10);
+
+    // Cheap content key: length + FNV-1a of the body.
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for &b in line.as_bytes() {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash ^= (line.len() as u64) << 32;
+
+    let mut show = true;
+    let mut count = 0u32;
+    if let Ok(mut guard) = GATE.lock() {
+        let map = guard.get_or_insert_with(HashMap::new);
+        let entry = map.entry(hash).or_insert((0u32, Instant::now()));
+        entry.0 += 1;
+        count = entry.0;
+        if entry.1.elapsed() > RESET_AFTER {
+            *entry = (1, Instant::now());
+            count = 1;
+        }
+        show = count <= SHOW_FIRST || count % SAMPLE_EVERY == 0;
+        if !show {
+            TOTAL_SUPPRESSED.fetch_add(1, Ordering::Relaxed);
+        }
+        // Bound memory: drop the table if it grows unusually large.
+        if map.len() > 256 {
+            map.clear();
+        }
+    }
+    if show {
+        let suffix = if count > 1 {
+            format!(" (x{})", count)
+        } else {
+            String::new()
+        };
+        echo!("{}[{}] {}{}", executable, thread, line, suffix);
+        let suppressed = TOTAL_SUPPRESSED.load(Ordering::Relaxed);
+        if suppressed > 0 && suppressed % 1000 == 0 {
+            echo!("Guest log: {} repetitive lines suppressed so far", suppressed);
+        }
+    }
+}

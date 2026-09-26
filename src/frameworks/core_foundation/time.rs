@@ -26,13 +26,14 @@ const CF_ABSOLUTE_TIME_MIN: f64 = i32::MIN as f64 - SECS_FROM_UNIX_TO_APPLE_EPOC
 const CF_ABSOLUTE_TIME_MAX: f64 = i32::MAX as f64 - SECS_FROM_UNIX_TO_APPLE_EPOCHS as f64;
 
 /// Convert a possibly-invalid `CFAbsoluteTime` to seconds since the Unix
-/// epoch without ever panicking. NaN/±inf are treated as the Apple epoch;
-/// extreme values are clamped; pre-1970 results are returned as negatives.
+/// epoch without ever panicking. NaN/-inf map to the Apple epoch; +inf
+/// saturates to `i32::MAX` (far future); extreme values are clamped;
+/// pre-1970 results are returned as negatives.
 pub fn cf_absolute_time_to_unix_secs(at: CFAbsoluteTime) -> i64 {
-    let at = if at.is_finite() {
-        at.clamp(CF_ABSOLUTE_TIME_MIN, CF_ABSOLUTE_TIME_MAX)
-    } else {
+    let at = if at.is_nan() || at == f64::NEG_INFINITY {
         0.0
+    } else {
+        at.clamp(CF_ABSOLUTE_TIME_MIN, CF_ABSOLUTE_TIME_MAX)
     };
     (SECS_FROM_UNIX_TO_APPLE_EPOCHS as f64 + at).floor() as i64
 }

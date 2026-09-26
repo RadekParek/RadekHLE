@@ -348,6 +348,119 @@ pub fn try_decode_pvrtc(
     true
 }
 
+/// Software-decode a PVRTC sub-image upload (`glCompressedTexSubImage2D`) and
+/// upload it as plain RGBA via `glTexSubImage2D`.
+///
+/// Games that stream compressed textures (BioShock's level loader updates
+/// PVRTC mips in place) hit this path constantly: without it, every update
+/// fails with `GL_INVALID_VALUE`/`GL_INVALID_ENUM` on host drivers that lack
+/// `GL_IMG_texture_compression_pvrtc`, and the streamed-in textures never
+/// appear. Per the GL spec the sub-image payload is the block data for the
+/// sub-rectangle in the format's native (Morton) order, so it can be decoded
+/// exactly like a standalone (width x height) image.
+///
+/// Returns true when the payload was handled (decoded or recognised-but-
+/// skipped); false when the format is not PVRTC and the caller should pass
+/// the call through to the host driver.
+#[allow(clippy::too_many_arguments)]
+pub fn try_decode_pvrtc_sub(
+    gles: &mut dyn GLES,
+    target: GLenum,
+    level: GLint,
+    xoffset: GLint,
+    yoffset: GLint,
+    width: GLsizei,
+    height: GLsizei,
+    internalformat: GLenum,
+    pvrtc_data: &[u8],
+) -> bool {
+    let is_2bit = match internalformat {
+        gles11::COMPRESSED_RGB_PVRTC_4BPPV1_IMG | gles11::COMPRESSED_RGBA_PVRTC_4BPPV1_IMG => false,
+        gles11::COMPRESSED_RGB_PVRTC_2BPPV1_IMG | gles11::COMPRESSED_RGBA_PVRTC_2BPPV1_IMG => true,
+        _ => return false,
+    };
+
+    let Ok(width_u) = u32::try_from(width) else {
+        log!(
+            "Warning: try_decode_pvrtc_sub: invalid width {width} for PVRTC sub-upload \
+             (level {level}, format {internalformat:#x}); skipping upload."
+        );
+        return true;
+    };
+    let Ok(height_u) = u32::try_from(height) else {
+        log!(
+            "Warning: try_decode_pvrtc_sub: invalid height {height} for PVRTC sub-upload \
+             (level {level}, format {internalformat:#x}); skipping upload."
+        );
+        return true;
+    };
+
+    let expected_size = if is_2bit {
+        (width_u.max(16) as usize * height_u.max(8) as usize * 2).div_ceil(8)
+    } else {
+        (width_u.max(8) as usize * height_u.max(8) as usize * 4).div_ceil(8)
+    };
+    if pvrtc_data.len() != expected_size {
+        log_once_fmt!(
+            "Warning: try_decode_pvrtc_sub: PVRTC sub-image payload size mismatch \
+             ({width}x{height}, level {level}, format {internalformat:#x}): got {} bytes, \
+             expected {expected_size}; skipping upload (repeats suppressed).",
+            pvrtc_data.len(),
+        );
+        return true;
+    }
+
+    let is_opaque = matches!(
+        internalformat,
+        gles11::COMPRESSED_RGB_PVRTC_4BPPV1_IMG | gles11::COMPRESSED_RGB_PVRTC_2BPPV1_IMG
+    );
+    let Some(pixels) = cached_pvrtc_pixels(
+        pvrtc_data,
+        is_2bit,
+        width_u,
+        height_u,
+        is_opaque,
+    ) else {
+        log_once_fmt!(
+            "Warning: PVRTC decoder rejected malformed sub-image data; upload skipped \
+             and repeated failures are suppressed"
+        );
+        return true;
+    };
+    let (upload_pixels, upload_width, upload_height) =
+        upscale_rgba8_words(&pixels, width_u, height_u, crate::gles::texture_upscaler())
+            .map_or((pixels, width_u, height_u), |value| value);
+    // When the scale hack upscaled the decoded pixels, the sub-image offset
+    // must be scaled by the same factor or the update lands in the wrong
+    // region of the (already upscaled) uncompressed texture.
+    let x_scale = if width_u != 0 {
+        upload_width / width_u
+    } else {
+        1
+    };
+    let y_scale = if height_u != 0 {
+        upload_height / height_u
+    } else {
+        1
+    };
+    let upload_xoffset = xoffset * x_scale as i32;
+    let upload_yoffset = yoffset * y_scale as i32;
+    unsafe {
+        gles.TexSubImage2D(
+            target,
+            level,
+            upload_xoffset,
+            upload_yoffset,
+            upload_width as GLsizei,
+            upload_height as GLsizei,
+            gles11::RGBA,
+            gles11::UNSIGNED_BYTE,
+            upload_pixels.as_ptr() as *const _,
+        )
+    };
+    true
+}
+
 /// Convert an uncompressed guest texture to RGBA8888 so GLES backends do not
 /// depend on optional BGRA or packed-pixel upload support.
 #[allow(clippy::too_many_arguments)]

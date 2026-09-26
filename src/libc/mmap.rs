@@ -152,7 +152,8 @@ fn munmap(env: &mut Environment, addr: MutVoidPtr, len: GuestUSize) -> i32 {
         env.libc_state.mmap.allocations.remove(&addr);
         0 // success
     } else {
-        log!(
+        log_sampled!(
+            64,
             "Warning: munmap({:?}, {}): unknown mapping, returning -1",
             addr,
             len

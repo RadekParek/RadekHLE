@@ -13,7 +13,7 @@ use super::gles11_raw as gles11;
 use super::gles11_raw::types::*;
 use super::gles2_raw as gles2;
 use super::gles_generic::{GLchar, GLES};
-use super::util::{try_decode_pvrtc, PalettedTextureFormat};
+use super::util::{try_decode_pvrtc, try_decode_pvrtc_sub, PalettedTextureFormat};
 use super::GLESContext;
 use crate::window::{GLContext, GLVersion, Window};
 use std::ffi::CStr;
@@ -1059,6 +1059,26 @@ impl GLES for GLES2Native<'_> {
         image_size: GLsizei,
         data: *const GLvoid,
     ) {
+        // Streamed PVRTC updates must not pass through on hosts that lack
+        // `GL_IMG_texture_compression_pvrtc` (every error here stalls the
+        // game's loader). Decode to RGBA and update the uncompressed texture
+        // that the full-upload path created.
+        if !self.pvrtc_native && !data.is_null() && image_size > 0 {
+            let payload = std::slice::from_raw_parts(data.cast::<u8>(), image_size as usize);
+            if try_decode_pvrtc_sub(
+                self,
+                target,
+                level,
+                xoffset,
+                yoffset,
+                width,
+                height,
+                format,
+                payload,
+            ) {
+                return;
+            }
+        }
         gles2::CompressedTexSubImage2D(
             target, level, xoffset, yoffset, width, height, format, image_size, data,
         )

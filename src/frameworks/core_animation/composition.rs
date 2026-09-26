@@ -183,7 +183,9 @@ pub fn recomposite_if_necessary(env: &mut Environment, force: bool) -> Option<In
     let software_presentation = env.window().is_software_presentation();
     let present_frame_args = (
         env.window().viewport(),
-        env.window().presentation_matrix(),
+        // Guest-authored layer content: mirrored landscape rotation (see
+        // Window::guest_content_presentation_matrix).
+        env.window().guest_content_presentation_matrix(),
         env.window().virtual_cursor_visible_at(),
     );
 

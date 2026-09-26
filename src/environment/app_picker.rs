@@ -1169,7 +1169,9 @@ fn app_picker_inner(
     let mut quick_options_force_composition = false;
     let mut quick_options_angle_driver = false;
     let mut quick_options_log_file = true;
-    let mut quick_options_trace_gl_errors = false;
+    // Mirror the actual launch default (`Options::default()` enables GL error
+    // tracing) so the toggle reflects reality instead of showing OFF.
+    let mut quick_options_trace_gl_errors = env.options.trace_gl_errors && quick_options_log_file;
     let mut quick_options_fast_memory = crate::options::DEFAULT_FAST_MEMORY;
     let mut quick_options_force_32_bit = false;
     let mut quick_options_force_64_bit = false;
@@ -1410,6 +1412,8 @@ fn app_picker_inner(
         msg![env; (quick_options_stuff.verbose_logging_switch) setOn:quick_options_verbose_logging];
     () = msg![env; (quick_options_stuff.verbose_logging_switch)
         setEnabled:quick_options_log_file];
+    () = msg![env; (quick_options_stuff.trace_gl_errors_switch)
+        setOn:quick_options_trace_gl_errors];
     () = msg![env; (quick_options_stuff.trace_gl_errors_switch)
         setEnabled:quick_options_log_file];
     () = msg![env; (quick_options_stuff.fix_texture_min_filter_switch)
@@ -3615,7 +3619,7 @@ fn setup_quick_options(
         RowKind::Label("Verbose logging"),
         RowKind::Switch("verboseLogging:", false),
         RowKind::Label("Trace OpenGL errors"),
-        RowKind::Switch("traceGLErrors:", false),
+        RowKind::Switch("traceGLErrors:", true),
         RowKind::Label("Fullscreen override"),
         RowKind::Switch("fullscreen:", false),
     ];

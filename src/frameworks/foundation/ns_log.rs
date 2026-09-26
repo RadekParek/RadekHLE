@@ -37,11 +37,16 @@ fn NSLogv(
         arg,
     );
     // TODO: Should we include a timestamp, like the real NSLog?
-    echo!(
-        "{}[{}] {}",
-        env.bundle.executable_path().file_name().unwrap(),
-        env.current_thread,
-        String::from_utf8_lossy(&res)
+    // Apps sometimes NSLog the same line in a tight loop (BioShock's device
+    // check printed thousands of copies per session); dedupe to keep real
+    // signal visible and keep log I/O cheap on Android.
+    crate::log::echo_guest_line_deduped(
+        env.bundle
+            .executable_path()
+            .file_name()
+            .unwrap_or("unknown-app"),
+        env.current_thread as u64,
+        String::from_utf8_lossy(&res).trim_end_matches('\n'),
     );
 }
 

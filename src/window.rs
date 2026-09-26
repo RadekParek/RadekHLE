@@ -1856,7 +1856,13 @@ impl Window {
                 );
                 [x, y]
             } else {
-                let matrix = window.rotation_matrix().inverse().unwrap();
+                // Must be the inverse of the matrix used to DISPLAY guest
+                // content (see guest_content_presentation_matrix), so taps
+                // stay aligned with what is on screen for guest-authored UI.
+                let matrix = window
+                    .guest_content_presentation_matrix()
+                    .inverse()
+                    .unwrap();
                 matrix.transform([x, y])
             };
 
@@ -3488,6 +3494,51 @@ impl Window {
             if self.revert_y_axis { -1.0 } else { 1.0 },
         );
         self.rotation_matrix()
+            .multiply(&render_rotation)
+            .multiply(&axis_revert)
+    }
+
+    /// Presentation transform for GUEST-AUTHORED content (UIKit layer trees,
+    /// EAGL renderbuffers).
+    ///
+    /// Guest apps lay out their landscape UI with their own interface-orientation
+    /// compensation baked into the content they hand us, so the quarter turn we
+    /// apply for the physical device pose must be mirrored for landscape
+    /// orientations -- applying the device-pose rotation as-is renders such
+    /// content 180 degrees off. This is the same discovery the legacy
+    /// launch-image path in `display_splash` documents ("applying the normal
+    /// framebuffer rotation to such an image turns it upside down"),
+    /// generalised to all guest content instead of a splash-only workaround.
+    ///
+    /// Host-authored content (launch image, MetalHLE's own movie player views)
+    /// carries no such guest compensation and must keep using
+    /// [Self::presentation_matrix]. Touch hit-testing uses the inverse of this
+    /// matrix so taps stay aligned with what is on screen.
+    ///
+    /// `TOUCHHLE_PRESENT_DEVICE_ROTATION=1` restores the pre-mirror behaviour
+    /// for both display and touch, as an escape hatch.
+    pub fn guest_content_presentation_matrix(&self) -> Matrix<2> {
+        if std::env::var_os("TOUCHHLE_PRESENT_DEVICE_ROTATION").is_some() {
+            return self.presentation_matrix();
+        }
+        let render_rotation = match self.render_rotation {
+            RenderRotation::Default => Matrix::identity(),
+            RenderRotation::Minus90 => Matrix::z_rotation(-FRAC_PI_2),
+            RenderRotation::Minus180 | RenderRotation::Plus180 => Matrix::z_rotation(PI),
+            RenderRotation::Plus90 => Matrix::z_rotation(FRAC_PI_2),
+        };
+        let axis_revert = Matrix::scale_2d(
+            if self.revert_x_axis { -1.0 } else { 1.0 },
+            if self.revert_y_axis { -1.0 } else { 1.0 },
+        );
+        let base_rotation = match self.device_orientation {
+            DeviceOrientation::Portrait | DeviceOrientation::PortraitUpsideDown => {
+                self.rotation_matrix()
+            }
+            DeviceOrientation::LandscapeLeft => Matrix::z_rotation(FRAC_PI_2),
+            DeviceOrientation::LandscapeRight => Matrix::z_rotation(-FRAC_PI_2),
+        };
+        base_rotation
             .multiply(&render_rotation)
             .multiply(&axis_revert)
     }

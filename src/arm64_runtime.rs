@@ -1491,6 +1491,12 @@ fn constant_objc_string_text(mem: &Mem64, address: u64) -> Option<Vec<u8>> {
     if pointer == 0 || length > MAX_CSTRING {
         return None;
     }
+    // The character data must live in a real allocation; otherwise this is a
+    // misread of heap-adjacent memory (e.g. a neighbouring object's kind tag
+    // interpreted as a pointer) rather than a constant-string descriptor.
+    if mem.allocation_size(pointer).is_none() {
+        return None;
+    }
     let bytes = mem.read_bytes(pointer, length).ok()?;
     if bytes.contains(&0) || std::str::from_utf8(&bytes).is_err() {
         return None;
@@ -1502,6 +1508,10 @@ fn objc_string_storage_text(mem: &Mem64, address: u64) -> Option<Vec<u8>> {
     let pointer = mem.read_u64(address.checked_add(56)?).ok()?;
     let length = mem.read_u64(address.checked_add(64)?).ok()?;
     if pointer == 0 || length > MAX_CSTRING {
+        return None;
+    }
+    // Same allocation check as `constant_objc_string_text`.
+    if mem.allocation_size(pointer).is_none() {
         return None;
     }
     let bytes = mem.read_bytes(pointer, length).ok()?;

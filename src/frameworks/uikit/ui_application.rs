@@ -184,6 +184,9 @@ pub const CLASSES: ClassExports = objc_classes! {
 - (())setStatusBarOrientation:(UIInterfaceOrientation)orientation {
     let prev_orientation = env.window().current_rotation();
     let new_orientation = match orientation {
+        // Per Apple docs UIDeviceOrientationUnknown (0) means the orientation
+        // cannot be determined; apps (e.g. BioShock's init) pass it routinely.
+        UIDeviceOrientationUnknown => return,
         UIDeviceOrientationPortrait => DeviceOrientation::Portrait,
         UIDeviceOrientationPortraitUpsideDown => DeviceOrientation::PortraitUpsideDown,
         UIDeviceOrientationLandscapeLeft => DeviceOrientation::LandscapeLeft,
