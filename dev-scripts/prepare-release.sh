@@ -32,7 +32,7 @@ if [ "$PHASE" = "--prepare-files" ]; then
 
     cp ../OPTIONS_HELP.txt new_release/
     cp ../touchHLE_default_options.txt new_release/
-    cp ../res/RadekHLE_v7_wallpaper.png new_release/
+    cp ../res/MetalHLE_v7_wallpaper.png new_release/
     cp ../touchHLE_options.txt new_release/
 elif [ "$PHASE" = "--create-zip-windows" ] || [ "$PHASE" = "--create-zip-linux" ] || [ "$PHASE" = "--create-zip-macos" ] || [ "$PHASE" = "--create-zip-android" ]; then
     shift
@@ -90,6 +90,6 @@ else
     echo "  ./prepare-release.sh --create-zip-macos path/to/touchHLE.dmg -o touchHLE_vX.Y.Z_macOS_x86_x64.zip"
     echo "  ./prepare-release.sh --create-zip-windows path/to/touchHLE.exe -o touchHLE_vX.Y.Z_Windows_x86_64.zip"
     echo "  ./prepare-release.sh --create-zip-linux path/to/touchHLE -o touchHLE_vX.Y.Z_Linux_x86_64.zip"
-    echo "  ./prepare-release.sh --create-zip-android path/to/RadekHLE-3.0.apk -o RadekHLE-3.0_vX.Y.Z_Android_AArch64.zip"
+    echo "  ./prepare-release.sh --create-zip-android path/to/MetalHLE-3.0.apk -o MetalHLE-3.0_vX.Y.Z_Android_AArch64.zip"
     exit 1
 fi
