@@ -2033,15 +2033,53 @@ unsafe fn present_renderbuffer(env: &mut Environment, drawable: id, context_toke
     let device_family = env.window.as_mut().unwrap().device_family();
     let device_orientation = env.window.as_mut().unwrap().current_rotation();
     // The fullscreen EAGL path bypasses UIKit/Core Animation composition,
-    // so apply the window's canonical device rotation exactly once here for
-    // every device family.
+    // For iPad apps in a non-portrait orientation, the UIKit auto-rotation
+    // path (`UIWindow addSubview:` in ui_window.rs) applies a rotation
+    // transform to the rootViewController's view so that the app, which
+    // typically draws content "upright" inside the EAGL layer's portrait
+    // bounds, ends up rotated for landscape display when Core Animation
+    // composites it. We bypass CA composition for EAGL apps that call
+    // `presentRenderbuffer:` directly, so we have to replicate that
+    // additional rotation here. Without it, iPad landscape games (e.g.
+    // Plants vs. Zombies HD) render upside-down. iPhone-only landscape
+    // games (e.g. BioShock's main menu) typically rotate their drawing
+    // themselves, so we must NOT apply the extra rotation for them.
+    let needs_autorotation_compensation = device_family.is_ipad()
+        && !matches!(
+            device_orientation,
+            crate::window::DeviceOrientation::Portrait
+        );
     let mut rotation_matrix = if std::env::var_os("TOUCHHLE_DISABLE_PRESENT_ROTATION").is_some() {
         log_once!(
             "TOUCHHLE_DISABLE_PRESENT_ROTATION=1: presenting EAGL renderbuffer without texture rotation"
         );
         crate::matrix::Matrix::<2>::identity()
     } else {
-        env.window.as_mut().unwrap().presentation_matrix()
+        // Keep an explicitly-configured render rotation working, but do not
+        // invent one when the app didn't ask for it (iPhone landscape games
+        // rotate their own drawing; adding our own double-rotates them).
+        let extra_render_rotation = match env.window.as_ref().unwrap().render_rotation() {
+            crate::options::RenderRotation::Default => crate::matrix::Matrix::<2>::identity(),
+            crate::options::RenderRotation::Minus90 => {
+                crate::matrix::Matrix::z_rotation(-std::f32::consts::FRAC_PI_2)
+            }
+            crate::options::RenderRotation::Minus180 | crate::options::RenderRotation::Plus180 => {
+                crate::matrix::Matrix::z_rotation(std::f32::consts::PI)
+            }
+            crate::options::RenderRotation::Plus90 => {
+                crate::matrix::Matrix::z_rotation(std::f32::consts::FRAC_PI_2)
+            }
+        };
+        let base = if needs_autorotation_compensation {
+            env.window
+                .as_mut()
+                .unwrap()
+                .rotation_matrix()
+                .multiply(&crate::matrix::Matrix::z_rotation(std::f32::consts::PI))
+        } else {
+            env.window.as_mut().unwrap().rotation_matrix()
+        };
+        base.multiply(&extra_render_rotation)
     };
     if std::env::var_os("TOUCHHLE_TRANSLATOR_DISABLE_ROTATION").is_some() {
         log_once_fmt!(
