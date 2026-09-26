@@ -12,6 +12,8 @@ use crate::gles::{gles11_raw as gles11, GLES};
 use crate::mem::{ConstPtr, ConstVoidPtr, GuestISize, GuestUSize, Mem, MutPtr, MutVoidPtr, Ptr};
 use crate::objc::nil;
 use crate::Environment;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt::Write as FmtWrite;
 use std::slice::from_raw_parts;
 use touchHLE_gl_bindings::gles11::{
@@ -340,6 +342,36 @@ fn glGetError(env: &mut Environment) -> GLenum {
         let err = unsafe { gles.GetError() };
         if err != 0 {
             if ignore_gl_errors {
+                return 0;
+            }
+            // Benign driver-quirk errors: the app's own glGetError probing
+            // legitimately surfaces these, so keep the GL semantics (the app
+            // still sees the error code) but do NOT log or forensic-report
+            // them -- they are not emulator bugs and they flood the log.
+            //
+            // - GetActiveUniform/GetActiveAttrib with an out-of-range index:
+            //   guest enumeration loops always over-run by one; the return
+            //   values already say GL_FALSE/0, so the error is expected.
+            // - MapBufferOES/UnmapBufferOES: the staging-buffer emulation
+            //   intentionally allows unbalanced map/unmap sequences (see
+            //   gles2_native.rs); the driver rejects the extra ones.
+            let benign_probe = function_name.as_deref().is_some_and(|f| {
+                let f = f.to_ascii_lowercase();
+                f.contains("getactiveuniform")
+                    || f.contains("getactiveattrib")
+                    || f.contains("mapbufferoes")
+                    || f.contains("unmapbufferoes")
+            });
+            if benign_probe {
+                return err;
+            }
+            // GL_INVALID_FRAMEBUFFER_OPERATION (0x506): on Adreno drivers the
+            // multisample FBO pair is reported incomplete even though we lie
+            // to the app about completeness (see glCheckFramebufferStatusOES).
+            // Draws still happen on the resolve path, so the app seeing 0x506
+            // only makes it disable its render path (black screens in
+            // BioShock). Swallow it entirely.
+            if err == 0x0506 {
                 return 0;
             }
             // Errors surfacing here were usually produced by an EARLIER call
@@ -706,9 +738,25 @@ fn log_game_rect(
     height: GLsizei,
     submitted: (GLint, GLint, GLsizei, GLsizei),
 ) {
+    // Log only on change: games like BioShock/MCPE re-issue the same viewport
+    // and scissor every frame, which flooded the log with thousands of
+    // identical lines (real I/O cost on Android).
+    thread_local! {
+        static LAST: RefCell<HashMap<&'static str, (GLint, GLint, GLsizei, GLsizei)>> =
+            RefCell::new(HashMap::new());
+    }
+    let Some(label_static) = LAST.with(|last| {
+        let mut last = last.borrow_mut();
+        let changed = last.get(label) != Some(&(x, y, width, height));
+        last.insert(intern_rect_label(label), (x, y, width, height));
+        changed.then(|| intern_rect_label(label))
+    }) else {
+        return;
+    };
     if crate::gles::translator_tracing_enabled() {
         log!(
-            "[{label} GAME SPACE] bundle={} requested=({}, {}, {}, {}) submitted=({}, {}, {}, {}) scale_hack={} drawable conversion is deferred to final presentation",
+            "[{} GAME SPACE] bundle={} requested=({}, {}, {}, {}) submitted=({}, {}, {}, {}) scale_hack={} drawable conversion is deferred to final presentation (logged on change only)",
+            label_static,
             env.bundle.bundle_identifier(),
             x,
             y,
@@ -721,6 +769,20 @@ fn log_game_rect(
             env.options.scale_hack,
         );
     }
+}
+
+fn intern_rect_label(label: &str) -> &'static str {
+    thread_local! {
+        static INTERNED: RefCell<HashMap<String, &'static str>> = RefCell::new(HashMap::new());
+    }
+    INTERNED.with(|cache| {
+        if let Some(interned) = cache.borrow().get(label) {
+            return *interned;
+        }
+        let leaked: &'static str = Box::leak(label.to_string().into_boxed_str());
+        cache.borrow_mut().insert(label.to_string(), leaked);
+        leaked
+    })
 }
 
 fn glScissor(env: &mut Environment, x: GLint, y: GLint, width: GLsizei, height: GLsizei) {

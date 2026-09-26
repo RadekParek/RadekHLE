@@ -1087,6 +1087,18 @@ impl GLES for GLES2Native<'_> {
         if gles2::MapBufferOES::is_loaded() {
             let mapped = gles2::MapBufferOES(target, access);
             if !mapped.is_null() {
+                // Sentinel entry (empty staging): marks this target as
+                // driver-mapped so the matching UnmapBufferOES driver-unmaps
+                // instead of hitting the driver with an unrequested unmap
+                // (Adreno reports GL_INVALID_OPERATION for those).
+                match self
+                    .map_buffer_stagings
+                    .iter_mut()
+                    .find(|(t, _)| *t == target)
+                {
+                    Some(entry) => *entry = (target, Vec::new()),
+                    None => self.map_buffer_stagings.push((target, Vec::new())),
+                }
                 return mapped;
             }
             // Driver exports the entry point but refuses the map (common on
@@ -1107,7 +1119,18 @@ impl GLES for GLES2Native<'_> {
         // Replace any stale staging entry for this target (an unbalanced
         // earlier map without unmap); keep other targets' entries intact.
         match self.map_buffer_stagings.iter_mut().find(|(t, _)| *t == target) {
-            Some(entry) => *entry = (target, staging),
+            Some(entry) => {
+                if entry.1.is_empty() {
+                    // Replacing a driver-mapped sentinel: release the stale
+                    // driver mapping so the driver-side map count stays
+                    // balanced (swallow the error it generates).
+                    if gles2::UnmapBufferOES::is_loaded() {
+                        gles2::UnmapBufferOES(target);
+                        gles2::GetError();
+                    }
+                }
+                *entry = (target, staging);
+            }
             None => self.map_buffer_stagings.push((target, staging)),
         }
         ptr as *mut GLvoid
@@ -1119,6 +1142,13 @@ impl GLES for GLES2Native<'_> {
             .position(|(mapped_target, _)| *mapped_target == target)
         {
             let (_, staging) = self.map_buffer_stagings.swap_remove(pos);
+            if staging.is_empty() {
+                // Sentinel: the buffer was driver-mapped; just unmap it.
+                if gles2::UnmapBufferOES::is_loaded() {
+                    return gles2::UnmapBufferOES(target);
+                }
+                return gles2::TRUE;
+            }
             gles2::BufferSubData(
                 target,
                 0,

@@ -24,7 +24,11 @@ use crate::gles::gles11_raw as gles11; // constants only
 use crate::gles::GLES;
 
 /// Ring capacity: enough to cover a full guest frame of GL work.
-const RING_SIZE: usize = 96;
+const RING_SIZE: usize = 64;
+
+/// Max ring entries printed per report (the full ring is kept in memory;
+/// only the tail is printed to keep reports short).
+const REPORT_MAX_OPS: usize = 48;
 
 /// Max characters kept for a single args capture.
 const ARGS_MAX: usize = 160;
@@ -51,6 +55,11 @@ struct Ring {
     gen: u64,
     /// How many times each error code has been reported from this thread.
     reported: HashMap<u32, u32>,
+    /// Fingerprint of the last emitted report (error + function + op-name
+    /// sequence). Identical consecutive reports are suppressed: a repeating
+    /// driver-quirk loop (e.g. the same map/unmap cycle) would otherwise
+    /// flood the log with structurally identical dumps.
+    last_fingerprint: Option<u64>,
 }
 
 impl Ring {
@@ -267,6 +276,30 @@ pub fn report(
     if err == 0 || !should_report(err) {
         return false;
     }
+    // Fingerprint: error code + active function + the op-name sequence of the
+    // ring. Repeating identical dumps (same driver quirk looping) are skipped.
+    let fingerprint: u64 = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        err.hash(&mut hasher);
+        function.hash(&mut hasher);
+        RING.with(|r| {
+            let ring = r.borrow();
+            for op in &ring.ops {
+                op.name.hash(&mut hasher);
+            }
+        });
+        hasher.finish()
+    };
+    let duplicate = RING.with(|r| {
+        let mut ring = r.borrow_mut();
+        let dup = ring.last_fingerprint == Some(fingerprint);
+        ring.last_fingerprint = Some(fingerprint);
+        dup
+    });
+    if duplicate {
+        return false;
+    }
     let mut out = String::with_capacity(4096);
     let _ = writeln!(
         out,
@@ -285,7 +318,8 @@ pub fn report(
     );
     RING.with(|r| {
         let ring = r.borrow();
-        for op in &ring.ops {
+        let ops: Vec<_> = ring.ops.iter().rev().take(REPORT_MAX_OPS).collect();
+        for op in ops.iter().rev() {
             let marker = if op.err == err && err != 0 {
                 "  <-- FIRST ERROR HERE?"
             } else {

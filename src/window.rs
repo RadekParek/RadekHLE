@@ -3518,9 +3518,22 @@ impl Window {
     /// `TOUCHHLE_PRESENT_DEVICE_ROTATION=1` restores the pre-mirror behaviour
     /// for both display and touch, as an escape hatch.
     pub fn guest_content_presentation_matrix(&self) -> Matrix<2> {
+        // The guest authors its frames already rotated for the device
+        // orientation it was told about (via the interface-orientation APIs),
+        // so guest content must NOT get an extra device quarter-turn here —
+        // that double-rotated landscape games (everything 180° wrong when the
+        // device rotated). Presentation is identical to window content: only
+        // the user-configured render rotation and axis reverts apply.
+        // TOUCHHLE_PRESENT_DEVICE_ROTATION=1 restores the old behaviour for
+        // experimentation.
         if std::env::var_os("TOUCHHLE_PRESENT_DEVICE_ROTATION").is_some() {
             return self.presentation_matrix();
         }
+        self.presentation_rotation_and_revert_matrix()
+    }
+
+    /// Render-rotation + axis-revert only (no device orientation component).
+    fn presentation_rotation_and_revert_matrix(&self) -> Matrix<2> {
         let render_rotation = match self.render_rotation {
             RenderRotation::Default => Matrix::identity(),
             RenderRotation::Minus90 => Matrix::z_rotation(-FRAC_PI_2),
@@ -3531,16 +3544,7 @@ impl Window {
             if self.revert_x_axis { -1.0 } else { 1.0 },
             if self.revert_y_axis { -1.0 } else { 1.0 },
         );
-        let base_rotation = match self.device_orientation {
-            DeviceOrientation::Portrait | DeviceOrientation::PortraitUpsideDown => {
-                self.rotation_matrix()
-            }
-            DeviceOrientation::LandscapeLeft => Matrix::z_rotation(FRAC_PI_2),
-            DeviceOrientation::LandscapeRight => Matrix::z_rotation(-FRAC_PI_2),
-        };
-        base_rotation
-            .multiply(&render_rotation)
-            .multiply(&axis_revert)
+        render_rotation.multiply(&axis_revert)
     }
 
     fn presentation_quarter_turns(&self) -> i32 {
