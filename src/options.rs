@@ -600,7 +600,7 @@ impl Default for Options {
             dumping_options: Default::default(),
             dumping_file: crate::paths::user_data_base_path().join("DUMP.txt"),
             ignore_gl_errors: false,
-            trace_gl_errors: false,
+            trace_gl_errors: true,
             verbose_logging: false,
             shader_compatibility_fixes: true,
             fix_texture_min_filter: cfg!(target_os = "android"),

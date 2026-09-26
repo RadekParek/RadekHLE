@@ -132,7 +132,7 @@ impl GLESContext for GLES3NativeContext {
         &'gl_ctx mut self,
         window: &'win mut Window,
     ) -> Box<dyn GLES + 'gl_ctx> {
-        if self.gl_ctx.is_current() && self.is_loaded && Window::gl_ctx_bound_on_this_thread() {
+        if self.gl_ctx.is_current() && self.is_loaded {
             return Box::new(GLES3Native {
                 _gl_lifetime: PhantomData,
                 pvrtc_native: self.pvrtc_native,
@@ -167,7 +167,7 @@ impl GLESContext for GLES3NativeContext {
         make_current_fn: &mut dyn FnMut(&GLContext),
         loader_fn: &mut dyn FnMut(&'static str) -> *const std::ffi::c_void,
     ) -> Box<dyn GLES + 'gl_ctx> {
-        if self.gl_ctx.is_current() && self.is_loaded && Window::gl_ctx_bound_on_this_thread() {
+        if self.gl_ctx.is_current() && self.is_loaded {
             return Box::new(GLES3Native {
                 _gl_lifetime: PhantomData,
                 pvrtc_native: self.pvrtc_native,

@@ -868,6 +868,11 @@ pub const CLASSES: ClassExports = objc_classes! {
     // No audio session integration needed in the emulator.
 }
 
+- (())setCurrentPlaybackRate:(f32)rate { // no variable-speed playback in MetalHLE yet
+    // Accept and ignore: timing is driven by the internal playback clock, so
+    // 0.0 (pause-like) and 1.0 both map to existing clock behaviour.
+}
+
 - (())setFullscreen:(bool)_fullscreen {
     // Fullscreen is always implied; no UI chrome to hide.
 }
