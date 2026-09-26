@@ -77,13 +77,26 @@ pub const CLASSES: ClassExports = objc_classes! {
 // MARK: - Geometry
 
 - (CGRect)bounds {
+    static LANDSCAPE_BOUNDS_ENV: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let landscape_bounds_enabled = *LANDSCAPE_BOUNDS_ENV
+        .get_or_init(|| std::env::var_os("TOUCHHLE_LANDSCAPE_UISCREEN_BOUNDS").is_some());
     let (width, height) = screen_size_for_current_orientation(env);
-    if std::env::var_os("TOUCHHLE_LANDSCAPE_UISCREEN_BOUNDS").is_some() {
-        log!(
-            "TOUCHHLE_LANDSCAPE_UISCREEN_BOUNDS=1: UIScreen bounds reporting {}x{}",
-            width,
-            height
-        );
+    if landscape_bounds_enabled {
+        // `-[UIScreen bounds]` is queried every single frame by most games —
+        // both the env-var lookup and an unconditional log line here showed up
+        // as thousands of logcat writes per session, which is a measurable
+        // performance drag on Android. Log only when the reported size
+        // actually changes.
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static LAST_SIZE: AtomicU32 = AtomicU32::new(0);
+        let key = (width as u32) << 16 | (height as u32 & 0xFFFF);
+        if LAST_SIZE.swap(key, Ordering::Relaxed) != key {
+            log!(
+                "TOUCHHLE_LANDSCAPE_UISCREEN_BOUNDS=1: UIScreen bounds reporting {}x{}",
+                width,
+                height
+            );
+        }
     }
     CGRect {
         origin: CGPoint { x: 0.0, y: 0.0 },

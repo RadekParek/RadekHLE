@@ -920,6 +920,40 @@ unsafe fn present_renderbuffer_readback(
     env.options.force_composition = true;
     crate::frameworks::core_animation::recomposite_if_necessary(env, true);
     env.options.force_composition = force_composition;
+    drain_gl_errors(env, "present_renderbuffer_readback");
+}
+
+/// Drain any GL error flag left over by the emulator's own internal GL work
+/// (EAGL present/readback, texture emulation, shader fixes). Without this,
+/// errors raised by *our* code leak into the app's error state: the app's
+/// next `glGetError()` returns a code it can't attribute to any of its own
+/// calls, which can break app-side error handling (e.g. Minecraft PE's world
+/// creation aborts on unexpected GL errors).
+pub(crate) fn drain_gl_errors(env: &mut Environment, site: &str) {
+    let maybe_gles = super::sync_context(
+        &mut env.framework_state.opengles,
+        &mut env.objc,
+        env.window.as_mut().unwrap(),
+        env.current_thread,
+    );
+    if let Some(mut gles) = maybe_gles {
+        let mut drained = 0;
+        unsafe {
+            while gles.GetError() != gles11::NO_ERROR {
+                drained += 1;
+                if drained >= 16 {
+                    break;
+                }
+            }
+        }
+        if drained > 0 {
+            log_dbg!(
+                "Drained {} leaked GL error flag(s) after emulator-internal GL work at {}.",
+                drained,
+                site
+            );
+        }
+    }
 }
 
 /// Implement framerate limiting.
@@ -1051,14 +1085,96 @@ unsafe fn read_renderbuffer(
     mut pixel_buffer: Vec<u8>,
     override_renderbuffer: Option<GLuint>,
 ) -> (Vec<u8>, u32, u32) {
+    // My internal GL calls below (Finish, ReadPixels, framebuffer re-attachment)
+    // can raise GL errors on some drivers (e.g. Adreno raising GL_INVALID_VALUE
+    // for certain ReadPixels formats). The GL error flag is a single sticky slot
+    // shared with the app: if I leave my errors there, the app's next glGetError()
+    // sees a bogus GL_INVALID_VALUE and some games (e.g. Minecraft PE 0.10.4
+    // world creation) abort. Consume any error my helper generates and never let
+    // it leak into the app's view of the context.
+    fn swallow_internal_gl_errors(gles: &mut dyn GLES) {
+        unsafe {
+            let mut err = gles.GetError();
+            while err != gles11::NO_ERROR {
+                log_once_fmt!(
+                    "[EAGL READBACK] internal GL error 0x{:x} suppressed (not leaked to the app).",
+                    err
+                );
+                err = gles.GetError();
+            }
+        }
+    }
     let current_renderbuffer: GLuint = get_int(gles, gles11::RENDERBUFFER_BINDING_OES) as _;
     let renderbuffer: GLuint = override_renderbuffer.unwrap_or(current_renderbuffer);
     if renderbuffer != current_renderbuffer {
         gles.BindRenderbufferOES(gles11::RENDERBUFFER_OES, renderbuffer);
     }
     let (width, height) = get_renderbuffer_size(gles);
-    let width_u32: u32 = width.try_into().unwrap_or(0);
-    let height_u32: u32 = height.try_into().unwrap_or(0);
+    let mut width_u32: u32 = width.try_into().unwrap_or(0);
+    let mut height_u32: u32 = height.try_into().unwrap_or(0);
+
+    // Some apps (e.g. Dead Space) present a renderbuffer that never received
+    // drawable storage on the native GLES1 path — the driver reports a 0x0
+    // size while the app actually rendered into the default framebuffer
+    // (framebuffer 0, i.e. the window surface). Reading that framebuffer
+    // directly at the viewport size recovers the rendered frame instead of
+    // failing (which painted the screen black every frame).
+    if renderbuffer != 0 && (width_u32 == 0 || height_u32 == 0) {
+        let vp = get_ints::<4>(gles, gles11::VIEWPORT);
+        let (vp_w, vp_h) = (vp[2].max(0) as u32, vp[3].max(0) as u32);
+        if vp_w > 0 && vp_h > 0 {
+            log_once_fmt!(
+                "[EAGL READBACK] renderbuffer {} has no storage ({}x{}); reading the \
+                 default framebuffer at viewport size {}x{} instead.",
+                renderbuffer,
+                width_u32,
+                height_u32,
+                vp_w,
+                vp_h
+            );
+            let old_framebuffer: GLuint =
+                get_int(gles, gles11::FRAMEBUFFER_BINDING_OES) as _;
+            let old_pack_alignment = get_int(gles, gles11::PACK_ALIGNMENT);
+            gles.BindFramebufferOES(gles11::FRAMEBUFFER_OES, 0);
+            let size = (vp_w as usize)
+                .checked_mul(vp_h as usize)
+                .and_then(|s| s.checked_mul(4))
+                .unwrap_or(0);
+            pixel_buffer.clear();
+            pixel_buffer.reserve_exact(size);
+            gles.PixelStorei(gles11::PACK_ALIGNMENT, 1);
+            gles.Finish();
+            gles.ReadPixels(
+                0,
+                0,
+                vp[2],
+                vp[3],
+                gles11::RGBA,
+                gles11::UNSIGNED_BYTE,
+                pixel_buffer.as_mut_ptr() as *mut _,
+            );
+            gles.PixelStorei(gles11::PACK_ALIGNMENT, old_pack_alignment);
+            pixel_buffer.set_len(size);
+            gles.BindFramebufferOES(gles11::FRAMEBUFFER_OES, old_framebuffer);
+            swallow_internal_gl_errors(gles);
+            if renderbuffer != current_renderbuffer {
+                gles.BindRenderbufferOES(gles11::RENDERBUFFER_OES, current_renderbuffer);
+            }
+            return (pixel_buffer, vp_w, vp_h);
+        }
+        log!(
+            "[EAGL READBACK] invalid renderbuffer={} size={}x{}",
+            renderbuffer,
+            width,
+            height
+        );
+        swallow_internal_gl_errors(gles);
+        if renderbuffer != current_renderbuffer {
+            gles.BindRenderbufferOES(gles11::RENDERBUFFER_OES, current_renderbuffer);
+        }
+        pixel_buffer.clear();
+        return (pixel_buffer, width_u32, height_u32);
+    }
     if renderbuffer == 0 || width_u32 == 0 || height_u32 == 0 {
         log!(
             "[EAGL READBACK] invalid renderbuffer={} size={}x{}",
@@ -1104,12 +1220,14 @@ unsafe fn read_renderbuffer(
         gles.PixelStorei(gles11::PACK_ALIGNMENT, old_pack_alignment);
         pixel_buffer.set_len(size);
         let any_nonzero = pixel_buffer.iter().any(|&b| b != 0);
+        swallow_internal_gl_errors(gles);
         if any_nonzero {
             if renderbuffer != current_renderbuffer {
                 gles.BindRenderbufferOES(gles11::RENDERBUFFER_OES, current_renderbuffer);
             }
             return (pixel_buffer, width_u32, height_u32);
         }
+        swallow_internal_gl_errors(gles);
         // The bound FBO read back as all-zero. It may not have this
         // renderbuffer attached (the app might still be rendering into a
         // texture FBO); fall through to the explicit re-attach path.
@@ -1155,6 +1273,7 @@ unsafe fn read_renderbuffer(
     if renderbuffer != current_renderbuffer {
         gles.BindRenderbufferOES(gles11::RENDERBUFFER_OES, current_renderbuffer);
     }
+    swallow_internal_gl_errors(gles);
 
     (pixel_buffer, width_u32, height_u32)
 }

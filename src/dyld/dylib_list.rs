@@ -143,6 +143,18 @@ pub const AD_SUPPORT: super::HostDylib = super::HostDylib {
     function_exports: &[],
 };
 
+// SafariServices (stub — iOS 6+ social/web SSO framework. Apps like Angry Birds
+// Star Wars II link it as a hard Mach-O dependency but only ever use it behind
+// a "can it open" check or for optional logins; satisfying the dependency is
+// enough for them to launch. No-op classes can be added here if needed.)
+pub const SAFARI_SERVICES: super::HostDylib = super::HostDylib {
+    path: "/System/Library/Frameworks/SafariServices.framework/SafariServices",
+    aliases: &[],
+    class_exports: &[],
+    constant_exports: &[],
+    function_exports: &[],
+};
+
 // CoreImage (stub — no real CIFilter pipeline yet, but apps that include
 // the framework reach the kCIInputImageKey / kCIContextWorkingColorSpace /
 // kCIOutputImageKey constants via Mach-O lookup; without a HostDylib entry
@@ -247,6 +259,7 @@ pub const DYLIB_LIST: &[&super::HostDylib] = &[
     &frameworks::core_bluetooth::DYLIB,
     &frameworks::gl_kit::DYLIB,
     &frameworks::image_io::DYLIB,
+    &SAFARI_SERVICES,
 ];
 
 #[cfg(test)]
