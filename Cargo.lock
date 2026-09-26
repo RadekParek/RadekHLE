@@ -1138,6 +1138,51 @@ dependencies = [
 ]
 
 [[package]]
+name = "metalhle"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "bzip2",
+ "caf",
+ "cargo-license",
+ "cc",
+ "cmake",
+ "corosensei",
+ "digest",
+ "encoding_rs",
+ "gl_generator",
+ "hound",
+ "lazy_static",
+ "libc",
+ "mach_object",
+ "md-5",
+ "nibarchive",
+ "plist",
+ "pollster",
+ "quick-xml 0.38.4",
+ "raw-window-handle",
+ "regex",
+ "rusqlite",
+ "rusttype",
+ "sdl2",
+ "sdl2-sys",
+ "sha1",
+ "sha2",
+ "symphonia",
+ "touchHLE_dynarmic_wrapper",
+ "touchHLE_gl_bindings",
+ "touchHLE_libxml2_wrapper",
+ "touchHLE_openal_soft_wrapper",
+ "touchHLE_pvrt_decompress_wrapper",
+ "touchHLE_stb_image_wrapper",
+ "touchHLE_version",
+ "ureq",
+ "wgpu",
+ "windows-sys 0.61.2",
+ "zip",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1398,51 +1443,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "41f2619966050689382d2b44f664f4bc593e129785a36d6ee376ddf37259b924"
 dependencies = [
  "proc-macro2",
-]
-
-[[package]]
-name = "radekhle"
-version = "0.2.3"
-dependencies = [
- "bytemuck",
- "bzip2",
- "caf",
- "cargo-license",
- "cc",
- "cmake",
- "corosensei",
- "digest",
- "encoding_rs",
- "gl_generator",
- "hound",
- "lazy_static",
- "libc",
- "mach_object",
- "md-5",
- "nibarchive",
- "plist",
- "pollster",
- "quick-xml 0.38.4",
- "raw-window-handle",
- "regex",
- "rusqlite",
- "rusttype",
- "sdl2",
- "sdl2-sys",
- "sha1",
- "sha2",
- "symphonia",
- "touchHLE_dynarmic_wrapper",
- "touchHLE_gl_bindings",
- "touchHLE_libxml2_wrapper",
- "touchHLE_openal_soft_wrapper",
- "touchHLE_pvrt_decompress_wrapper",
- "touchHLE_stb_image_wrapper",
- "touchHLE_version",
- "ureq",
- "wgpu",
- "windows-sys 0.61.2",
- "zip",
 ]
 
 [[package]]
@@ -2045,7 +2045,7 @@ dependencies = [
 
 [[package]]
 name = "touchHLE_dynarmic_wrapper"
-version = "0.2.3"
+version = "0.1.0"
 dependencies = [
  "cc",
  "cmake",
@@ -2053,14 +2053,14 @@ dependencies = [
 
 [[package]]
 name = "touchHLE_gl_bindings"
-version = "0.2.3"
+version = "0.1.0"
 dependencies = [
  "gl_generator",
 ]
 
 [[package]]
 name = "touchHLE_libxml2_wrapper"
-version = "0.2.3"
+version = "0.1.0"
 dependencies = [
  "cc",
  "cmake",
@@ -2068,28 +2068,28 @@ dependencies = [
 
 [[package]]
 name = "touchHLE_openal_soft_wrapper"
-version = "0.2.3"
+version = "0.1.0"
 dependencies = [
  "cmake",
 ]
 
 [[package]]
 name = "touchHLE_pvrt_decompress_wrapper"
-version = "0.2.3"
+version = "0.1.0"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "touchHLE_stb_image_wrapper"
-version = "0.2.3"
+version = "0.1.0"
 dependencies = [
  "cc",
 ]
 
 [[package]]
 name = "touchHLE_version"
-version = "0.2.3"
+version = "0.1.0"
 
 [[package]]
 name = "ttf-parser"
