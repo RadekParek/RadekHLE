@@ -653,15 +653,28 @@ fn schedule_playback(env: &mut Environment, this: id, start_at: Instant) {
     );
 
     if !already_finish_scheduled {
-        // Treat the (undecoded) movie as having played to its end. Reason 0
-        // = MPMovieFinishReasonPlaybackEnded.
+        // Let the movie play for its real duration (from the container's
+        // `mvhd`), falling back to the short undecoded-movie delay when the
+        // duration is unknown or implausible. Games poll `playbackState`
+        // while the movie runs and treat a premature `Stopped` as an error.
+        // Reason 0 = MPMovieFinishReasonPlaybackEnded.
+        let finish_delay = {
+            let host = env
+                .objc
+                .borrow::<MPMoviePlayerControllerHostObject>(this);
+            if host.duration > 0.0 && host.duration < 600.0 {
+                Duration::from_secs_f64(host.duration.max(0.5))
+            } else {
+                Duration::from_millis(150)
+            }
+        };
         enqueue(
             env,
             PendingNotification::PlaybackDidFinish {
                 player: this,
                 reason: MPMovieFinishReasonPlaybackEnded,
             },
-            start_at + Duration::from_millis(150),
+            start_at + finish_delay,
         );
     }
 }

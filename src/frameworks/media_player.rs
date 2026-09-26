@@ -12,6 +12,7 @@ mod media_picker_controller;
 mod media_playlist;
 mod media_query;
 pub mod mf_mail_compose_view_controller;
+mod movie_demux;
 mod movie_player;
 mod movie_video;
 mod music_player;

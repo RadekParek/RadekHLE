@@ -43,6 +43,7 @@ cmake = "0.1.49"
 gl_generator = "0.14.0"
 
 [dependencies]
+openh264 = "0.9.8"
 caf = "0.1.0" # ИСПРАВЛЕНИЕ: Добавлен недостающий крейт
 hound = "3.5.0"
 mach_object = "0.1.17"

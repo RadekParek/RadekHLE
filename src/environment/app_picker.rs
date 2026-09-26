@@ -901,9 +901,9 @@ fn show_app_picker_gui(
         })
         .unwrap_or((320, 568));
     options.host_screen_size = Some(picker_canvas_size);
-    options.scale_hack = 4.0;
+    options.scale_hack = 3.0;
     log!(
-        "App picker: using fixed {}x{} logical canvas at 4x internal resolution, preserving host aspect ratio.",
+        "App picker: using fixed {}x{} logical canvas at 3x internal resolution, preserving host aspect ratio.",
         picker_canvas_size.0,
         picker_canvas_size.1
     );
