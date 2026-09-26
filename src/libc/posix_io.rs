@@ -436,6 +436,18 @@ pub fn open_direct(env: &mut Environment, path: ConstPtr<u8>, flags: i32) -> Fil
         return -1;
     }
 
+    if (flags & O_CREAT) != 0 {
+        // Some apps (e.g. Man of Steel's Breakpad handler) write logs to
+        // subdirectories (Documents/Logs/...) that are never created by the
+        // app itself. iOS implicitly has these directories; create any missing
+        // parent directories so open(O_CREAT) succeeds.
+        if let Some(parent) = actual_path_string.rsplit_once('/').map(|(d, _)| d) {
+            if !parent.is_empty() && !env.fs.exists(GuestPath::new(parent)) {
+                _ = env.fs.create_dir_all(GuestPath::new(parent));
+            }
+        }
+    }
+
     let res = match env
         .fs
         .open_with_options(GuestPath::new(&actual_path_string), options)

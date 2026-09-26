@@ -3131,7 +3131,37 @@ fn glGetRenderbufferParameterivOES(
 }
 fn glCheckFramebufferStatusOES(env: &mut Environment, target: GLenum) -> GLenum {
     with_ctx_and_mem(env, |gles, _mem| unsafe {
-        gles.CheckFramebufferStatusOES(target)
+        let status = gles.CheckFramebufferStatusOES(target);
+        if gles.is_es2() && status != gles11::FRAMEBUFFER_COMPLETE_OES {
+            // Some strict Adreno drivers report GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE
+            // (0x8CD7) for single-sample FBOs backed by an EAGL drawable renderbuffer,
+            // which makes Unreal Engine 3 games (BioShock) bail out of rendering with
+            // a storm of GL_INVALID_OPERATION/GL_INVALID_FRAMEBUFFER_OPERATION errors.
+            // If the FBO actually has a color attachment with an object bound, treat
+            // it as complete: the attachment set is functional (RGBA8 + depth16).
+            static FORCED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let mut color_obj: i32 = 0;
+            gles.GetFramebufferAttachmentParameterivOES(
+                target,
+                gles11::COLOR_ATTACHMENT0_OES,
+                gles11::FRAMEBUFFER_ATTACHMENT_OBJECT_NAME_OES,
+                &mut color_obj,
+            );
+            while gles.GetError() != 0 {}
+            if color_obj != 0 {
+                let seen = FORCED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if seen < 8 {
+                    log!(
+                        "[FBO leniency] driver reported incomplete status {:#x} but FBO has color attachment {}; treating as FRAMEBUFFER_COMPLETE (force #{}).",
+                        status,
+                        color_obj,
+                        seen + 1
+                    );
+                }
+                return gles11::FRAMEBUFFER_COMPLETE_OES;
+            }
+        }
+        status
     })
 }
 fn glDeleteFramebuffersOES(env: &mut Environment, n: GLsizei, framebuffers: ConstPtr<GLuint>) {
