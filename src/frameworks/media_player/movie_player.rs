@@ -1024,11 +1024,33 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (())stop {
-    let host = env.objc.borrow_mut::<MPMoviePlayerControllerHostObject>(this);
-    host.clock_offset = 0.0;
-    host.clock_started = None;
-    host.playback_state = MPMoviePlaybackStateStopped;
+    // Apple's -stop posts MPMoviePlayerPlaybackDidFinishNotification with
+    // MPMovieFinishReasonPlaybackEnded. Apps that show a looping background
+    // movie (e.g. BioShock's main menu) wait for that notification to dismiss
+    // their movie screen and continue, so omitting it hangs the app.
+    let finish_pending = {
+        let host = env.objc.borrow_mut::<MPMoviePlayerControllerHostObject>(this);
+        host.clock_offset = 0.0;
+        host.clock_started = None;
+        host.playback_state = MPMoviePlaybackStateStopped;
+        host.repeat_mode = 0;
+        host.finish_scheduled
+    };
     State::get(env).videos.remove(&this);
+    if !finish_pending {
+        // No finish is already queued (e.g. the looping-movie one was
+        // suppressed at dispatch time), so schedule one now. A pending one
+        // will post anyway once it dispatches, because the state above is no
+        // longer Playing.
+        enqueue(
+            env,
+            PendingNotification::PlaybackDidFinish {
+                player: this,
+                reason: MPMovieFinishReasonPlaybackEnded,
+            },
+            Instant::now() + Duration::from_millis(50),
+        );
+    }
     enqueue(env, PendingNotification::PlaybackStateChange(this), Instant::now());
     if env
         .framework_state
