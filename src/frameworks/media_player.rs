@@ -13,6 +13,7 @@ mod media_playlist;
 mod media_query;
 pub mod mf_mail_compose_view_controller;
 mod movie_player;
+mod movie_video;
 mod music_player;
 
 pub const DYLIB: crate::dyld::HostDylib = crate::dyld::HostDylib {

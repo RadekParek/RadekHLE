@@ -110,6 +110,9 @@ pub(super) struct CALayerHostObject {
 impl HostObject for CALayerHostObject {}
 
 impl CALayerHostObject {
+    pub(super) fn delegate_for_debug(&self) -> id {
+        self.delegate
+    }
     pub(super) fn superlayer_to_layer_transform(&self) -> CGAffineTransform {
         CGAffineTransform::make_translation(-self.bounds.origin.x, -self.bounds.origin.y)
             .concat(CGAffineTransform::make_translation(
