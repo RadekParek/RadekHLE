@@ -610,6 +610,31 @@ pub const CLASSES: ClassExports = objc_classes! {
     msg![env; this objectForKey:key]
 }
 
+// `- (NSArray<ObjectType> *)objectsForKeys:(NSArray<KeyType> *)keys
+//     notFoundMarker:(id)anObject` — per Apple's NSDictionary reference,
+// returns a new array with one entry per key in `keys`: the matching
+// object, or `anObject` for keys that have no entry.
+// <https://developer.apple.com/documentation/foundation/nsdictionary/1413320-objectsforkeys>
+- (id)objectsForKeys:(id)keys notFoundMarker:(id)marker {
+    let result: id = msg_class![env; NSMutableArray new];
+    let count: NSUInteger = if keys == nil { 0 } else { msg![env; keys count] };
+    for i in 0..count {
+        let key: id = msg![env; keys objectAtIndex:i];
+        let obj: id = if key == nil {
+            nil
+        } else {
+            msg![env; this objectForKey:key]
+        };
+        if obj == nil {
+            () = msg![env; result addObject:marker];
+        } else {
+            () = msg![env; result addObject:obj];
+        }
+    }
+    let res_imm: id = msg![env; result copy];
+    release(env, result);
+    autorelease(env, res_imm)
+}
 // NSDictionary(NSFileAttributes) category
 // TODO: implement categories properly
 - (id)fileModificationDate {
