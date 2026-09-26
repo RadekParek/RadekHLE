@@ -1,21 +1,21 @@
 #!/bin/sh
 set -e
 
-# Bundles the RadekHLE 9.2 executable with the basic set of files needed for
-# RadekHLE 9.2 to run (the same ones found in the macOS .app bundle or Android APK).
+# Bundles the MetalHLE 0.1 executable with the basic set of files needed for
+# MetalHLE 0.1 to run (the same ones found in the macOS .app bundle or Android APK).
 # This does not prepare a full release.
 
 if [ "$#" -eq 1 ]; then
     PATH_TO_BINARY="$1"
     shift
 
-    rm -rf radekhle_linux_bundle
-    mkdir radekhle_linux_bundle
-    cp $PATH_TO_BINARY radekhle_linux_bundle/
-    cp -r ../touchHLE_dylibs radekhle_linux_bundle/
-    cp -r ../touchHLE_fonts radekhle_linux_bundle/
-    cp -r ../touchHLE_default_options.txt radekhle_linux_bundle/
-    cp -r ../res/RadekHLE_v7_wallpaper.png radekhle_linux_bundle/
+    rm -rf metalhle_linux_bundle
+    mkdir metalhle_linux_bundle
+    cp $PATH_TO_BINARY metalhle_linux_bundle/
+    cp -r ../touchHLE_dylibs metalhle_linux_bundle/
+    cp -r ../touchHLE_fonts metalhle_linux_bundle/
+    cp -r ../touchHLE_default_options.txt metalhle_linux_bundle/
+    cp -r ../res/MetalHLE_v7_wallpaper.png metalhle_linux_bundle/
 else
     echo "Incorrect usage."
     exit 1

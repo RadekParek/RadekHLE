@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-# Creates the .app bundle containing the basic set of files needed for RadekHLE
+# Creates the .app bundle containing the basic set of files needed for MetalHLE
 # to run. Also adds an icon and metadata similar to the Android APK.
 
 if [[ $# == 3 ]]; then
@@ -11,10 +11,10 @@ if [[ $# == 3 ]]; then
     shift 3
 
     if [[ "x$BRANDING" == "x" ]]; then
-        APP_NAME="RadekHLE 9.2"
+        APP_NAME="MetalHLE 0.1"
         ICON_NAME=icon
     else
-        APP_NAME="RadekHLE 9.2 $BRANDING"
+        APP_NAME="MetalHLE 0.1 $BRANDING"
         ICON_NAME="icon_$(echo "$BRANDING" | tr 'A-Z' 'a-z')"
         VERSION="$VERSION $BRANDING"
     fi
@@ -28,18 +28,18 @@ if [[ $# == 3 ]]; then
 
     rm -rf "$APP_NAME.app"
     mkdir -p "$APP_NAME.app"/Contents/MacOS "$APP_NAME.app"/Contents/Resources
-    cp $PATH_TO_BINARY "$APP_NAME.app"/Contents/MacOS/radekhle
+    cp $PATH_TO_BINARY "$APP_NAME.app"/Contents/MacOS/metalhle
     cp -r ../touchHLE_dylibs "$APP_NAME.app"/Contents/Resources/
     cp -r ../touchHLE_fonts "$APP_NAME.app"/Contents/Resources/
     cp -r ../touchHLE_default_options.txt "$APP_NAME.app"/Contents/Resources/
-    cp ../res/RadekHLE_v7_wallpaper.png "$APP_NAME.app"/Contents/Resources/
+    cp ../res/MetalHLE_v7_wallpaper.png "$APP_NAME.app"/Contents/Resources/
     cp "$ICON_NAME.icns" "$APP_NAME.app"/Contents/Resources/
 
     plutil -create xml1 "$APP_NAME.app"/Contents/Info.plist
     plutil -insert CFBundleName -string "$APP_NAME" "$APP_NAME.app"/Contents/Info.plist
     plutil -insert CFBundleDisplayName -string "$APP_NAME" "$APP_NAME.app"/Contents/Info.plist
     plutil -insert CFBundleShortVersionString -string "$VERSION" "$APP_NAME.app"/Contents/Info.plist
-    plutil -insert CFBundleExecutable -string radekhle "$APP_NAME.app"/Contents/Info.plist
+    plutil -insert CFBundleExecutable -string metalhle "$APP_NAME.app"/Contents/Info.plist
     plutil -insert CFBundleIconFile -string "$ICON_NAME" "$APP_NAME.app"/Contents/Info.plist
 else
     echo "Incorrect usage."

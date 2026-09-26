@@ -1,11 +1,11 @@
 #!/bin/sh
-# Decide whether to publish a RadekHLE 9.2 release and which v1.0.x tag to use.
+# Decide whether to publish a MetalHLE 0.1 release and which v1.0.x tag to use.
 # A release is due every 5 commits on HEAD since the latest v1.0.* tag, or since
-# the commit that introduced radekhle release automation when no tag exists yet.
+# the commit that introduced metalhle release automation when no tag exists yet.
 set -eu
 
 RELEASE_EVERY=5
-WORKFLOW_MARKER="dev-scripts/radekhle-should-release.sh"
+WORKFLOW_MARKER="dev-scripts/metalhle-should-release.sh"
 
 latest_tag="$(git tag -l 'v1.0.*' --sort=-v:refname | head -n 1 || true)"
 
@@ -25,7 +25,7 @@ fi
 
 version="v1.0.${next_patch}"
 
-if [ "${FORCE_RADEKHLE_RELEASE:-}" = "true" ]; then
+if [ "${FORCE_METALHLE_RELEASE:-}" = "true" ]; then
     should_release=true
 elif [ "$commits_since" -lt "$RELEASE_EVERY" ]; then
     should_release=false
@@ -36,7 +36,7 @@ else
 fi
 
 if [ "$should_release" = true ]; then
-    if [ "${FORCE_RADEKHLE_RELEASE:-}" = "true" ]; then
+    if [ "${FORCE_METALHLE_RELEASE:-}" = "true" ]; then
         # Manual release: publish script uses git log -n 5 (see changelog_limit).
         changelog_from=""
         changelog_limit=5

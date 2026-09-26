@@ -1,5 +1,5 @@
 #!/bin/sh
-# Package RadekHLE 9.2 release zips and write release notes for action-gh-release.
+# Package MetalHLE 0.1 release zips and write release notes for action-gh-release.
 set -eu
 
 VERSION="$1"
@@ -15,8 +15,8 @@ cd "$ROOT"
 
 windows_exe=""
 for candidate in \
-    artifacts/windows/radekhle.exe \
-    artifacts/windows/radekhle_windows_bundle/radekhle.exe
+    artifacts/windows/metalhle.exe \
+    artifacts/windows/metalhle_windows_bundle/metalhle.exe
 do
     if [ -e "$candidate" ]; then
         windows_exe="$candidate"
@@ -26,8 +26,8 @@ done
 
 linux_bin=""
 for candidate in \
-    artifacts/linux/radekhle \
-    artifacts/linux/radekhle_linux_bundle/radekhle
+    artifacts/linux/metalhle \
+    artifacts/linux/metalhle_linux_bundle/metalhle
 do
     if [ -e "$candidate" ]; then
         linux_bin="$candidate"
@@ -35,13 +35,13 @@ do
     fi
 done
 
-if [ ! -e artifacts/macos/radekhle.dmg ]; then
-    echo "Missing build artifact (all platform builds must succeed): artifacts/macos/radekhle.dmg" >&2
+if [ ! -e artifacts/macos/MetalHLE.dmg ]; then
+    echo "Missing build artifact (all platform builds must succeed): artifacts/macos/MetalHLE.dmg" >&2
     exit 1
 fi
 
 android_apk=""
-for candidate in artifacts/android/RadekHLE-9.2.apk; do
+for candidate in artifacts/android/MetalHLE.apk; do
     if [ -e "$candidate" ]; then
         android_apk="$candidate"
         break
@@ -51,23 +51,23 @@ if [ -z "$android_apk" ]; then
     echo "Missing build artifact (all platform builds must succeed): an Android APK" >&2
     exit 1
 fi
-if [ "$(basename "$android_apk")" != "RadekHLE-9.2.apk" ]; then
-    cp "$android_apk" artifacts/android/RadekHLE-9.2.apk
-    android_apk="artifacts/android/RadekHLE-9.2.apk"
+if [ "$(basename "$android_apk")" != "MetalHLE.apk" ]; then
+    cp "$android_apk" artifacts/android/MetalHLE.apk
+    android_apk="artifacts/android/MetalHLE.apk"
 fi
 if [ -z "$windows_exe" ]; then
-    echo "Missing build artifact (all platform builds must succeed): artifacts/windows/radekhle.exe" >&2
+    echo "Missing build artifact (all platform builds must succeed): artifacts/windows/metalhle.exe" >&2
     exit 1
 fi
 if [ -z "$linux_bin" ]; then
-    echo "Missing build artifact (all platform builds must succeed): artifacts/linux/radekhle" >&2
+    echo "Missing build artifact (all platform builds must succeed): artifacts/linux/metalhle" >&2
     exit 1
 fi
 
 if [ -z "$CHANGELOG_FROM" ]; then
     patch="${VERSION#v1.0.}"
     if [ "$patch" = "0" ]; then
-        CHANGELOG_FROM="$(git rev-list -n 1 HEAD -- dev-scripts/radekhle-should-release.sh)"
+        CHANGELOG_FROM="$(git rev-list -n 1 HEAD -- dev-scripts/metalhle-should-release.sh)"
     else
         CHANGELOG_FROM="v1.0.$((patch - 1))"
     fi
@@ -77,8 +77,8 @@ rm -rf release
 mkdir -p release
 
 {
-    printf '%s\n\n' "RadekHLE 9.2 ${VERSION}"
-    if [ "${FORCE_RADEKHLE_RELEASE:-}" = "true" ]; then
+    printf '%s\n\n' "MetalHLE 0.1 ${VERSION}"
+    if [ "${FORCE_METALHLE_RELEASE:-}" = "true" ]; then
         printf '%s\n\n' "_Manual release — changelog shows the latest 5 commits._"
     fi
     printf '%s\n\n' "## Changelog"
@@ -116,9 +116,9 @@ mkdir -p release
 cd "$ROOT/dev-scripts"
 ./prepare-release.sh --prepare-files
 
-prefix="RadekHLE_9.2"
+prefix="MetalHLE_0.1"
 
-./prepare-release.sh --create-zip-macos "$ROOT/artifacts/macos/radekhle.dmg" \
+./prepare-release.sh --create-zip-macos "$ROOT/artifacts/macos/MetalHLE.dmg" \
     -o "$ROOT/release/${prefix}_macOS_x86_64.zip"
 ./prepare-release.sh --create-zip-android "$ROOT/$android_apk" \
     -o "$ROOT/release/${prefix}_Android_AArch64.zip"
