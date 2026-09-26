@@ -441,7 +441,40 @@ impl Environment {
         // Default model picked for each class when the user hasn't chosen one.
         // iPhone 3GS (iPhone2,1) is the historical touchHLE phone default
         // (320x480, GLES2-capable); iPad 2 (iPad2,1) is the tablet default.
-        let default_phone = DeviceFamily::iPhone3GS;
+        //
+        // When the app's MinimumOSVersion is newer than a candidate's last
+        // iOS release, the app itself will often refuse to run on it (e.g.
+        // BioShock prints "THIS IS AN UNSUPPORTED DEVICE" for iPhone2,1 and
+        // takes degraded code paths). Walk up the ladder to the oldest
+        // default model whose final iOS release can actually host the app.
+        let min_os = bundle
+            .minimum_os_version()
+            .and_then(|v| {
+                let mut it = v.split('.').filter_map(|p| p.parse::<u32>().ok());
+                Some((it.next()?, it.next().unwrap_or(0)))
+            });
+        let phone_ladder: &[(DeviceFamily, (u32, u32))] = &[
+            (DeviceFamily::iPhone3GS, (6, 1)),
+            (DeviceFamily::iPhone4s, (9, 3)),
+            (DeviceFamily::iPhone5s, (12, 5)),
+            (DeviceFamily::iPhoneSE, (15, 8)),
+            (DeviceFamily::iPhone11, (18, 5)),
+        ];
+        let default_phone = min_os
+            .and_then(|min| {
+                phone_ladder
+                    .iter()
+                    .find(|(_, last_ios)| *last_ios >= min)
+                    .map(|(f, _)| *f)
+            })
+            .unwrap_or(DeviceFamily::iPhone3GS);
+        if default_phone != DeviceFamily::iPhone3GS {
+            log!(
+                "Default phone device upgraded to {:?}: app MinimumOSVersion {:?} exceeds iPhone 3GS's final iOS.",
+                default_phone,
+                bundle.minimum_os_version()
+            );
+        }
         let default_ipad = DeviceFamily::iPad2;
 
         let device_family = if let Some(dfo) = device_family_override {
